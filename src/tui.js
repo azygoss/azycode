@@ -192,6 +192,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "goal") return ["create", "status", "stop"];
   if (command === "context") return ["show"];
   if (command === "memory") return ["add", "remove", "list"];
+  if (command === "model") return modelSelectionEntries(state).map((entry) => entry.id);
   if (command === "models" && fixedArgs.length === 0) return ["sync"];
   if (command === "models" && fixedArgs[0] === "sync") return ["all"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
@@ -250,7 +251,7 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "exit" || command === "quit") return "exit";
   if (command === "help") {
-    printHelp();
+    printHelp(args[0]);
     return;
   }
   if (command === "clear") {
@@ -294,16 +295,7 @@ async function handleCommand(line, state, rl = null) {
     const next = args.join(" ");
     if (!next) await chooseModel(state, rl);
     else {
-      state.cfg.activeModel = next;
-      if (state.cfg.activeProvider && state.cfg.providers[state.cfg.activeProvider]) {
-        state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
-          ...state.cfg.providers[state.cfg.activeProvider],
-          model: next,
-          models: [...providerModelList(state.cfg, state.cfg.activeProvider), next]
-        });
-      }
-      saveConfig(state.cfg);
-      console.log(`model: ${next}`);
+      selectModel(state, next);
     }
     return;
   }
@@ -453,7 +445,44 @@ async function handleCommand(line, state, rl = null) {
   console.log(`Unknown command: /${command}. Use /help.`);
 }
 
-function printHelp() {
+function printHelp(topic = null) {
+  if (topic) {
+    const topics = {
+      model: [
+        "/model",
+        "/model <provider/model>",
+        "/models sync",
+        "/models sync all"
+      ],
+      login: [
+        "/login",
+        "/credentials",
+        "/health"
+      ],
+      mission: [
+        "/mission dry-run <file>",
+        "/mission run <file>",
+        "/mission report <id>"
+      ],
+      goal: [
+        "/goal create <text>",
+        "/goal status [id]",
+        "/goal stop [id]"
+      ],
+      review: [
+        "/review",
+        "/profile read-only",
+        "/policy"
+      ]
+    };
+    const rows = topics[topic];
+    if (!rows) {
+      console.log(`help: topics ${Object.keys(topics).join(", ")}`);
+      return;
+    }
+    printRows(`Help: ${topic}`, rows);
+    return;
+  }
   console.log("");
   console.log(style("Commands", "cyan"));
   console.log("  /status                 show active model and git guard");
@@ -461,7 +490,7 @@ function printHelp() {
   console.log("  /doctor                 show local binary and config paths");
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
-  console.log("  /model <id>             show or change the active model");
+  console.log("  /model [provider/model] show all models and switch provider/model");
   console.log("  /models [sync|sync all] list or sync provider model ids");
   console.log("  /providers              show available and configured providers");
   console.log("  /provider <name>        switch to a configured provider");
@@ -501,6 +530,7 @@ function printCommandPalette(state) {
     ["/doctor", "local binary and config paths"],
     ["/login", "connect a provider"],
     ["/provider", "switch configured provider"],
+    ["/model", "all models grouped by provider"],
     ["/providers", "show provider presets"],
     ["/credentials", "masked provider key sources"],
     ["/keys", "keyboard shortcuts"],
@@ -779,44 +809,100 @@ function handleToolPolicy(args, state) {
 }
 
 function printModels(state) {
-  if (!state.cfg.activeProvider) {
-    console.log("model: no active provider");
+  const entries = modelSelectionEntries(state);
+  if (!entries.length) {
+    console.log("model: no providers available");
     return;
   }
-  const models = providerModelList(state.cfg, state.cfg.activeProvider);
-  const rows = models.map((model) => `${state.cfg.activeModel === model ? "*" : " "} ${model}`);
-  printRows(`Models (${state.cfg.activeProvider})`, rows);
+  const rows = [];
+  for (const name of providerNames()) {
+    const providerEntries = entries.filter((entry) => entry.provider === name);
+    if (!providerEntries.length) continue;
+    const configured = Boolean(state.cfg.providers?.[name]);
+    rows.push(`${configured ? "" : " "} ${name}${configured ? "" : " (not configured)"}`);
+    for (const entry of providerEntries) {
+      const active = state.cfg.activeProvider === entry.provider && state.cfg.activeModel === entry.model ? "*" : " ";
+      rows.push(`  ${active} ${entry.model}`);
+    }
+  }
+  printRows("Models", rows);
 }
 
 async function chooseModel(state, rl) {
-  if (!state.cfg.activeProvider) {
-    console.log("model: no active provider");
-    return;
-  }
-  const models = providerModelList(state.cfg, state.cfg.activeProvider);
+  const entries = modelSelectionEntries(state).filter((entry) => entry.configured);
   if (!input.isTTY || !rl) {
     printModels(state);
     return;
   }
-  const selected = await selectFromList({
-    title: `Select model (${state.cfg.activeProvider})`,
-    items: models,
-    active: state.cfg.activeModel,
-    rl,
-    format: (model) => model
-  });
-  if (!selected) {
-    console.log(`model: ${state.cfg.activeModel || "no model"}`);
+  if (!entries.length) {
+    console.log("model: no configured providers. Use /login.");
     return;
   }
-  state.cfg.activeModel = selected;
+  const selected = await selectFromList({
+    title: "Select model",
+    items: entries,
+    active: entries.find((entry) => entry.provider === state.cfg.activeProvider && entry.model === state.cfg.activeModel),
+    rl,
+    format: (entry) => `${entry.provider.padEnd(12)} ${entry.model}`
+  });
+  if (!selected) {
+    console.log(`model: ${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}`);
+    return;
+  }
+  selectModel(state, selected.id);
+}
+
+function selectModel(state, requested) {
+  const entries = modelSelectionEntries(state);
+  const configuredEntries = entries.filter((entry) => entry.configured);
+  const exact = configuredEntries.find((entry) => entry.id === requested);
+  const modelMatches = configuredEntries.filter((entry) => entry.model === requested);
+  const selected = exact || (modelMatches.length === 1 ? modelMatches[0] : null);
+  if (selected) {
+    state.cfg.activeProvider = selected.provider;
+    state.cfg.activeModel = selected.model;
+    state.cfg.providers[selected.provider] = withProviderModels(state.cfg, selected.provider, {
+      ...state.cfg.providers[selected.provider],
+      model: selected.model,
+      models: [...providerModelList(state.cfg, selected.provider), selected.model]
+    });
+    saveConfig(state.cfg);
+    console.log(`model: ${selected.provider}/${selected.model}`);
+    return;
+  }
+  if (modelMatches.length > 1) {
+    console.log(`model: '${requested}' exists in multiple providers. Use provider/model.`);
+    return;
+  }
+  if (!state.cfg.activeProvider || !state.cfg.providers[state.cfg.activeProvider]) {
+    console.log("model: no configured provider. Use /login.");
+    return;
+  }
+  state.cfg.activeModel = requested;
   state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
     ...state.cfg.providers[state.cfg.activeProvider],
-    model: selected,
-    models
+    model: requested,
+    models: [...providerModelList(state.cfg, state.cfg.activeProvider), requested]
   });
   saveConfig(state.cfg);
-  console.log(`model: ${selected}`);
+  console.log(`model: ${state.cfg.activeProvider}/${requested}`);
+}
+
+function modelSelectionEntries(state) {
+  const rows = [];
+  for (const provider of providerNames()) {
+    const configured = Boolean(state.cfg.providers?.[provider]);
+    const models = providerModelList(state.cfg, provider);
+    for (const model of models) {
+      rows.push({
+        id: `${provider}/${model}`,
+        provider,
+        model,
+        configured
+      });
+    }
+  }
+  return rows;
 }
 
 async function handleModels(args, state) {

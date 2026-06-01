@@ -204,14 +204,15 @@ test("default command launches the interactive tui", async () => {
   assert.match(stdout, /azycode/);
   assert.match(stdout, /type a task\s+\/help commands\s+Tab reasoning\s+Shift\+Tab mode/);
   assert.match(stdout, /no provider\/no model/);
-  assert.match(stdout, /Status[\s\S]*provider\s+no provider[\s\S]*model\s+mock-next[\s\S]*mode\s+goal[\s\S]*reasoning\s+high[\s\S]*profile\s+read-only/);
+  assert.match(stdout, /model: no configured provider/);
+  assert.match(stdout, /Status[\s\S]*provider\s+no provider[\s\S]*model\s+no model[\s\S]*mode\s+goal[\s\S]*reasoning\s+high[\s\S]*profile\s+read-only/);
   assert.match(stdout, /policy: auto \d+\s+ask \d+\s+deny \d+/);
   assert.match(stdout, /conversation: 0 -> 0 messages/);
   assert.match(stdout, /conversation: cleared/);
   assert.match(stdout, /Dashboard/);
   assert.match(stdout, /Interactive login requires a terminal/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
-  assert.equal(cfg.activeModel, "mock-next");
+  assert.equal(cfg.activeModel, null);
   assert.equal(cfg.permissionProfile, "read-only");
   assert.equal(cfg.toolPolicy.shell, "deny");
   assert.equal(cfg.toolPolicy.write_file, "deny");
@@ -362,11 +363,32 @@ test("tui model command lists and preserves provider models", async () => {
     }
   }));
   const stdout = await runWithInput([], "/model\n/model candidate\n/exit\n", { AZYCODE_HOME: home });
-  assert.match(stdout, /Models \(byok\)[\s\S]*\* old[\s\S]*candidate/);
-  assert.match(stdout, /model: candidate/);
+  assert.match(stdout, /Models[\s\S]*byok[\s\S]*\* old[\s\S]*candidate/);
+  assert.match(stdout, /openai \(not configured\)/);
+  assert.match(stdout, /model: byok\/candidate/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeModel, "candidate");
   assert.deepEqual(cfg.providers.byok.models, ["old", "candidate"]);
+});
+
+test("tui model command can switch provider and model together", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "local-a",
+    providers: {
+      byok: { baseUrl: "http://127.0.0.1:9999/a", model: "local-a", models: ["local-a"], apiKey: "sk-a" },
+      openai: { baseUrl: "http://127.0.0.1:9999/b", model: "gpt-test", models: ["gpt-test"], apiKey: "sk-b" }
+    }
+  }));
+  const stdout = await runWithInput([], "/help model\n/model\n/model openai/gpt-test\n/status\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Help: model[\s\S]*\/model <provider\/model>/);
+  assert.match(stdout, /Models[\s\S]*byok[\s\S]*local-a[\s\S]*openai[\s\S]*gpt-test/);
+  assert.match(stdout, /model: openai\/gpt-test/);
+  assert.match(stdout, /Status[\s\S]*provider\s+openai[\s\S]*model\s+gpt-test/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeProvider, "openai");
+  assert.equal(cfg.activeModel, "gpt-test");
 });
 
 test("tui models sync all updates configured provider model lists", async () => {
