@@ -220,6 +220,15 @@ test("dashboard shows local overview without provider network", () => {
   assert.match(out, /sessions\s+0/);
 });
 
+test("cli errors are concise unless debug is enabled", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  assert.throws(() => run(["config", "set", "reasoning", "extreme"], { AZYCODE_HOME: home }), (error) => {
+    assert.match(error.stderr, /azycode: Reasoning must be one of/);
+    assert.doesNotMatch(error.stderr, /at configCmd/);
+    return true;
+  });
+});
+
 test("mission report formats stored mission state", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
