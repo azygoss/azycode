@@ -46,6 +46,8 @@ test("tool policy command updates config", () => {
   assert.equal(cfg.toolPolicy.shell, "deny");
   const tools = run(["tools"], { AZYCODE_HOME: home });
   assert.match(tools, /Tool Policy/);
+  assert.match(tools, /read_many_files\s+auto/);
+  assert.match(tools, /delete_path\s+ask/);
   assert.match(tools, /shell\s+deny/);
 });
 

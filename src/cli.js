@@ -482,7 +482,7 @@ function toolsCmd(args = []) {
     return;
   }
   const policy = cfg.toolPolicy || {};
-  const names = ["list_files", "read_file", "search", "write_file", "edit_file", "apply_patch", "git_diff", "shell"];
+  const names = Object.keys(policy).sort();
   ui.title("Tool Policy");
   ui.table(names.map((name) => ({ tool: name, policy: policy[name] || "ask" })), [
     { key: "tool", label: "tool" },

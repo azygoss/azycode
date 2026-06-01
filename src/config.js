@@ -41,11 +41,20 @@ export function defaultConfig() {
     },
     toolPolicy: {
       read_file: "auto",
+      read_many_files: "auto",
+      file_info: "auto",
       list_files: "auto",
       search: "auto",
+      git_status: "auto",
+      git_log: "auto",
+      git_show: "auto",
       shell: "ask",
+      make_dir: "ask",
       write_file: "ask",
       edit_file: "ask",
+      copy_path: "ask",
+      move_path: "ask",
+      delete_path: "ask",
       apply_patch: "ask",
       git_diff: "auto"
     }

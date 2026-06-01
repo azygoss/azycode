@@ -26,6 +26,36 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { file: { type: "string" } },
       required: ["file"]
     }, async ({ file }) => fs.readFileSync(safePath(root, file), "utf8")),
+    tool("read_many_files", "Read multiple UTF-8 text files in one call.", {
+      type: "object",
+      properties: {
+        files: { type: "array", items: { type: "string" }, maxItems: 20 },
+        maxBytesPerFile: { type: "number" }
+      },
+      required: ["files"]
+    }, async ({ files, maxBytesPerFile = 120000 }) => {
+      const selected = Array.isArray(files) ? files.slice(0, 20) : [];
+      return selected.map((file) => {
+        const target = safePath(root, file);
+        const text = fs.readFileSync(target, "utf8").slice(0, Number(maxBytesPerFile) || 120000);
+        return `--- ${file} ---\n${text}`;
+      }).join("\n\n");
+    }),
+    tool("file_info", "Inspect file or directory metadata.", {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"]
+    }, async ({ path: requested }) => {
+      const target = safePath(root, requested);
+      const stat = fs.statSync(target);
+      return JSON.stringify({
+        path: path.relative(root, target) || ".",
+        type: stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other",
+        size: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+        mode: `0${(stat.mode & 0o777).toString(8)}`
+      }, null, 2);
+    }),
     tool("search", "Search text in files using ripgrep when available.", {
       type: "object",
       properties: { query: { type: "string" }, dir: { type: "string" } },
@@ -39,6 +69,16 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
         if (error.stdout) return error.stdout;
         return "(no matches)";
       }
+    }),
+    tool("make_dir", "Create a directory and any missing parent directories.", {
+      type: "object",
+      properties: { dir: { type: "string" } },
+      required: ["dir"]
+    }, async ({ dir }) => {
+      assertGuard(root, cfg, "make_dir");
+      const target = safePath(root, dir);
+      fs.mkdirSync(target, { recursive: true });
+      return `created ${path.relative(root, target) || "."}`;
     }),
     tool("write_file", "Write a UTF-8 text file. Creates parent directories.", {
       type: "object",
@@ -68,6 +108,41 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       fs.writeFileSync(target, next, "utf8");
       return `edited ${path.relative(root, target)}`;
     }),
+    tool("copy_path", "Copy a file or directory inside the workspace.", {
+      type: "object",
+      properties: { from: { type: "string" }, to: { type: "string" } },
+      required: ["from", "to"]
+    }, async ({ from, to }) => {
+      assertGuard(root, cfg, "copy_path");
+      const source = safePath(root, from);
+      const target = safePath(root, to);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.cpSync(source, target, { recursive: true, force: true });
+      return `copied ${path.relative(root, source)} -> ${path.relative(root, target)}`;
+    }),
+    tool("move_path", "Move or rename a file or directory inside the workspace.", {
+      type: "object",
+      properties: { from: { type: "string" }, to: { type: "string" } },
+      required: ["from", "to"]
+    }, async ({ from, to }) => {
+      assertGuard(root, cfg, "move_path");
+      const source = safePath(root, from);
+      const target = safePath(root, to);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(source, target);
+      return `moved ${path.relative(root, source)} -> ${path.relative(root, target)}`;
+    }),
+    tool("delete_path", "Delete a file or directory inside the workspace.", {
+      type: "object",
+      properties: { path: { type: "string" }, recursive: { type: "boolean" } },
+      required: ["path"]
+    }, async ({ path: requested, recursive = false }) => {
+      assertGuard(root, cfg, "delete_path");
+      const target = safePath(root, requested);
+      if (target === root) throw new Error("Refusing to delete workspace root.");
+      fs.rmSync(target, { recursive: Boolean(recursive), force: false });
+      return `deleted ${path.relative(root, target)}`;
+    }),
     tool("apply_patch", "Apply a unified diff patch to the workspace using git apply.", {
       type: "object",
       properties: {
@@ -96,6 +171,30 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       const { stdout } = await execFileAsync("git", args, { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 8 });
       return stdout || "(no diff)";
     }),
+    tool("git_status", "Show short git status for the workspace.", {
+      type: "object",
+      properties: {}
+    }, async () => {
+      const { stdout } = await execFileAsync("git", ["status", "--short", "--branch"], { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 2 });
+      return stdout || "(clean)";
+    }),
+    tool("git_log", "Show recent git commits.", {
+      type: "object",
+      properties: { limit: { type: "number" } }
+    }, async ({ limit = 10 }) => {
+      const count = Math.max(1, Math.min(50, Number(limit) || 10));
+      const { stdout } = await execFileAsync("git", ["log", `-${count}`, "--oneline", "--decorate"], { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 2 });
+      return stdout || "(no commits)";
+    }),
+    tool("git_show", "Show a git object, commit, or file at a revision.", {
+      type: "object",
+      properties: { rev: { type: "string" }, file: { type: "string" } },
+      required: ["rev"]
+    }, async ({ rev, file = "" }) => {
+      const spec = file ? `${rev}:${path.relative(root, safePath(root, file))}` : rev;
+      const { stdout } = await execFileAsync("git", ["show", "--stat", "--patch", spec], { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 8 });
+      return stdout || "(no output)";
+    }),
     tool("shell", "Run a shell command in the workspace. Use for tests and build commands.", {
       type: "object",
       properties: { command: { type: "string" }, timeoutMs: { type: "number" } },
@@ -123,7 +222,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
 }
 
 function assertGuard(root, cfg, toolName) {
-  if (!["write_file", "edit_file", "apply_patch", "shell"].includes(toolName)) return;
+  if (!["make_dir", "write_file", "edit_file", "copy_path", "move_path", "delete_path", "apply_patch", "shell"].includes(toolName)) return;
   const result = gitGuard(root, cfg);
   if (!result.ok) throw new Error(result.reason);
 }

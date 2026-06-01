@@ -34,6 +34,25 @@ test("tools reject paths that escape workspace", async () => {
   await assert.rejects(() => readFile.run({ file: "../outside" }), /Path escapes workspace/);
 });
 
+test("built-in tools inspect read and manage workspace paths", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "a.txt"), "alpha\n", "utf8");
+  fs.writeFileSync(path.join(dir, "b.txt"), "beta\n", "utf8");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {}, gitGuard: { enabled: false } } });
+  const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+
+  assert.match(await byName.read_many_files.run({ files: ["a.txt", "b.txt"] }), /--- a\.txt ---[\s\S]*alpha[\s\S]*--- b\.txt ---[\s\S]*beta/);
+  assert.match(await byName.file_info.run({ path: "a.txt" }), /"type": "file"/);
+  assert.match(await byName.git_status.run({}), /##/);
+
+  assert.equal(await byName.make_dir.run({ dir: "nested" }), "created nested");
+  assert.match(await byName.copy_path.run({ from: "a.txt", to: "nested/copy.txt" }), /copied a\.txt -> nested\/copy\.txt/);
+  assert.match(await byName.move_path.run({ from: "nested/copy.txt", to: "nested/moved.txt" }), /moved nested\/copy\.txt -> nested\/moved\.txt/);
+  assert.equal(await byName.delete_path.run({ path: "nested/moved.txt" }), "deleted nested/moved.txt");
+  assert.equal(fs.existsSync(path.join(dir, "nested", "moved.txt")), false);
+});
+
 test("alwaysApprove does not bypass git guard", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
@@ -48,6 +67,8 @@ test("alwaysApprove does not bypass git guard", async () => {
   });
   const writeFile = tools.find((tool) => tool.name === "write_file");
   await assert.rejects(() => writeFile.run({ file: "x.txt", content: "x" }), /blocked/);
+  const deletePath = tools.find((tool) => tool.name === "delete_path");
+  await assert.rejects(() => deletePath.run({ path: "x.txt" }), /blocked/);
 });
 
 test("ask policy can use a TUI confirmation callback", async () => {
