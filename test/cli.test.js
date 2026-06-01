@@ -299,6 +299,22 @@ test("tui can inspect and update tool policy", async () => {
   assert.equal(cfg.toolPolicy.shell, "auto");
 });
 
+test("tui can show masked credentials and keyboard shortcuts", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const rawKey = ["sk", "abcdefghijkl"].join("-");
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "local",
+    providers: {
+      byok: { baseUrl: "http://127.0.0.1:9999/v1", model: "local", apiKey: rawKey }
+    }
+  }));
+  const stdout = await runWithInput([], "/credentials\n/keys\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Credentials[\s\S]*byok\s+config:sk-a\.\.\.ijkl\s+local/);
+  assert.doesNotMatch(stdout, new RegExp(rawKey));
+  assert.match(stdout, /Keyboard[\s\S]*Shift\+Tab\s+rotate mode/);
+});
+
 test("tui health checks configured provider connectivity", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const server = http.createServer((req, res) => {

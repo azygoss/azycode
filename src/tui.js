@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, azyHome, loadConfig, loadState, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, loadConfig, loadState, maskSecret, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -23,7 +23,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "session", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
+  "model", "models", "profile", "credentials", "keys", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
@@ -329,6 +329,14 @@ async function handleCommand(line, state, rl = null) {
     }
     return;
   }
+  if (command === "credentials") {
+    printCredentials(state);
+    return;
+  }
+  if (command === "keys") {
+    printKeys();
+    return;
+  }
   if (command === "profile") {
     const next = args[0];
     if (!PROFILES.includes(next)) console.log(`profile: ${PROFILES.join(", ")}`);
@@ -453,6 +461,8 @@ function printHelp() {
   console.log("  /models [sync|sync all] list or sync provider model ids");
   console.log("  /providers              show available and configured providers");
   console.log("  /provider <name>        switch to a configured provider");
+  console.log("  /credentials            show masked provider key sources");
+  console.log("  /keys                   show keyboard shortcuts");
   console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
   console.log("  /context                toggle bounded repository context");
   console.log("  /context show           preview bounded repository context");
@@ -487,6 +497,8 @@ function printCommandPalette(state) {
     ["/login", "connect a provider"],
     ["/provider", "switch configured provider"],
     ["/providers", "show provider presets"],
+    ["/credentials", "masked provider key sources"],
+    ["/keys", "keyboard shortcuts"],
     ["/mode", "set plan, always-approve, goal, review"],
     ["/reasoning", "set minimal, low, medium, high"],
     ["/policy", "show tool approvals"],
@@ -949,6 +961,32 @@ function printProviders(state) {
     return `${active} ${name.padEnd(12)} ${configured ? "configured" : "not configured"}  ${String(modelCount).padStart(2)} models  ${model}`;
   });
   printRows("Providers", rows);
+}
+
+function printCredentials(state) {
+  const names = Object.keys(state.cfg.providers || {});
+  if (!names.length) {
+    printRows("Credentials", ["No providers configured. Use /login."]);
+    return;
+  }
+  const rows = names.map((name) => {
+    const saved = state.cfg.providers[name] || {};
+    const diag = providerDiagnostics(state.cfg, name);
+    const active = state.cfg.activeProvider === name ? "*" : " ";
+    const source = saved.apiKey ? `config:${maskSecret(saved.apiKey)}` : `env:${diag.apiKeySource}`;
+    const keyStatus = diag.hasApiKey ? source : "missing";
+    return `${active} ${name.padEnd(12)} ${keyStatus.padEnd(22)} ${diag.model}`;
+  });
+  printRows("Credentials", rows);
+}
+
+function printKeys() {
+  printRows("Keyboard", [
+    "Tab        rotate reasoning effort",
+    "Shift+Tab  rotate mode",
+    "Ctrl+C     cancel/exit",
+    "Ctrl+D     submit multiline prompt in command mode"
+  ]);
 }
 
 async function chooseConfiguredProvider(state, rl) {
