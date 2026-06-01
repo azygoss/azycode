@@ -252,6 +252,34 @@ test("mission report formats stored mission state", () => {
   assert.match(out, /1\. done step/);
 });
 
+test("goal and mission lists use tables while json remains available", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: {},
+    toolRuns: [],
+    goals: { goal_test: { status: "running", text: "ship feature" } },
+    missions: { mis_test: { name: "release", status: "done", steps: [{ index: 1 }] } }
+  }));
+  assert.match(run(["goal", "status"], { AZYCODE_HOME: home }), /goal_test\s+running\s+ship feature/);
+  assert.match(run(["mission", "list"], { AZYCODE_HOME: home }), /mis_test\s+done\s+release\s+1/);
+  const json = JSON.parse(run(["goal", "status", "--json"], { AZYCODE_HOME: home }));
+  assert.equal(json.goal_test.status, "running");
+});
+
+test("session and subagent lists use compact tables", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: { ses_test: { createdAt: "now", mode: "plan", prompt: "inspect repo" } },
+    toolRuns: [],
+    goals: {},
+    missions: {}
+  }));
+  assert.match(run(["session", "list"], { AZYCODE_HOME: home }), /ses_test\s+now\s+plan\s+inspect repo/);
+  assert.match(run(["subagent", "list"], { AZYCODE_HOME: home }), /planner\s+high\s+\(active\)/);
+});
+
 function runWithInput(args, inputText, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, ...args], {

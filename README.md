@@ -76,6 +76,8 @@ Use `azycode doctor` to confirm which binary you are running while developing. I
 
 `azycode dashboard` is the fastest local overview. It does not call provider APIs; it shows mode, model, guard state, local state counts, and tool-policy totals.
 
+List commands such as `azycode goal status`, `azycode mission list`, and `azycode session list` use compact tables by default. Add `--json` when a script needs structured output.
+
 Shell completion can be installed with the output of `azycode completion <bash|zsh|fish>`. For example, zsh users can add the generated script to an fpath completion file or source it from their shell profile.
 
 `azycode report [file]` creates a redacted diagnostic bundle with doctor output, config without raw keys, git/repository context, local review findings, and recent tool-run metadata. Add `--with-audit` when you want the report to include the same checks as `azycode audit`.

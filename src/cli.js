@@ -647,9 +647,22 @@ async function session(args) {
   const state = loadState();
   const action = args[0] || "list";
   if (action === "list") {
-    for (const [id, item] of Object.entries(state.sessions || {})) {
-      console.log(`${id} ${item.createdAt} mode=${item.mode} prompt=${String(item.prompt || "").slice(0, 80)}`);
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(state.sessions || {}, null, 2));
+      return;
     }
+    ui.title("Sessions");
+    ui.table(Object.entries(state.sessions || {}).map(([id, item]) => ({
+      id,
+      created: item.createdAt || "",
+      mode: item.mode || "",
+      prompt: String(item.prompt || "").slice(0, 80)
+    })), [
+      { key: "id", label: "id" },
+      { key: "created", label: "created" },
+      { key: "mode", label: "mode" },
+      { key: "prompt", label: "prompt" }
+    ]);
     return;
   }
   if (action === "show") {
@@ -855,7 +868,20 @@ async function goal(args) {
     return;
   }
   if (action === "status") {
-    console.log(JSON.stringify(state.goals, null, 2));
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(state.goals, null, 2));
+      return;
+    }
+    ui.title("Goals");
+    ui.table(Object.entries(state.goals || {}).map(([id, item]) => ({
+      id,
+      status: item.status || "",
+      goal: item.text || ""
+    })), [
+      { key: "id", label: "id" },
+      { key: "status", label: "status" },
+      { key: "goal", label: "goal" }
+    ]);
     return;
   }
   if (action === "stop") {
@@ -873,12 +899,34 @@ async function goal(args) {
 async function mission(args) {
   if ((args[0] || "list") === "list") {
     const state = loadState();
-    console.log(JSON.stringify(state.missions || {}, null, 2));
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(state.missions || {}, null, 2));
+      return;
+    }
+    ui.title("Missions");
+    ui.table(Object.entries(state.missions || {}).map(([id, item]) => ({
+      id,
+      status: item.status || "",
+      name: item.name || "",
+      steps: (item.steps || []).length
+    })), [
+      { key: "id", label: "id" },
+      { key: "status", label: "status" },
+      { key: "name", label: "name" },
+      { key: "steps", label: "steps" }
+    ]);
     return;
   }
   if (args[0] === "status") {
     const state = loadState();
-    console.log(JSON.stringify(args[1] ? state.missions?.[args[1]] : state.missions, null, 2));
+    const id = args.find((arg, index) => index > 0 && !arg.startsWith("--"));
+    const selected = id ? state.missions?.[id] : state.missions;
+    if (args.includes("--json") || !id) {
+      console.log(JSON.stringify(selected || {}, null, 2));
+      return;
+    }
+    if (!selected) throw new Error(`No mission ${id}`);
+    console.log(formatMissionReport(id, selected));
     return;
   }
   if (args[0] === "dry-run" && args[1]) {
@@ -904,9 +952,18 @@ async function mission(args) {
 async function subagent(args) {
   const action = args[0] || "list";
   if (action === "list") {
-    for (const agent of listSubagents(loadConfig())) {
-      console.log(`${agent.name}: ${agent.description || ""} model=${agent.model || "(active)"} reasoning=${agent.reasoning}`);
-    }
+    ui.title("Subagents");
+    ui.table(listSubagents(loadConfig()).map((agent) => ({
+      name: agent.name,
+      reasoning: agent.reasoning,
+      model: agent.model || "(active)",
+      description: agent.description || ""
+    })), [
+      { key: "name", label: "name" },
+      { key: "reasoning", label: "reasoning" },
+      { key: "model", label: "model" },
+      { key: "description", label: "description" }
+    ]);
     return;
   }
   if (action === "add") {
