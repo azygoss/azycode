@@ -524,6 +524,8 @@ async function status() {
       { key: "quota", label: "quota" }
     ]);
   }
+  ui.section("Model selection");
+  ui.list(["Use `azycode model` to view and select provider/model together."]);
   if (cfg.activeProvider) {
     ui.section("Remote");
     try {

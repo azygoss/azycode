@@ -658,6 +658,7 @@ test("status uses labeled output without configured providers", () => {
   const out = run(["status"], { AZYCODE_HOME: home });
   assert.match(out, /Status/);
   assert.match(out, /active provider\s+\(none\)/);
+  assert.match(out, /Use `azycode model` to view and select provider\/model together/);
 });
 
 test("dashboard shows local overview without provider network", () => {
