@@ -199,3 +199,32 @@ test("runAgent can include a context pack in the system prompt", async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("runAgent carries conversation messages into a follow-up run", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  let sawHistory = false;
+  const { server, port } = await mockChatServer((body) => {
+    sawHistory = body.messages.some((message) => message.role === "assistant" && message.content === "previous answer");
+    return { choices: [{ message: { role: "assistant", content: "follow-up answer" } }] };
+  });
+
+  try {
+    const result = await runAgent({
+      cfg: cfgFor(port),
+      cwd,
+      prompt: "follow up",
+      conversation: [
+        { role: "user", content: "first question" },
+        { role: "assistant", content: "previous answer" }
+      ],
+      returnSession: true
+    });
+    assert.equal(result.content, "follow-up answer");
+    assert.equal(sawHistory, true);
+    assert.equal(result.messages.at(-1).content, "follow-up answer");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

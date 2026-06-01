@@ -16,7 +16,8 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     cwd,
     mode: normalizeMode(cfg.mode),
     includeContext: false,
-    progress: true
+    progress: true,
+    conversation: []
   };
   printWelcome(state);
 
@@ -105,17 +106,20 @@ async function askAgent(prompt, state) {
   }
   console.log(style("working...", "dim"));
   try {
-    const answer = await runAgent({
+    const result = await runAgent({
       cfg: state.cfg,
       cwd: state.cwd,
       prompt,
       mode: state.mode,
       includeContext: state.includeContext,
-      onEvent: state.progress ? progressLine : null
+      onEvent: state.progress ? progressLine : null,
+      conversation: state.conversation,
+      returnSession: true
     });
+    state.conversation = result.messages.filter((message) => message.role !== "system");
     console.log("");
     console.log(style("assistant", "cyan"));
-    console.log(answer);
+    console.log(result.content);
     console.log("");
   } catch (error) {
     console.log(style(`error: ${error.message}`, "red"));
@@ -139,6 +143,11 @@ async function handleCommand(line, state) {
   if (command === "clear") {
     if (output.isTTY) output.write("\x1b[2J\x1b[H");
     printWelcome(state);
+    return;
+  }
+  if (command === "new") {
+    state.conversation = [];
+    console.log("conversation: cleared");
     return;
   }
   if (command === "mode") {
@@ -203,6 +212,7 @@ function printHelp() {
   console.log("  /progress               toggle inline model/tool activity");
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
+  console.log("  /new                    start a fresh conversation");
   console.log("  /login                  show provider setup command");
   console.log("  /clear                  clear the terminal");
   console.log("  /exit                   leave azycode");
@@ -217,5 +227,6 @@ function printDashboard(state) {
   console.log(`  goals       ${Object.keys(saved.goals || {}).length}`);
   console.log(`  missions    ${Object.keys(saved.missions || {}).length}`);
   console.log(`  tool runs   ${(saved.toolRuns || []).length}`);
+  console.log(`  messages    ${state.conversation.length}`);
   console.log("");
 }

@@ -17,13 +17,14 @@ export function systemForMode(mode) {
   return `${base}\n${modes[mode] || modes.plan}`;
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false }) {
+export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [] }) {
   const client = new LlmClient(cfg);
   const effectiveCfg = mode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
   const tools = createTools({ cwd, cfg: effectiveCfg });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const messages = [
     { role: "system", content: [subagent?.system || systemForMode(mode), loadProjectRules(cwd), loadRelevantMemory(prompt), includeContext ? loadContextPack(cwd) : ""].filter(Boolean).join("\n\n") },
+    ...conversation.filter((message) => message.role !== "system"),
     { role: "user", content: prompt }
   ];
   const sessionId = id("ses");
@@ -52,7 +53,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       emit({ type: "final", step: step + 1 });
       recordSession(sessionId, { mode, prompt, messages, events });
       const content = message.content || "";
-      return returnSession ? { content, sessionId } : content;
+      return returnSession ? { content, sessionId, messages } : content;
     }
 
     for (const call of calls) {

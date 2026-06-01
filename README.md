@@ -73,9 +73,10 @@ azycode subagent list
 azycode subagent add security-reviewer
 ```
 
-Run `azycode` without arguments to open the interactive terminal workspace. Type a task directly, or use slash commands such as `/status`, `/dashboard`, `/login`, `/mode`, `/reasoning`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
+Run `azycode` without arguments to open the interactive terminal workspace. Type a task directly, or use slash commands such as `/status`, `/dashboard`, `/login`, `/new`, `/mode`, `/reasoning`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
 
 Inside the terminal workspace, `Tab` rotates reasoning effort and `Shift+Tab` rotates mode. The prompt always shows the active mode and reasoning level.
+Messages in one terminal workspace share conversation and tool context. Use `/new` when you want a clean conversation.
 
 Use `azycode doctor` to confirm which binary you are running while developing. If another global `azycode` exists on `PATH`, run this project directly with `node ./bin/azycode.js ...` or use `npm link` from this directory.
 
