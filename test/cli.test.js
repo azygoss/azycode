@@ -234,7 +234,7 @@ test("tui can list and switch configured providers", async () => {
     }
   }));
   const stdout = await runWithInput([], "/providers\n/provider kimi\n/status\n/exit\n", { AZYCODE_HOME: home });
-  assert.match(stdout, /Providers[\s\S]*byok\s+configured\s+local/);
+  assert.match(stdout, /Providers[\s\S]*byok\s+configured\s+\d+ models\s+local/);
   assert.match(stdout, /provider: kimi\/kimi-test/);
   assert.match(stdout, /kimi\/kimi-test/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));

@@ -908,7 +908,9 @@ function printProviders(state) {
     const preset = providerPreset(name);
     const configured = Boolean(state.cfg.providers?.[name]);
     const active = state.cfg.activeProvider === name ? "*" : " ";
-    return `${active} ${name}  ${configured ? "configured" : "not configured"}  ${state.cfg.providers?.[name]?.model || preset.defaultModel || ""}`;
+    const model = state.cfg.providers?.[name]?.model || preset.defaultModel || "";
+    const modelCount = configured ? providerModelList(state.cfg, name).length : (preset.models || []).length;
+    return `${active} ${name.padEnd(12)} ${configured ? "configured" : "not configured"}  ${String(modelCount).padStart(2)} models  ${model}`;
   });
   printRows("Providers", rows);
 }
