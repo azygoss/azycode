@@ -5,11 +5,12 @@ import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
+import { LlmClient } from "./llm.js";
 import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
-import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
@@ -18,7 +19,7 @@ const MAX_CONVERSATION_MESSAGES = 80;
 const TUI_COMMANDS = [
   "help", "status", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
+  "model", "models", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
@@ -170,6 +171,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "agent") return ["off", ...Object.keys(state.cfg.subagents || {})];
   if (command === "help") return TUI_COMMANDS;
   if (command === "memory") return ["add", "remove", "list"];
+  if (command === "models") return ["sync"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
   if (command === "tool" && fixedArgs.length === 1) return TOOL_POLICY_MODES;
   if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run"];
@@ -281,6 +283,10 @@ async function handleCommand(line, state, rl = null) {
       saveConfig(state.cfg);
       console.log(`model: ${next}`);
     }
+    return;
+  }
+  if (command === "models") {
+    await handleModels(args, state);
     return;
   }
   if (command === "providers") {
@@ -399,6 +405,7 @@ function printHelp() {
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
   console.log("  /model <id>             show or change the active model");
+  console.log("  /models [sync]          list or sync provider model ids");
   console.log("  /providers              show available and configured providers");
   console.log("  /provider <name>        switch to a configured provider");
   console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
@@ -620,6 +627,30 @@ async function chooseModel(state, rl) {
   });
   saveConfig(state.cfg);
   console.log(`model: ${selected}`);
+}
+
+async function handleModels(args, state) {
+  if (args[0] !== "sync") {
+    printModels(state);
+    return;
+  }
+  if (!state.cfg.activeProvider) {
+    console.log("models: no active provider");
+    return;
+  }
+  try {
+    console.log(style("syncing models...", "dim"));
+    const result = await new LlmClient(state.cfg).listModels();
+    const remoteModels = modelIdsFromResponse(result);
+    state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
+      ...state.cfg.providers[state.cfg.activeProvider],
+      models: [...providerModelList(state.cfg, state.cfg.activeProvider), ...remoteModels]
+    });
+    saveConfig(state.cfg);
+    console.log(`models: synced ${remoteModels.length} remote models`);
+  } catch (error) {
+    console.log(style(`models: ${error.message}`, "red"));
+  }
 }
 
 function printGoals() {

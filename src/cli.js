@@ -8,7 +8,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { loadConfig, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { LlmClient } from "./llm.js";
-import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
@@ -526,6 +526,20 @@ async function status() {
 }
 
 async function models(args = []) {
+  if (args[0] === "sync") {
+    const cfg = loadConfig();
+    if (!cfg.activeProvider) throw new Error("No active provider. Run 'azycode login <provider>'.");
+    const client = new LlmClient(cfg);
+    const result = await client.listModels();
+    const remoteModels = modelIdsFromResponse(result);
+    cfg.providers[cfg.activeProvider] = withProviderModels(cfg, cfg.activeProvider, {
+      ...cfg.providers[cfg.activeProvider],
+      models: [...providerModelList(cfg, cfg.activeProvider), ...remoteModels]
+    });
+    saveConfig(cfg);
+    console.log(`Synced ${remoteModels.length} remote models for ${cfg.activeProvider}.`);
+    return;
+  }
   if (args[0] === "use") {
     const model = args[1];
     if (!model) throw new Error("Usage: azycode models use <model>");

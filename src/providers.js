@@ -151,6 +151,14 @@ export function withProviderModels(cfg, name, saved = cfg.providers?.[name] || {
   };
 }
 
+export function modelIdsFromResponse(result) {
+  if (Array.isArray(result)) {
+    return uniqueModels(result.map((model) => model.id || model.name || model.model || (typeof model === "string" ? model : null)));
+  }
+  if (result && typeof result === "object") return uniqueModels(Object.keys(result));
+  return [];
+}
+
 export function providerConfig(cfg, name = cfg.activeProvider) {
   if (!name) throw new Error("No active provider. Run 'azycode login <provider>'.");
   const preset = providerPreset(name);

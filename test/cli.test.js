@@ -71,6 +71,30 @@ test("models use updates active model", () => {
   assert.deepEqual(cfg.providers.byok.models, ["old", "new-model"]);
 });
 
+test("models sync stores remote model ids without dropping saved models", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const server = http.createServer((req, res) => {
+    if (req.url === "/v1/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "remote-a" }, { id: "remote-b" }] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    run(["login", "byok", "--base-url", `http://127.0.0.1:${port}/v1`, "--model", "local", "--api-key", "sk-local"], { AZYCODE_HOME: home });
+    const out = await runAsync(["models", "sync"], { AZYCODE_HOME: home });
+    assert.match(out, /Synced 2 remote models/);
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert.deepEqual(cfg.providers.byok.models, ["local", "remote-a", "remote-b"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("provider current reports missing provider without stack trace", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const out = run(["provider", "current"], { AZYCODE_HOME: home });

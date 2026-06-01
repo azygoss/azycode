@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { providerDiagnostics, providerModelList, providerPreset, normalizeBaseUrl } from "../src/providers.js";
+import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerPreset, normalizeBaseUrl } from "../src/providers.js";
 
 test("provider presets include requested coding subscriptions", () => {
   assert.equal(providerPreset("kimi").defaultModel, "kimi-k2.6");
@@ -39,4 +39,9 @@ test("providerModelList merges saved and preset models without duplicates", () =
   }, "kimi");
   assert.deepEqual(models.slice(0, 3), ["kimi-k2.5", "custom-kimi", "kimi-k2.6"]);
   assert.equal(models.filter((model) => model === "kimi-k2.6").length, 1);
+});
+
+test("modelIdsFromResponse normalizes provider model payloads", () => {
+  assert.deepEqual(modelIdsFromResponse([{ id: "a" }, { name: "b" }, "c"]), ["a", "b", "c"]);
+  assert.deepEqual(modelIdsFromResponse({ "model-a": {}, "model-b": {} }), ["model-a", "model-b"]);
 });
