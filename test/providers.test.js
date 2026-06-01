@@ -53,6 +53,15 @@ test("providerModelList migrates old kimi moonshot config to coding plan default
   assert.deepEqual(models, ["kimi-for-coding"]);
 });
 
+test("providerModelList filters stale Kimi API models from Kimi Code configs", () => {
+  const models = providerModelList({
+    activeProvider: "kimi",
+    activeModel: "kimi-for-coding",
+    providers: { kimi: { baseUrl: "https://api.kimi.com/coding/v1", model: "kimi-for-coding", models: ["kimi-for-coding", "kimi-k2.6"] } }
+  }, "kimi");
+  assert.deepEqual(models, ["kimi-for-coding"]);
+});
+
 test("modelIdsFromResponse normalizes provider model payloads", () => {
   assert.deepEqual(modelIdsFromResponse([{ id: "a" }, { name: "b" }, "c"]), ["a", "b", "c"]);
   assert.deepEqual(modelIdsFromResponse({ "model-a": {}, "model-b": {} }), ["model-a", "model-b"]);

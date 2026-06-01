@@ -205,10 +205,9 @@ function uniqueModels(models) {
 
 function normalizeSavedProvider(name, saved) {
   if (name !== "kimi") return saved;
-  if (!isOldKimiMoonshotConfig(saved)) return saved;
   return {
     ...saved,
-    baseUrl: "",
+    baseUrl: isOldKimiMoonshotConfig(saved) ? "" : saved.baseUrl,
     model: saved.model === "kimi-for-coding" ? saved.model : "",
     models: (saved.models || []).filter((model) => model === "kimi-for-coding")
   };
