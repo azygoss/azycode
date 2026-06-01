@@ -354,7 +354,7 @@ async function handleCommand(line, state, rl = null) {
     return;
   }
   if (command === "review") {
-    console.log(formatLocalReview(localReview(state.cwd)));
+    printReview(state);
     return;
   }
   if (command === "dashboard") {
@@ -542,6 +542,15 @@ function printDashboard(state) {
     ["messages", state.conversation.length]
   ]);
   console.log("");
+}
+
+function printReview(state) {
+  const review = localReview(state.cwd);
+  console.log(formatLocalReview(review));
+  const actionable = review.findings.filter((item) => item.severity !== "info");
+  if (!actionable.length) {
+    console.log(style(`review: clean (${review.files.length} files, +${review.stats.added} -${review.stats.removed})`, "green"));
+  }
 }
 
 function printStatus(state) {

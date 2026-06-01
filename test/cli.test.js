@@ -194,6 +194,13 @@ test("tui can inspect sessions tools goals and missions", async () => {
   assert.match(stdout, /Missions[\s\S]*mis_test\s+done\s+release/);
 });
 
+test("tui review prints a clean summary when there are no actionable findings", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/review\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Local Review/);
+  assert.match(stdout, /review: clean/);
+});
+
 test("tui can show a session transcript", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
