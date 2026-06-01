@@ -82,6 +82,13 @@ Messages in one terminal workspace share conversation and tool context. Use `/co
 
 Use `/login` inside the terminal workspace to choose a provider from the picker and enter its API key. Preset endpoint and model details are filled automatically; BYOK additionally asks for its custom URL and model. Use `/provider` and `/model` without arguments to switch configured providers and saved models from a picker.
 
+Useful inspection commands inside the terminal workspace:
+
+- `/health`, `/status`, and `/doctor` show provider connectivity, active runtime state, and local binary/config paths.
+- `/context show` previews the bounded repository context before sending it to a model.
+- `/session <id>` and `/mission report <id>` show saved transcripts and mission state.
+- `/goal create <text>`, `/goal status [id]`, and `/goal stop <id>` manage local goal records without leaving the TUI.
+
 Use `azycode doctor` to confirm which binary you are running while developing. If another global `azycode` exists on `PATH`, run this project directly with `node ./bin/azycode.js ...` or use `npm link` from this directory.
 
 `azycode dashboard` is the fastest local overview. It does not call provider APIs; it shows mode, model, guard state, local state counts, and tool-policy totals.
