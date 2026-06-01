@@ -4,7 +4,7 @@ import { emitKeypressEvents } from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
-import { loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -221,6 +221,7 @@ async function handleCommand(line, state, rl = null) {
     if (!PROFILES.includes(next)) console.log(`profile: ${PROFILES.join(", ")}`);
     else {
       state.cfg.permissionProfile = next;
+      applyPermissionProfile(state.cfg);
       saveConfig(state.cfg);
       console.log(`profile: ${next}`);
     }

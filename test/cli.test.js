@@ -144,6 +144,8 @@ test("default command launches the interactive tui", async () => {
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeModel, "mock-next");
   assert.equal(cfg.permissionProfile, "read-only");
+  assert.equal(cfg.toolPolicy.shell, "deny");
+  assert.equal(cfg.toolPolicy.write_file, "deny");
 });
 
 test("tui can inspect sessions tools goals and missions", async () => {
