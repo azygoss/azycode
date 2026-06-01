@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyShortcut, trimConversation } from "../src/tui.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { applyShortcut, loginProvider, trimConversation } from "../src/tui.js";
 
 test("trimConversation starts retained context at a user boundary", () => {
   const messages = [
@@ -30,4 +33,19 @@ test("applyShortcut rotates reasoning and mode without persistence when requeste
   assert.equal(state.cfg.reasoning, "high");
   assert.equal(state.mode, "always-approve");
   assert.deepEqual(events, ["reasoning: high", "mode: always-approve"]);
+});
+
+test("loginProvider selects a preset and stores only the entered key", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  process.env.AZYCODE_HOME = home;
+  const answers = ["2", "sk-kimi"];
+  const state = { cfg: { providers: {} } };
+  await loginProvider(state, { question: async () => answers.shift() });
+  assert.equal(state.cfg.activeProvider, "kimi");
+  assert.equal(state.cfg.activeModel, "kimi-k2.6");
+  assert.deepEqual(state.cfg.providers.kimi, {
+    baseUrl: "https://api.moonshot.ai/v1",
+    model: "kimi-k2.6",
+    apiKey: "sk-kimi"
+  });
 });

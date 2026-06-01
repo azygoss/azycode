@@ -3,6 +3,7 @@ import path from "node:path";
 import { emitKeypressEvents } from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
@@ -68,9 +69,10 @@ function printWelcome(state) {
   const repo = path.basename(state.cwd);
   const provider = state.cfg.activeProvider || "no provider";
   const model = state.cfg.activeModel || "no model";
-  console.log(style("azycode", "bold"));
-  console.log(style(`${repo}  |  ${provider}/${model}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}`, "dim"));
-  console.log(style("Type a task or /help. Tab: reasoning. Shift+Tab: mode. Ctrl+C: exit.", "dim"));
+  console.log(style("┌─ azycode ─────────────────────────────────────────────────────", "cyan"));
+  console.log(`${style("│", "cyan")} ${style(repo, "bold")}  ${style("•", "dim")}  ${provider}/${model}`);
+  console.log(`${style("│", "cyan")} ${state.mode}  ${style("•", "dim")}  reasoning ${state.cfg.reasoning}  ${style("•", "dim")}  profile ${state.cfg.permissionProfile || "normal"}`);
+  console.log(style("└─ type a task  /help commands  Tab reasoning  Shift+Tab mode ─", "cyan"));
   console.log("");
 }
 
@@ -289,8 +291,7 @@ async function handleCommand(line, state, rl = null) {
     return;
   }
   if (command === "login") {
-    console.log("Configure a provider in another terminal, then restart this workspace:");
-    console.log("  azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>");
+    await loginProvider(state, rl);
     return;
   }
   if (command === "status") {
@@ -325,7 +326,7 @@ function printHelp() {
   console.log("  /agent <name|off>       select a subagent for this conversation");
   console.log("  /new                    start a fresh conversation");
   console.log("  /compact                keep only recent conversation context");
-  console.log("  /login                  show provider setup command");
+  console.log("  /login                  choose a provider and enter its API key");
   console.log("  /clear                  clear the terminal");
   console.log("  /exit                   leave azycode");
   console.log("");
@@ -425,6 +426,57 @@ function printProviders(state) {
     return `${active} ${name}  ${configured ? "configured" : "not configured"}  ${state.cfg.providers?.[name]?.model || preset.defaultModel || ""}`;
   });
   printRows("Providers", rows);
+}
+
+export async function loginProvider(state, rl) {
+  if (!rl) {
+    console.log("Interactive login requires a terminal. Run: azycode login <provider>");
+    return;
+  }
+  const names = providerNames();
+  console.log("");
+  console.log(style("Connect provider", "cyan"));
+  for (const [index, name] of names.entries()) {
+    console.log(`  ${index + 1}. ${name.padEnd(12)} ${providerPreset(name).label}`);
+  }
+  const rawChoice = (await rl.question("Choose provider: ")).trim();
+  const name = names[Number(rawChoice) - 1] || (names.includes(rawChoice) ? rawChoice : null);
+  if (!name) {
+    console.log("login: cancelled");
+    return;
+  }
+  const preset = providerPreset(name);
+  const apiKey = (await readSecret(`${name} API key: `, rl)).trim();
+  if (!apiKey) {
+    console.log("login: API key is required");
+    return;
+  }
+  let baseUrl = preset.baseUrl;
+  let model = preset.defaultModel;
+  if (name === "byok") {
+    baseUrl = (await rl.question("Base URL: ")).trim();
+    model = (await rl.question("Default model: ")).trim();
+    if (!baseUrl || !model) {
+      console.log("login: BYOK requires base URL and model");
+      return;
+    }
+  }
+  state.cfg.providers[name] = { baseUrl, model, apiKey };
+  state.cfg.activeProvider = name;
+  state.cfg.activeModel = model;
+  saveConfig(state.cfg);
+  console.log(`connected: ${name}/${model}`);
+}
+
+async function readSecret(label, rl) {
+  if (!input.isTTY) return rl.question(label);
+  try {
+    execFileSync("stty", ["-echo"], { stdio: ["inherit", "ignore", "ignore"] });
+    return await rl.question(label);
+  } finally {
+    execFileSync("stty", ["echo"], { stdio: ["inherit", "ignore", "ignore"] });
+    output.write("\n");
+  }
 }
 
 function printRows(label, rows) {
