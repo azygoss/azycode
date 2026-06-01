@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, azyHome, loadConfig, loadState, maskSecret, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, configPath, loadConfig, loadState, maskSecret, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -23,7 +23,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "session", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "credentials", "keys", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
+  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
@@ -371,6 +371,10 @@ async function handleCommand(line, state, rl = null) {
     printDashboard(state);
     return;
   }
+  if (command === "workspace") {
+    printWorkspace(state);
+    return;
+  }
   if (command === "sessions") {
     printSessions();
     return;
@@ -469,6 +473,7 @@ function printHelp() {
   console.log("  /progress               toggle inline model/tool activity");
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
+  console.log("  /workspace              show cwd, config, git, and guard state");
   console.log("  /sessions               show recent agent sessions");
   console.log("  /session <id> [json]    show a saved session transcript");
   console.log("  /tools                  show recent tool activity");
@@ -509,6 +514,7 @@ function printCommandPalette(state) {
     ["/memory", "manage notes"],
     ["/review", "local review"],
     ["/dashboard", "local overview"],
+    ["/workspace", "cwd, config, git, guard"],
     ["/session", "show session transcript"],
     ["/clear", "redraw screen"],
     ["/exit", "leave azycode"]
@@ -558,12 +564,42 @@ function printDashboard(state) {
   console.log("");
 }
 
+function printWorkspace(state) {
+  const guard = gitGuard(state.cwd, state.cfg);
+  const git = gitSummary(state.cwd);
+  console.log("");
+  console.log(style("Workspace", "cyan"));
+  printKeyValues([
+    ["cwd", state.cwd],
+    ["config", configPath()],
+    ["home", azyHome()],
+    ["branch", git.branch],
+    ["dirty", git.dirty],
+    ["guard", guard.ok ? "ok" : "blocked"],
+    ["provider", state.cfg.activeProvider || "none"],
+    ["model", state.cfg.activeModel || "none"],
+    ["profile", state.cfg.permissionProfile || "normal"]
+  ]);
+  if (!guard.ok) console.log(style(`guard: ${guard.reason}`, "yellow"));
+  console.log("");
+}
+
 function printReview(state) {
   const review = localReview(state.cwd);
   console.log(formatLocalReview(review));
   const actionable = review.findings.filter((item) => item.severity !== "info");
   if (!actionable.length) {
     console.log(style(`review: clean (${review.files.length} files, +${review.stats.added} -${review.stats.removed})`, "green"));
+  }
+}
+
+function gitSummary(cwd) {
+  try {
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8" }).trim() || "detached";
+    const dirty = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim() ? "yes" : "no";
+    return { branch, dirty };
+  } catch {
+    return { branch: "unknown", dirty: "unknown" };
   }
 }
 
