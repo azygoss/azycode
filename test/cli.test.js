@@ -219,6 +219,17 @@ test("tui sends follow-up messages with conversation context", async () => {
   }
 });
 
+test("tui can manage persistent memory notes", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const added = await runWithInput([], "/memory add keep patches small\n/memory patches\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(added, /memory: added mem_/);
+  assert.match(added, /Memory[\s\S]*keep patches small/);
+  const memory = JSON.parse(fs.readFileSync(path.join(home, "memory.json"), "utf8"));
+  const removed = await runWithInput([], `/memory remove ${memory.notes[0].id}\n/memory\n/exit\n`, { AZYCODE_HOME: home });
+  assert.match(removed, /memory: removed/);
+  assert.match(removed, /Memory\s+\(none\)/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

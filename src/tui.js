@@ -9,6 +9,7 @@ import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
 import { providerNames, providerPreset } from "./providers.js";
+import { addMemory, removeMemory, searchMemory } from "./memory.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -258,6 +259,10 @@ async function handleCommand(line, state) {
     printMissions();
     return;
   }
+  if (command === "memory") {
+    handleMemory(args);
+    return;
+  }
   if (command === "agents") {
     printAgents(state);
     return;
@@ -308,6 +313,7 @@ function printHelp() {
   console.log("  /tools                  show recent tool activity");
   console.log("  /goals                  show saved goals");
   console.log("  /missions               show saved missions");
+  console.log("  /memory [add|remove]    manage persistent notes");
   console.log("  /agents                 show available subagents");
   console.log("  /agent <name|off>       select a subagent for this conversation");
   console.log("  /new                    start a fresh conversation");
@@ -356,6 +362,25 @@ function printGoals() {
 function printMissions() {
   const missions = Object.entries(loadState().missions || {}).slice(-10).reverse();
   printRows("Missions", missions.map(([id, item]) => `${id}  ${item.status || ""}  ${item.name || ""}`));
+}
+
+function handleMemory(args) {
+  const action = args[0] || "list";
+  if (action === "add") {
+    const text = args.slice(1).join(" ").trim();
+    if (!text) console.log("Usage: /memory add <note>");
+    else console.log(`memory: added ${addMemory(text).id}`);
+    return;
+  }
+  if (action === "remove") {
+    const id = args[1];
+    if (!id) console.log("Usage: /memory remove <id>");
+    else console.log(removeMemory(id) ? "memory: removed" : "memory: not found");
+    return;
+  }
+  const query = args.join(" ");
+  const notes = searchMemory(query);
+  printRows("Memory", notes.map((note) => `${note.id}  ${note.text}`));
 }
 
 function printAgents(state) {
