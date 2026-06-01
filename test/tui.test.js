@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { trimConversation } from "../src/tui.js";
+import { applyShortcut, trimConversation } from "../src/tui.js";
 
 test("trimConversation starts retained context at a user boundary", () => {
   const messages = [
@@ -19,4 +19,15 @@ test("trimConversation starts retained context at a user boundary", () => {
 test("trimConversation leaves short conversations untouched", () => {
   const messages = [{ role: "user", content: "hello" }];
   assert.equal(trimConversation(messages), messages);
+});
+
+test("applyShortcut rotates reasoning and mode without persistence when requested", () => {
+  const state = { mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+  const events = [];
+  const options = { persist: false, notify: (message) => events.push(message) };
+  applyShortcut({ name: "tab" }, state, options);
+  applyShortcut({ name: "tab", shift: true }, state, options);
+  assert.equal(state.cfg.reasoning, "high");
+  assert.equal(state.mode, "always-approve");
+  assert.deepEqual(events, ["reasoning: high", "mode: always-approve"]);
 });

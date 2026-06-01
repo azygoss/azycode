@@ -17,10 +17,10 @@ export function systemForMode(mode) {
   return `${base}\n${modes[mode] || modes.plan}`;
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [] }) {
+export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null }) {
   const client = new LlmClient(cfg);
   const effectiveCfg = mode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
-  const tools = createTools({ cwd, cfg: effectiveCfg });
+  const tools = createTools({ cwd, cfg: effectiveCfg, confirmTool });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const messages = [
     { role: "system", content: [subagent?.system || systemForMode(mode), loadProjectRules(cwd), loadRelevantMemory(prompt), includeContext ? loadContextPack(cwd) : ""].filter(Boolean).join("\n\n") },

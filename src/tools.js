@@ -8,7 +8,7 @@ import { gitGuard } from "./guard.js";
 
 const execFileAsync = promisify(execFile);
 
-export function createTools({ cwd = process.cwd(), cfg }) {
+export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
   const root = path.resolve(cwd);
   const policy = cfg.toolPolicy || {};
   const tools = [
@@ -114,7 +114,7 @@ export function createTools({ cwd = process.cwd(), cfg }) {
   return tools.map((entry) => ({
     ...entry,
     run: async (args) => {
-      if (!(await approved(entry.name, args, policy, cfg))) {
+      if (!(await approved(entry.name, args, policy, cfg, confirmTool))) {
         return "Tool call rejected by user.";
       }
       return entry.run(args);
@@ -139,12 +139,13 @@ function tool(name, description, parameters, run) {
   };
 }
 
-async function approved(name, args, policy, cfg) {
+async function approved(name, args, policy, cfg, confirmTool) {
   if (cfg.alwaysApprove) return true;
   const rule = policy[name] || "ask";
   if (rule === "auto") return true;
   if (rule === "deny") return false;
-  return confirm(`Approve tool ${name} ${JSON.stringify(args).slice(0, 180)}`);
+  const question = `Approve tool ${name} ${JSON.stringify(args).slice(0, 180)}`;
+  return confirmTool ? confirmTool(question) : confirm(question);
 }
 
 function safePath(root, requested) {

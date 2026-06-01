@@ -44,22 +44,15 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
   const onKeypress = (_, key) => applyShortcut(key, state, { rl });
   input.on("keypress", onKeypress);
   try {
-    rl.setPrompt(promptLabel(state));
-    rl.prompt();
-    for await (const raw of rl) {
-      const line = raw.trim();
-      if (!line) {
-        rl.prompt();
-        continue;
-      }
+    while (true) {
+      const line = (await rl.question(promptLabel(state))).trim();
+      if (!line) continue;
       if (line.startsWith("/")) {
         const done = await handleCommand(line, state);
         if (done === "exit") break;
       } else {
-        await askAgent(line, state);
+        await askAgent(line, state, rl);
       }
-      rl.setPrompt(promptLabel(state));
-      rl.prompt();
     }
   } finally {
     input.off("keypress", onKeypress);
@@ -101,7 +94,7 @@ function redrawPrompt(rl, state, message) {
   output.write(`\n${message}\n${promptLabel(state)}${rl.line || ""}`);
 }
 
-async function askAgent(prompt, state) {
+async function askAgent(prompt, state, rl = null) {
   if (!state.cfg.activeProvider) {
     console.log(style("No provider configured. Run `azycode login <provider>` in another terminal, then restart.", "yellow"));
     console.log("");
@@ -117,7 +110,8 @@ async function askAgent(prompt, state) {
       includeContext: state.includeContext,
       onEvent: state.progress ? progressLine : null,
       conversation: state.conversation,
-      returnSession: true
+      returnSession: true,
+      confirmTool: rl ? (question) => confirmInTui(rl, question) : null
     });
     state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
     console.log("");
@@ -128,6 +122,11 @@ async function askAgent(prompt, state) {
     console.log(style(`error: ${error.message}`, "red"));
     console.log("");
   }
+}
+
+async function confirmInTui(rl, question) {
+  const answer = (await rl.question(`${question} [y/n] (n): `)).trim().toLowerCase();
+  return answer === "y" || answer === "yes" || answer === "evet" || answer === "e";
 }
 
 function progressLine(event) {

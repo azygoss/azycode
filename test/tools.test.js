@@ -49,3 +49,20 @@ test("alwaysApprove does not bypass git guard", async () => {
   const writeFile = tools.find((tool) => tool.name === "write_file");
   await assert.rejects(() => writeFile.run({ file: "x.txt", content: "x" }), /blocked/);
 });
+
+test("ask policy can use a TUI confirmation callback", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  const questions = [];
+  const tools = createTools({
+    cwd: dir,
+    cfg: { alwaysApprove: false, toolPolicy: { read_file: "ask" } },
+    confirmTool: async (question) => {
+      questions.push(question);
+      return true;
+    }
+  });
+  fs.writeFileSync(path.join(dir, "hello.txt"), "hello\n", "utf8");
+  const readFile = tools.find((tool) => tool.name === "read_file");
+  assert.equal(await readFile.run({ file: "hello.txt" }), "hello\n");
+  assert.match(questions[0], /Approve tool read_file/);
+});
