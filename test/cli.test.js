@@ -146,6 +146,22 @@ test("default command launches the interactive tui", async () => {
   assert.equal(cfg.permissionProfile, "read-only");
 });
 
+test("tui can inspect sessions tools goals and missions", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: { ses_test: { mode: "goal", prompt: "ship it" } },
+    toolRuns: [{ name: "read_file", ok: true, durationMs: 3, sessionId: "ses_test" }],
+    goals: { goal_test: { status: "running", text: "ship it" } },
+    missions: { mis_test: { status: "done", name: "release" } }
+  }));
+  const stdout = await runWithInput([], "/sessions\n/tools\n/goals\n/missions\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Sessions[\s\S]*ses_test\s+goal\s+ship it/);
+  assert.match(stdout, /Tool runs[\s\S]*read_file\s+ok\s+3ms\s+ses_test/);
+  assert.match(stdout, /Goals[\s\S]*goal_test\s+running\s+ship it/);
+  assert.match(stdout, /Missions[\s\S]*mis_test\s+done\s+release/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

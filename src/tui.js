@@ -220,6 +220,22 @@ async function handleCommand(line, state) {
     printDashboard(state);
     return;
   }
+  if (command === "sessions") {
+    printSessions();
+    return;
+  }
+  if (command === "tools") {
+    printToolRuns();
+    return;
+  }
+  if (command === "goals") {
+    printGoals();
+    return;
+  }
+  if (command === "missions") {
+    printMissions();
+    return;
+  }
   if (command === "login") {
     console.log("Configure a provider in another terminal, then restart this workspace:");
     console.log("  azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>");
@@ -245,6 +261,10 @@ function printHelp() {
   console.log("  /progress               toggle inline model/tool activity");
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
+  console.log("  /sessions               show recent agent sessions");
+  console.log("  /tools                  show recent tool activity");
+  console.log("  /goals                  show saved goals");
+  console.log("  /missions               show saved missions");
   console.log("  /new                    start a fresh conversation");
   console.log("  /compact                keep only recent conversation context");
   console.log("  /login                  show provider setup command");
@@ -269,5 +289,33 @@ function printDashboard(state) {
   console.log(`  missions    ${Object.keys(saved.missions || {}).length}`);
   console.log(`  tool runs   ${(saved.toolRuns || []).length}`);
   console.log(`  messages    ${state.conversation.length}`);
+  console.log("");
+}
+
+function printSessions() {
+  const sessions = Object.entries(loadState().sessions || {}).slice(-10).reverse();
+  printRows("Sessions", sessions.map(([id, item]) => `${id}  ${item.mode || ""}  ${String(item.prompt || "").slice(0, 70)}`));
+}
+
+function printToolRuns() {
+  const runs = (loadState().toolRuns || []).slice(-10).reverse();
+  printRows("Tool runs", runs.map((run) => `${run.name}  ${run.ok ? "ok" : "failed"}  ${run.durationMs}ms  ${run.sessionId}`));
+}
+
+function printGoals() {
+  const goals = Object.entries(loadState().goals || {}).slice(-10).reverse();
+  printRows("Goals", goals.map(([id, item]) => `${id}  ${item.status || ""}  ${item.text || ""}`));
+}
+
+function printMissions() {
+  const missions = Object.entries(loadState().missions || {}).slice(-10).reverse();
+  printRows("Missions", missions.map(([id, item]) => `${id}  ${item.status || ""}  ${item.name || ""}`));
+}
+
+function printRows(label, rows) {
+  console.log("");
+  console.log(style(label, "cyan"));
+  if (!rows.length) console.log("  (none)");
+  else for (const row of rows) console.log(`  ${row}`);
   console.log("");
 }
