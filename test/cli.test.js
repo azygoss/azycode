@@ -326,11 +326,11 @@ test("tui can list and switch configured providers", async () => {
   const stdout = await runWithInput([], "/providers\n/provider kimi\n/status\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /Providers[\s\S]*byok\s+configured\s+\d+ models\s+local/);
   assert.match(stdout, /Use \/model to choose provider and model together/);
-  assert.match(stdout, /provider: kimi\/kimi-test/);
-  assert.match(stdout, /kimi\/kimi-test/);
+  assert.match(stdout, /provider: kimi\/kimi-for-coding/);
+  assert.match(stdout, /kimi\/kimi-for-coding/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeProvider, "kimi");
-  assert.equal(cfg.activeModel, "kimi-test");
+  assert.equal(cfg.activeModel, "kimi-for-coding");
 });
 
 test("tui can inspect and update tool policy", async () => {

@@ -314,6 +314,7 @@ async function handleCommand(line, state, rl = null) {
     } else if (!state.cfg.providers?.[name]) {
       console.log(`Provider '${name}' is not configured. Run: azycode login ${name}`);
     } else {
+      state.cfg.providers[name] = withProviderModels(state.cfg, name, state.cfg.providers[name]);
       state.cfg.activeProvider = name;
       state.cfg.activeModel = state.cfg.providers[name].model;
       saveConfig(state.cfg);
