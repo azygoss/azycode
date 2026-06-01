@@ -75,7 +75,7 @@ azycode subagent list
 azycode subagent add security-reviewer
 ```
 
-Run `azycode` without arguments to open the interactive terminal workspace. Type `/` to show the command palette, type a task directly, or use slash commands such as `/status`, `/dashboard`, `/sessions`, `/tools`, `/policy`, `/goals`, `/missions`, `/mission`, `/memory`, `/agents`, `/agent`, `/providers`, `/provider`, `/login`, `/new`, `/compact`, `/mode`, `/reasoning`, `/model`, `/models`, `/profile`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
+Run `azycode` without arguments to open the interactive terminal workspace. Type `/` to show the command palette, type a task directly, or use slash commands such as `/status`, `/health`, `/doctor`, `/dashboard`, `/sessions`, `/session`, `/tools`, `/policy`, `/goals`, `/goal`, `/missions`, `/mission`, `/memory`, `/agents`, `/agent`, `/providers`, `/provider`, `/login`, `/new`, `/compact`, `/mode`, `/reasoning`, `/model`, `/models`, `/profile`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
 
 Inside the terminal workspace, `Tab` rotates reasoning effort and `Shift+Tab` rotates mode. The prompt always shows the active mode and reasoning level.
 Messages in one terminal workspace share conversation and tool context. Use `/compact` to retain only recent context or `/new` when you want a clean conversation. Long conversations are trimmed automatically at user-message boundaries.
