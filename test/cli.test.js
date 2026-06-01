@@ -360,6 +360,25 @@ test("tui can preview mission files", async () => {
   assert.match(stdout, /inspect repository/);
 });
 
+test("tui can report saved mission state", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    missions: {
+      mis_test: {
+        name: "release",
+        status: "done",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:01:00.000Z",
+        steps: [{ index: 1, status: "done", prompt: "ship" }]
+      }
+    }
+  }));
+  const stdout = await runWithInput([], "/mission report mis_test\n/mission status nope\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Mission mis_test[\s\S]*name: release[\s\S]*1\. done ship/);
+  assert.match(stdout, /mission: no mission nope/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

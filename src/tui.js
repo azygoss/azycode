@@ -191,7 +191,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "models") return ["sync"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
   if (command === "tool" && fixedArgs.length === 1) return TOOL_POLICY_MODES;
-  if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run"];
+  if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run", "report", "status"];
   return [];
 }
 
@@ -797,8 +797,22 @@ function handleMemory(args) {
 
 async function handleMission(args, state, rl) {
   const [action, file] = args;
+  if (action === "report" || action === "status") {
+    const id = file;
+    if (!id) {
+      console.log(`Usage: /mission ${action} <id>`);
+      return;
+    }
+    const mission = loadState().missions?.[id];
+    if (!mission) {
+      console.log(`mission: no mission ${id}`);
+      return;
+    }
+    console.log(formatMissionReport(id, mission));
+    return;
+  }
   if (!["dry-run", "run"].includes(action) || !file) {
-    console.log("Usage: /mission <dry-run|run> <file>");
+    console.log("Usage: /mission <dry-run|run|report|status> <file|id>");
     return;
   }
   if (action === "dry-run") {
@@ -815,6 +829,23 @@ async function handleMission(args, state, rl) {
   });
   console.log(`mission: ${result.missionId} completed`);
   for (const step of result.outputs) console.log(`\nstep ${step.index}\n${step.output}`);
+}
+
+function formatMissionReport(id, mission) {
+  const lines = [
+    "",
+    style(`Mission ${id}`, "cyan"),
+    `name: ${mission.name || ""}`,
+    `status: ${mission.status || ""}`,
+    `startedAt: ${mission.startedAt || ""}`,
+    `finishedAt: ${mission.finishedAt || ""}`,
+    "steps:"
+  ];
+  for (const step of mission.steps || []) {
+    lines.push(`  ${step.index}. ${step.status || ""} ${step.prompt || ""}`.trimEnd());
+    if (step.error) lines.push(`     error: ${step.error}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function printAgents(state) {
