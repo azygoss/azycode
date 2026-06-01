@@ -20,7 +20,7 @@ const MAX_CONVERSATION_MESSAGES = 80;
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
-  "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
+  "session", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
   "model", "models", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
@@ -357,6 +357,10 @@ async function handleCommand(line, state, rl = null) {
     printSessions();
     return;
   }
+  if (command === "session") {
+    printSession(args);
+    return;
+  }
   if (command === "tools") {
     printToolRuns();
     return;
@@ -441,6 +445,7 @@ function printHelp() {
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
   console.log("  /sessions               show recent agent sessions");
+  console.log("  /session <id> [json]    show a saved session transcript");
   console.log("  /tools                  show recent tool activity");
   console.log("  /policy                 show current tool approval policy");
   console.log("  /tool <name> <mode>     set a tool to auto, ask, or deny");
@@ -476,6 +481,7 @@ function printCommandPalette(state) {
     ["/memory", "manage notes"],
     ["/review", "local review"],
     ["/dashboard", "local overview"],
+    ["/session", "show session transcript"],
     ["/clear", "redraw screen"],
     ["/exit", "leave azycode"]
   ];
@@ -581,6 +587,46 @@ function printKeyValues(rows) {
 function printSessions() {
   const sessions = Object.entries(loadState().sessions || {}).slice(-10).reverse();
   printRows("Sessions", sessions.map(([id, item]) => `${id}  ${item.mode || ""}  ${String(item.prompt || "").slice(0, 70)}`));
+}
+
+function printSession(args) {
+  const [id, format] = args;
+  const sessions = loadState().sessions || {};
+  if (!id) {
+    console.log("Usage: /session <id> [json]");
+    return;
+  }
+  const session = sessions[id];
+  if (!session) {
+    console.log(`session: no session ${id}`);
+    return;
+  }
+  console.log("");
+  console.log(style(`Session ${id}`, "cyan"));
+  if (format === "json") {
+    console.log(JSON.stringify(session, null, 2));
+  } else {
+    console.log(formatSessionTranscript(session));
+  }
+  console.log("");
+}
+
+function formatSessionTranscript(session) {
+  const lines = [];
+  for (const message of session.messages || []) {
+    if (message.role === "system") continue;
+    if (message.role === "assistant") {
+      lines.push(`${style("assistant", "cyan")}: ${message.content || ""}`);
+      for (const call of message.tool_calls || []) {
+        lines.push(`${style("tool call", "dim")}: ${call.function?.name} ${call.function?.arguments || "{}"}`);
+      }
+    } else if (message.role === "tool") {
+      lines.push(`${style(`tool ${message.name || ""}`.trim(), "dim")}: ${String(message.content || "").slice(0, 2000)}`);
+    } else {
+      lines.push(`${style(message.role || "message", "dim")}: ${message.content || ""}`);
+    }
+  }
+  return lines.join("\n") || "(empty transcript)";
 }
 
 function printToolRuns() {

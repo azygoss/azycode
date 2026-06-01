@@ -193,6 +193,26 @@ test("tui can inspect sessions tools goals and missions", async () => {
   assert.match(stdout, /Missions[\s\S]*mis_test\s+done\s+release/);
 });
 
+test("tui can show a session transcript", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: {
+      ses_test: {
+        mode: "goal",
+        prompt: "ship it",
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "world" }
+        ]
+      }
+    }
+  }));
+  const stdout = await runWithInput([], "/session ses_test\n/session ses_missing\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Session ses_test[\s\S]*user:\s+hello[\s\S]*assistant:\s+world/);
+  assert.match(stdout, /session: no session ses_missing/);
+});
+
 test("tui can list and select subagents", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const stdout = await runWithInput([], "/agents\n/agent planner\n/status\n/dashboard\n/agent off\n/exit\n", { AZYCODE_HOME: home });
