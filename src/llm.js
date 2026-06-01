@@ -68,6 +68,7 @@ export class LlmClient {
     const response = await fetch(url, {
       ...init,
       headers: {
+        ...(this.provider.headers || {}),
         authorization: `Bearer ${this.provider.apiKey}`,
         ...(init.headers || {})
       }

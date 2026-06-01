@@ -19,6 +19,7 @@ export function systemForMode(mode) {
 
 export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null }) {
   const client = new LlmClient(cfg);
+  const activeModel = subagent?.model || client.provider.model;
   const effectiveCfg = mode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
   const tools = createTools({ cwd, cfg: effectiveCfg, confirmTool });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -36,11 +37,11 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   };
 
   for (let step = 0; step < maxSteps; step += 1) {
-    emit({ type: "model_start", step: step + 1, model: subagent?.model || cfg.activeModel, mode });
+    emit({ type: "model_start", step: step + 1, model: activeModel, mode });
     const completion = await client.chat({
       messages,
       tools,
-      model: subagent?.model || cfg.activeModel,
+      model: activeModel,
       reasoning: subagent?.reasoning || cfg.reasoning
     });
     const message = assistantMessageFromCompletion(completion);

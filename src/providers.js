@@ -24,7 +24,20 @@ export const PROVIDERS = {
     quota: "OpenAI API usage and limits are account/project specific; check the OpenAI dashboard when no quota endpoint is exposed."
   },
   kimi: {
-    label: "Kimi / Moonshot",
+    label: "Kimi Code / Coding Plan",
+    protocol: "openai-chat",
+    baseUrl: "https://api.kimi.com/coding/v1",
+    modelsPath: "/models",
+    chatPath: "/chat/completions",
+    defaultModel: "kimi-for-coding",
+    models: ["kimi-for-coding"],
+    envKey: "KIMI_API_KEY",
+    headers: { "user-agent": "claude-code/0.1.0" },
+    note: "Kimi Code uses the coding-plan endpoint and quota, not the standard Moonshot API endpoint.",
+    quota: "Kimi Code shares quota with the Kimi membership plan; exact remaining usage is shown in Kimi Code/Kimi membership surfaces."
+  },
+  "kimi-api": {
+    label: "Kimi / Moonshot API",
     protocol: "openai-chat",
     baseUrl: "https://api.moonshot.ai/v1",
     modelsPath: "/models",
@@ -41,7 +54,7 @@ export const PROVIDERS = {
       "moonshot-v1-128k-vision-preview"
     ],
     envKey: "MOONSHOT_API_KEY",
-    quota: "Kimi/Moonshot quota is account specific; Azycode can verify connectivity through /models."
+    quota: "Kimi/Moonshot API quota is account specific; Azycode can verify connectivity through /models."
   },
   "zai-coding": {
     label: "Z.AI GLM Coding Plan",
@@ -133,21 +146,25 @@ export function normalizeBaseUrl(baseUrl) {
 
 export function providerModelList(cfg, name) {
   const preset = providerPreset(name);
-  const saved = cfg.providers?.[name] || {};
+  const rawSaved = cfg.providers?.[name] || {};
+  const saved = normalizeSavedProvider(name, rawSaved);
+  const includeActiveModel = !(name === "kimi" && isOldKimiMoonshotConfig(rawSaved));
   return uniqueModels([
     ...(saved.models || []),
     saved.model,
-    cfg.activeProvider === name ? cfg.activeModel : null,
+    includeActiveModel && cfg.activeProvider === name ? cfg.activeModel : null,
     ...(preset.models || []),
     preset.defaultModel
   ]);
 }
 
 export function withProviderModels(cfg, name, saved = cfg.providers?.[name] || {}) {
+  const normalized = normalizeSavedProvider(name, saved);
+  const includeActiveModel = !(name === "kimi" && isOldKimiMoonshotConfig(saved));
   return {
-    ...saved,
-    model: saved.model || cfg.activeModel || providerPreset(name).defaultModel,
-    models: providerModelList({ ...cfg, providers: { ...(cfg.providers || {}), [name]: saved } }, name)
+    ...normalized,
+    model: normalized.model || (includeActiveModel ? cfg.activeModel : null) || providerPreset(name).defaultModel,
+    models: providerModelList({ ...cfg, providers: { ...(cfg.providers || {}), [name]: normalized } }, name)
   };
 }
 
@@ -162,13 +179,15 @@ export function modelIdsFromResponse(result) {
 export function providerConfig(cfg, name = cfg.activeProvider) {
   if (!name) throw new Error("No active provider. Run 'azycode login <provider>'.");
   const preset = providerPreset(name);
-  const saved = cfg.providers?.[name] || {};
+  const rawSaved = cfg.providers?.[name] || {};
+  const saved = normalizeSavedProvider(name, rawSaved);
+  const includeActiveModel = !(name === "kimi" && isOldKimiMoonshotConfig(rawSaved));
   return {
     name,
     ...preset,
     ...saved,
     baseUrl: normalizeBaseUrl(saved.baseUrl || preset.baseUrl),
-    model: saved.model || cfg.activeModel || preset.defaultModel,
+    model: saved.model || (includeActiveModel ? cfg.activeModel : null) || preset.defaultModel,
     models: providerModelList(cfg, name),
     apiKey: saved.apiKey || process.env[preset.envKey]
   };
@@ -182,6 +201,21 @@ export function resolveProtocol(provider, model = provider.model) {
 
 function uniqueModels(models) {
   return [...new Set(models.filter(Boolean).map(String))];
+}
+
+function normalizeSavedProvider(name, saved) {
+  if (name !== "kimi") return saved;
+  if (!isOldKimiMoonshotConfig(saved)) return saved;
+  return {
+    ...saved,
+    baseUrl: "",
+    model: saved.model === "kimi-for-coding" ? saved.model : "",
+    models: (saved.models || []).filter((model) => model === "kimi-for-coding")
+  };
+}
+
+function isOldKimiMoonshotConfig(saved) {
+  return normalizeBaseUrl(saved.baseUrl) === "https://api.moonshot.ai/v1";
 }
 
 export function chatPathFor(provider, model = provider.model) {

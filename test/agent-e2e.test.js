@@ -180,6 +180,24 @@ test("runAgent reports invalid tool-call JSON back to the model instead of crash
   }
 });
 
+test("runAgent uses the provider-resolved model when activeModel is stale", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, calls, port } = await mockChatServer(() => ({
+    choices: [{ message: { role: "assistant", content: "ok" } }]
+  }));
+  try {
+    const cfg = cfgFor(port);
+    cfg.activeModel = "stale-model";
+    const output = await runAgent({ cfg, cwd, prompt: "hello" });
+    assert.equal(output, "ok");
+    assert.equal(calls[0].model, "mock-coder");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("runAgent can include a context pack in the system prompt", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));

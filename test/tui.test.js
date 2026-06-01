@@ -75,20 +75,11 @@ test("loginProvider selects a preset and stores only the entered key", async () 
   const state = { cfg: { providers: {} } };
   await loginProvider(state, { question: async () => answers.shift() });
   assert.equal(state.cfg.activeProvider, "kimi");
-  assert.equal(state.cfg.activeModel, "kimi-k2.6");
+  assert.equal(state.cfg.activeModel, "kimi-for-coding");
   assert.deepEqual(state.cfg.providers.kimi, {
-    baseUrl: "https://api.moonshot.ai/v1",
-    model: "kimi-k2.6",
-    models: [
-      "kimi-k2.6",
-      "kimi-k2.5",
-      "moonshot-v1-8k",
-      "moonshot-v1-32k",
-      "moonshot-v1-128k",
-      "moonshot-v1-8k-vision-preview",
-      "moonshot-v1-32k-vision-preview",
-      "moonshot-v1-128k-vision-preview"
-    ],
+    baseUrl: "https://api.kimi.com/coding/v1",
+    model: "kimi-for-coding",
+    models: ["kimi-for-coding"],
     apiKey: "sk-kimi"
   });
 });
@@ -96,7 +87,7 @@ test("loginProvider selects a preset and stores only the entered key", async () 
 test("loginProvider asks BYOK for endpoint and model", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
   process.env.AZYCODE_HOME = home;
-  const answers = ["6", "sk-local", "http://127.0.0.1:11434/v1", "local-coder"];
+  const answers = ["7", "sk-local", "http://127.0.0.1:11434/v1", "local-coder"];
   const state = { cfg: { providers: {} } };
   await loginProvider(state, { question: async () => answers.shift() });
   assert.equal(state.cfg.activeProvider, "byok");

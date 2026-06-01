@@ -53,7 +53,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
 
   const rl = readlinePromises.createInterface({ input, output, completer: (line) => completeTuiInput(line, state) });
   emitKeypressEvents(input, rl);
-  const onKeypress = (_, key) => applyShortcut(key, state, { rl });
+  const onKeypress = (_, key) => handleKeypress(key, state, rl);
   input.on("keypress", onKeypress);
   try {
     while (true) {
@@ -126,6 +126,21 @@ export function applyShortcut(key, state, options = {}) {
     if (persist) saveConfig(state.cfg);
     notify(`reasoning: ${state.cfg.reasoning}`);
   }
+}
+
+function handleKeypress(key, state, rl) {
+  applyShortcut(key, state, { rl });
+  if (key?.sequence !== "/") {
+    if (rl.line !== "/") state.commandPaletteShown = false;
+    return;
+  }
+  setTimeout(() => {
+    if (rl.line !== "/" || state.commandPaletteShown) return;
+    state.commandPaletteShown = true;
+    output.write("\n");
+    printCommandPalette(state);
+    redrawPrompt(rl, state);
+  }, 0);
 }
 
 function redrawPrompt(rl, state, message) {

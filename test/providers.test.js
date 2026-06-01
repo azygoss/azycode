@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerPreset, normalizeBaseUrl } from "../src/providers.js";
 
 test("provider presets include requested coding subscriptions", () => {
-  assert.equal(providerPreset("kimi").defaultModel, "kimi-k2.6");
+  assert.equal(providerPreset("kimi").defaultModel, "kimi-for-coding");
+  assert.equal(providerPreset("kimi").baseUrl, "https://api.kimi.com/coding/v1");
+  assert.equal(providerPreset("kimi-api").defaultModel, "kimi-k2.6");
   assert.equal(providerPreset("zai-coding").baseUrl, "https://api.z.ai/api/coding/paas/v4");
   assert.equal(providerPreset("minimax").defaultModel, "MiniMax-M2.7");
   assert.equal(providerPreset("opencode-go").baseUrl, "https://opencode.ai/zen/go/v1");
-  assert.deepEqual(providerPreset("kimi").models.slice(0, 2), ["kimi-k2.6", "kimi-k2.5"]);
+  assert.deepEqual(providerPreset("kimi").models, ["kimi-for-coding"]);
+  assert.deepEqual(providerPreset("kimi-api").models.slice(0, 2), ["kimi-k2.6", "kimi-k2.5"]);
   assert.ok(providerPreset("minimax").models.includes("MiniMax-M3"));
   assert.ok(providerPreset("opencode-go").models.includes("glm-5.1"));
   assert.ok(providerPreset("opencode-go").models.includes("qwen3.7-max"));
@@ -33,12 +36,21 @@ test("providerDiagnostics reports protocol and key source", () => {
 
 test("providerModelList merges saved and preset models without duplicates", () => {
   const models = providerModelList({
-    activeProvider: "kimi",
+    activeProvider: "kimi-api",
     activeModel: "custom-kimi",
-    providers: { kimi: { model: "kimi-k2.6", models: ["kimi-k2.5", "custom-kimi"] } }
-  }, "kimi");
+    providers: { "kimi-api": { model: "kimi-k2.6", models: ["kimi-k2.5", "custom-kimi"] } }
+  }, "kimi-api");
   assert.deepEqual(models.slice(0, 3), ["kimi-k2.5", "custom-kimi", "kimi-k2.6"]);
   assert.equal(models.filter((model) => model === "kimi-k2.6").length, 1);
+});
+
+test("providerModelList migrates old kimi moonshot config to coding plan defaults", () => {
+  const models = providerModelList({
+    activeProvider: "kimi",
+    activeModel: "kimi-k2.6",
+    providers: { kimi: { baseUrl: "https://api.moonshot.ai/v1", model: "kimi-k2.6", models: ["kimi-k2.6"] } }
+  }, "kimi");
+  assert.deepEqual(models, ["kimi-for-coding"]);
 });
 
 test("modelIdsFromResponse normalizes provider model payloads", () => {
