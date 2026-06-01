@@ -191,6 +191,34 @@ test("tui can list and switch configured providers", async () => {
   assert.equal(cfg.activeModel, "kimi-test");
 });
 
+test("tui sends follow-up messages with conversation context", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      requests.push(parsed);
+      const content = requests.length === 1 ? "first answer" : "second answer";
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    run(["login", "byok", "--base-url", `http://127.0.0.1:${port}/v1`, "--model", "mock", "--api-key", "sk-test"], { AZYCODE_HOME: home });
+    const stdout = await runWithInput([], "first question\nsecond question\n/exit\n", { AZYCODE_HOME: home });
+    assert.match(stdout, /assistant\s+first answer/);
+    assert.match(stdout, /assistant\s+second answer/);
+    assert.equal(requests.length, 2);
+    assert(requests[1].messages.some((message) => message.role === "assistant" && message.content === "first answer"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");
