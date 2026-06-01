@@ -172,6 +172,25 @@ test("tui can list and select subagents", async () => {
   assert.match(stdout, /agent: off/);
 });
 
+test("tui can list and switch configured providers", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "local",
+    providers: {
+      byok: { baseUrl: "http://127.0.0.1:9999/v1", model: "local", apiKey: "sk-local" },
+      kimi: { baseUrl: "https://api.moonshot.ai/v1", model: "kimi-test", apiKey: "sk-kimi" }
+    }
+  }));
+  const stdout = await runWithInput([], "/providers\n/provider kimi\n/status\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Providers[\s\S]*byok\s+configured\s+local/);
+  assert.match(stdout, /provider: kimi\/kimi-test/);
+  assert.match(stdout, /kimi\/kimi-test/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeProvider, "kimi");
+  assert.equal(cfg.activeModel, "kimi-test");
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

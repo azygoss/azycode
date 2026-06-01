@@ -8,6 +8,7 @@ import { loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMo
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
+import { providerNames, providerPreset } from "./providers.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -195,6 +196,24 @@ async function handleCommand(line, state) {
     }
     return;
   }
+  if (command === "providers") {
+    printProviders(state);
+    return;
+  }
+  if (command === "provider") {
+    const name = args[0];
+    if (!name) {
+      console.log(`provider: ${state.cfg.activeProvider || "none"}`);
+    } else if (!state.cfg.providers?.[name]) {
+      console.log(`Provider '${name}' is not configured. Run: azycode login ${name}`);
+    } else {
+      state.cfg.activeProvider = name;
+      state.cfg.activeModel = state.cfg.providers[name].model;
+      saveConfig(state.cfg);
+      console.log(`provider: ${name}/${state.cfg.activeModel}`);
+    }
+    return;
+  }
   if (command === "profile") {
     const next = args[0];
     if (!PROFILES.includes(next)) console.log(`profile: ${PROFILES.join(", ")}`);
@@ -278,6 +297,8 @@ function printHelp() {
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
   console.log("  /model <id>             show or change the active model");
+  console.log("  /providers              show available and configured providers");
+  console.log("  /provider <name>        switch to a configured provider");
   console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
   console.log("  /context                toggle bounded repository context");
   console.log("  /progress               toggle inline model/tool activity");
@@ -340,6 +361,16 @@ function printMissions() {
 function printAgents(state) {
   const agents = Object.entries(state.cfg.subagents || {});
   printRows("Subagents", agents.map(([name, item]) => `${name}  ${item.reasoning || "medium"}  ${item.model || "(active model)"}  ${item.description || ""}`));
+}
+
+function printProviders(state) {
+  const rows = providerNames().map((name) => {
+    const preset = providerPreset(name);
+    const configured = Boolean(state.cfg.providers?.[name]);
+    const active = state.cfg.activeProvider === name ? "*" : " ";
+    return `${active} ${name}  ${configured ? "configured" : "not configured"}  ${state.cfg.providers?.[name]?.model || preset.defaultModel || ""}`;
+  });
+  printRows("Providers", rows);
 }
 
 function printRows(label, rows) {
