@@ -37,6 +37,7 @@ API keys are stored in `~/.azycode/config.json` with file mode `0600`. You can o
 ```sh
 azycode status
 azycode dashboard
+azycode help mission
 azycode models
 azycode models use <model>
 azycode models inspect [model]

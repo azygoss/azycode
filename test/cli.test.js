@@ -205,6 +205,13 @@ test("help groups commands into a compact interface", () => {
   assert.match(out, /Diagnostics/);
 });
 
+test("topic help shows focused command usage", () => {
+  const out = run(["help", "mission"]);
+  assert.match(out, /azycode mission/);
+  assert.match(out, /mission dry-run/);
+  assert.match(out, /dependencies/);
+});
+
 test("status uses labeled output without configured providers", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const out = run(["status"], { AZYCODE_HOME: home });

@@ -29,7 +29,7 @@ const COMMANDS = [
 export async function main(argv) {
   const [cmd = "help", ...args] = argv;
   switch (cmd) {
-    case "help": return help();
+    case "help": return help(args);
     case "providers": return providers();
     case "init": return init();
     case "doctor": return doctor(args);
@@ -64,7 +64,9 @@ export async function main(argv) {
   }
 }
 
-function help() {
+function help(args = []) {
+  const topic = args[0];
+  if (topic) return commandHelp(topic);
   ui.title(`azycode ${VERSION}`);
   console.log("A lightweight AI coding harness for local repositories.");
 
@@ -113,6 +115,78 @@ function help() {
     "Tab rotates reasoning: minimal -> low -> medium -> high",
     "Ctrl+D submits the interactive prompt"
   ]);
+}
+
+function commandHelp(topic) {
+  const pages = {
+    run: {
+      summary: "Run the coding agent once against the current repository.",
+      usage: [
+        "azycode run \"task\"",
+        "azycode run --context --progress \"task\""
+      ],
+      notes: ["Use --context to include a bounded source snapshot.", "Use --progress to stream model/tool progress to stderr."]
+    },
+    chat: {
+      summary: "Start an interactive session with slash commands.",
+      usage: ["azycode chat", "azycode chat --context --progress"],
+      notes: ["/mode, /reasoning, /context, /progress, /review, /status, /exit"]
+    },
+    mission: {
+      summary: "Run multi-step project automation from JSON or a small YAML subset.",
+      usage: [
+        "azycode mission run ./mission.yml",
+        "azycode mission dry-run ./mission.yml",
+        "azycode mission report <id>"
+      ],
+      notes: ["Mission steps can target subagents and declare dependencies."]
+    },
+    subagent: {
+      summary: "Create and run focused agent profiles.",
+      usage: [
+        "azycode subagent list",
+        "azycode subagent add <name>",
+        "azycode subagent run <name> \"task\""
+      ],
+      notes: ["Built-ins: planner, reviewer, implementer."]
+    },
+    config: {
+      summary: "Inspect and change local Azycode configuration.",
+      usage: [
+        "azycode config set mode <plan|always-approve|goal|review>",
+        "azycode config set reasoning <minimal|low|medium|high>",
+        "azycode config set profile <normal|read-only|safe-write|full-auto>",
+        "azycode config export [file]"
+      ],
+      notes: ["Set AZYCODE_HOME to isolate credentials and state."]
+    },
+    login: {
+      summary: "Store provider credentials without hardcoding keys.",
+      usage: [
+        "azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>",
+        "azycode login byok --base-url http://127.0.0.1:11434/v1 --model local --api-key sk-local"
+      ],
+      notes: ["Keys are stored in ~/.azycode/config.json with 0600 permissions."]
+    },
+    review: {
+      summary: "Review local changes or ask the model for review.",
+      usage: ["azycode review --local", "azycode review \"review current changes\""],
+      notes: ["Local review is heuristic and does not call a provider."]
+    }
+  };
+  const page = pages[topic];
+  if (!page) {
+    console.log(`No help topic '${topic}'. Try: ${Object.keys(pages).join(", ")}`);
+    return;
+  }
+  ui.title(`azycode ${topic}`);
+  console.log(page.summary);
+  ui.section("Usage");
+  ui.list(page.usage);
+  if (page.notes?.length) {
+    ui.section("Notes");
+    ui.list(page.notes);
+  }
 }
 
 function init() {
