@@ -136,7 +136,7 @@ test("default command launches the interactive tui", async () => {
   assert.match(stdout, /azycode/);
   assert.match(stdout, /type a task\s+\/help commands\s+Tab reasoning\s+Shift\+Tab mode/);
   assert.match(stdout, /no provider\/no model/);
-  assert.match(stdout, /no provider\/mock-next\s+\|\s+goal\s+\|\s+reasoning high\s+\|\s+profile read-only/);
+  assert.match(stdout, /Status[\s\S]*provider\s+no provider[\s\S]*model\s+mock-next[\s\S]*mode\s+goal[\s\S]*reasoning\s+high[\s\S]*profile\s+read-only/);
   assert.match(stdout, /conversation: 0 -> 0 messages/);
   assert.match(stdout, /conversation: cleared/);
   assert.match(stdout, /Dashboard/);
@@ -169,7 +169,7 @@ test("tui can list and select subagents", async () => {
   const stdout = await runWithInput([], "/agents\n/agent planner\n/status\n/dashboard\n/agent off\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /Subagents[\s\S]*planner\s+high/);
   assert.match(stdout, /agent: @planner/);
-  assert.match(stdout, /agent planner/);
+  assert.match(stdout, /Status[\s\S]*agent\s+planner/);
   assert.match(stdout, /agent\s+planner/);
   assert.match(stdout, /agent: off/);
 });

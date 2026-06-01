@@ -7,9 +7,9 @@ import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
-import { formatGuard, gitGuard } from "./guard.js";
+import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
-import { providerNames, providerPreset } from "./providers.js";
+import { providerDiagnostics, providerNames, providerPreset } from "./providers.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
@@ -367,8 +367,7 @@ async function handleCommand(line, state, rl = null) {
     return;
   }
   if (command === "status") {
-    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  profile ${state.cfg.permissionProfile || "normal"}  |  agent ${state.subagent?.name || "off"}  |  context ${state.includeContext}`);
-    console.log(formatGuard(gitGuard(state.cwd, state.cfg)));
+    printStatus(state);
     return;
   }
   console.log(`Unknown command: /${command}. Use /help.`);
@@ -413,15 +412,83 @@ export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAG
 
 function printDashboard(state) {
   const saved = loadState();
+  const guard = gitGuard(state.cwd, state.cfg);
   console.log("");
   console.log(style("Dashboard", "cyan"));
-  console.log(`  sessions    ${Object.keys(saved.sessions || {}).length}`);
-  console.log(`  goals       ${Object.keys(saved.goals || {}).length}`);
-  console.log(`  missions    ${Object.keys(saved.missions || {}).length}`);
-  console.log(`  tool runs   ${(saved.toolRuns || []).length}`);
-  console.log(`  messages    ${state.conversation.length}`);
-  console.log(`  agent       ${state.subagent?.name || "off"}`);
+  printKeyValues([
+    ["workspace", path.basename(state.cwd)],
+    ["provider", state.cfg.activeProvider || "none"],
+    ["model", state.cfg.activeModel || "none"],
+    ["mode", state.mode],
+    ["reasoning", state.cfg.reasoning],
+    ["profile", state.cfg.permissionProfile || "normal"],
+    ["agent", state.subagent?.name || "off"],
+    ["context", state.includeContext ? "on" : "off"],
+    ["git guard", guard.ok ? `ok${guard.dirty ? " (dirty)" : ""}` : "blocked"]
+  ]);
   console.log("");
+  printKeyValues([
+    ["sessions", Object.keys(saved.sessions || {}).length],
+    ["goals", Object.keys(saved.goals || {}).length],
+    ["missions", Object.keys(saved.missions || {}).length],
+    ["tool runs", (saved.toolRuns || []).length],
+    ["messages", state.conversation.length]
+  ]);
+  console.log("");
+}
+
+function printStatus(state) {
+  console.log("");
+  console.log(style("Status", "cyan"));
+  printKeyValues([
+    ["workspace", path.basename(state.cwd)],
+    ["provider", state.cfg.activeProvider || "no provider"],
+    ["model", state.cfg.activeModel || "no model"],
+    ["mode", state.mode],
+    ["reasoning", state.cfg.reasoning],
+    ["profile", state.cfg.permissionProfile || "normal"],
+    ["agent", state.subagent?.name || "off"],
+    ["context", state.includeContext ? "on" : "off"],
+    ["progress", state.progress ? "on" : "off"]
+  ]);
+
+  if (state.cfg.activeProvider) {
+    try {
+      const provider = providerDiagnostics(state.cfg);
+      console.log("");
+      console.log(style("Provider", "cyan"));
+      printKeyValues([
+        ["endpoint", provider.baseUrl || "(custom)"],
+        ["protocol", provider.protocol],
+        ["chat path", provider.chatPath],
+        ["api key", provider.hasApiKey ? `configured (${provider.apiKeySource})` : `missing (${provider.apiKeySource})`]
+      ]);
+    } catch (error) {
+      console.log(style(`provider: ${error.message}`, "yellow"));
+    }
+  }
+
+  const guard = gitGuard(state.cwd, state.cfg);
+  console.log("");
+  console.log(style("Guard", "cyan"));
+  if (guard.ok) {
+    printKeyValues([
+      ["status", "ok"],
+      ["branch", guard.branch || "(none)"],
+      ["dirty", guard.dirty ? "yes" : "no"]
+    ]);
+    for (const warning of guard.warnings || []) console.log(`  ${style("warning", "yellow")} ${warning}`);
+  } else {
+    printKeyValues([["status", "blocked"], ["reason", guard.reason]]);
+  }
+  console.log("");
+}
+
+function printKeyValues(rows) {
+  const width = rows.reduce((max, [key]) => Math.max(max, String(key).length), 0);
+  for (const [key, value] of rows) {
+    console.log(`  ${style(String(key).padEnd(width), "dim")}  ${value ?? ""}`);
+  }
 }
 
 function printSessions() {
