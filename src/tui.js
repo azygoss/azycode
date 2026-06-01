@@ -9,6 +9,8 @@ import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
 
+const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
+
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
   const state = {
@@ -171,6 +173,29 @@ async function handleCommand(line, state) {
     }
     return;
   }
+  if (command === "model") {
+    const next = args.join(" ");
+    if (!next) console.log(`model: ${state.cfg.activeModel || "no model"}`);
+    else {
+      state.cfg.activeModel = next;
+      if (state.cfg.activeProvider && state.cfg.providers[state.cfg.activeProvider]) {
+        state.cfg.providers[state.cfg.activeProvider].model = next;
+      }
+      saveConfig(state.cfg);
+      console.log(`model: ${next}`);
+    }
+    return;
+  }
+  if (command === "profile") {
+    const next = args[0];
+    if (!PROFILES.includes(next)) console.log(`profile: ${PROFILES.join(", ")}`);
+    else {
+      state.cfg.permissionProfile = next;
+      saveConfig(state.cfg);
+      console.log(`profile: ${next}`);
+    }
+    return;
+  }
   if (command === "context") {
     state.includeContext = !state.includeContext;
     console.log(`context: ${state.includeContext}`);
@@ -195,7 +220,7 @@ async function handleCommand(line, state) {
     return;
   }
   if (command === "status") {
-    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  context ${state.includeContext}`);
+    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  profile ${state.cfg.permissionProfile || "normal"}  |  context ${state.includeContext}`);
     console.log(formatGuard(gitGuard(state.cwd, state.cfg)));
     return;
   }
@@ -208,6 +233,8 @@ function printHelp() {
   console.log("  /status                 show active model and git guard");
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
+  console.log("  /model <id>             show or change the active model");
+  console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
   console.log("  /context                toggle bounded repository context");
   console.log("  /progress               toggle inline model/tool activity");
   console.log("  /review                 inspect local git changes");
