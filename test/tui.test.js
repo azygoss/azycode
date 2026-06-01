@@ -63,6 +63,9 @@ test("completeTuiInput suggests slash commands and common arguments", () => {
   assert.deepEqual(completeTuiInput("/mode a", state), [["/mode always-approve"], "/mode a"]);
   assert.deepEqual(completeTuiInput("/provider ", state), [["/provider kimi"], "/provider "]);
   assert.deepEqual(completeTuiInput("/agent r", state), [["/agent reviewer"], "/agent r"]);
+  state.cfg.toolPolicy = { shell: "ask", read_file: "auto" };
+  assert.deepEqual(completeTuiInput("/tool s", state), [["/tool shell"], "/tool s"]);
+  assert.deepEqual(completeTuiInput("/tool shell a", state), [["/tool shell auto", "/tool shell ask"], "/tool shell a"]);
 });
 
 test("loginProvider selects a preset and stores only the entered key", async () => {

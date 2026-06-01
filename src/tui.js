@@ -17,9 +17,10 @@ const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
 const TUI_COMMANDS = [
   "help", "status", "dashboard", "sessions", "tools", "goals", "missions", "mission",
-  "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
+  "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
   "model", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
+const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
@@ -169,6 +170,8 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "agent") return ["off", ...Object.keys(state.cfg.subagents || {})];
   if (command === "help") return TUI_COMMANDS;
   if (command === "memory") return ["add", "remove", "list"];
+  if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
+  if (command === "tool" && fixedArgs.length === 1) return TOOL_POLICY_MODES;
   if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run"];
   return [];
 }
@@ -327,6 +330,14 @@ async function handleCommand(line, state, rl = null) {
     printToolRuns();
     return;
   }
+  if (command === "policy") {
+    printToolPolicy(state);
+    return;
+  }
+  if (command === "tool") {
+    handleToolPolicy(args, state);
+    return;
+  }
   if (command === "goals") {
     printGoals();
     return;
@@ -389,6 +400,8 @@ function printHelp() {
   console.log("  /dashboard              show local session and automation counts");
   console.log("  /sessions               show recent agent sessions");
   console.log("  /tools                  show recent tool activity");
+  console.log("  /policy                 show current tool approval policy");
+  console.log("  /tool <name> <mode>     set a tool to auto, ask, or deny");
   console.log("  /goals                  show saved goals");
   console.log("  /missions               show saved missions");
   console.log("  /mission <action>       dry-run or run a mission file");
@@ -499,6 +512,35 @@ function printSessions() {
 function printToolRuns() {
   const runs = (loadState().toolRuns || []).slice(-10).reverse();
   printRows("Tool runs", runs.map((run) => `${run.name}  ${run.ok ? "ok" : "failed"}  ${run.durationMs}ms  ${run.sessionId}`));
+}
+
+function printToolPolicy(state) {
+  const policy = state.cfg.toolPolicy || {};
+  const rows = Object.entries(policy)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, mode]) => `${name.padEnd(14)} ${mode}`);
+  printRows("Tool policy", rows);
+}
+
+function handleToolPolicy(args, state) {
+  const [tool, mode] = args;
+  const policy = state.cfg.toolPolicy || {};
+  if (!tool || !mode) {
+    console.log("Usage: /tool <name> <auto|ask|deny>");
+    printRows("Known tools", Object.keys(policy).sort());
+    return;
+  }
+  if (!Object.prototype.hasOwnProperty.call(policy, tool)) {
+    console.log(`tool: unknown '${tool}'. Use /policy.`);
+    return;
+  }
+  if (!TOOL_POLICY_MODES.includes(mode)) {
+    console.log(`tool mode: ${TOOL_POLICY_MODES.join(", ")}`);
+    return;
+  }
+  state.cfg.toolPolicy[tool] = mode;
+  saveConfig(state.cfg);
+  console.log(`tool: ${tool} -> ${mode}`);
 }
 
 function printGoals() {

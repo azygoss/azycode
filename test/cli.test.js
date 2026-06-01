@@ -193,6 +193,16 @@ test("tui can list and switch configured providers", async () => {
   assert.equal(cfg.activeModel, "kimi-test");
 });
 
+test("tui can inspect and update tool policy", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/policy\n/tool shell auto\n/policy\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Tool policy[\s\S]*shell\s+ask/);
+  assert.match(stdout, /tool: shell -> auto/);
+  assert.match(stdout, /Tool policy[\s\S]*shell\s+auto/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.toolPolicy.shell, "auto");
+});
+
 test("tui sends follow-up messages with conversation context", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const requests = [];
