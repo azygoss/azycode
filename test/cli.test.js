@@ -379,6 +379,19 @@ test("tui can report saved mission state", async () => {
   assert.match(stdout, /mission: no mission nope/);
 });
 
+test("tui can create inspect and stop goals", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const created = await runWithInput([], "/goal create ship cleaner tui\n/goals\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(created, /goal: goal_\d+ created/);
+  assert.match(created, /Goals[\s\S]*created\s+ship cleaner tui/);
+  const state = JSON.parse(fs.readFileSync(path.join(home, "state.json"), "utf8"));
+  const id = Object.keys(state.goals)[0];
+  const stopped = await runWithInput([], `/goal status ${id}\n/goal stop ${id}\n/goal status ${id}\n/exit\n`, { AZYCODE_HOME: home });
+  assert.match(stopped, new RegExp(`Goal ${id}[\\s\\S]*status\\s+created`));
+  assert.match(stopped, new RegExp(`goal: ${id} stopped`));
+  assert.match(stopped, new RegExp(`Goal ${id}[\\s\\S]*status\\s+stopped`));
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

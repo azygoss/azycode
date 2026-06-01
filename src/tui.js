@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, azyHome, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, loadConfig, loadState, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -187,6 +187,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "provider") return Object.keys(state.cfg.providers || {}).length ? Object.keys(state.cfg.providers) : providerNames();
   if (command === "agent") return ["off", ...Object.keys(state.cfg.subagents || {})];
   if (command === "help") return TUI_COMMANDS;
+  if (command === "goal") return ["create", "status", "stop"];
   if (command === "memory") return ["add", "remove", "list"];
   if (command === "models") return ["sync"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
@@ -377,6 +378,10 @@ async function handleCommand(line, state, rl = null) {
     printGoals();
     return;
   }
+  if (command === "goal") {
+    handleGoal(args);
+    return;
+  }
   if (command === "missions") {
     printMissions();
     return;
@@ -450,6 +455,7 @@ function printHelp() {
   console.log("  /policy                 show current tool approval policy");
   console.log("  /tool <name> <mode>     set a tool to auto, ask, or deny");
   console.log("  /goals                  show saved goals");
+  console.log("  /goal <action>          create, status, or stop a goal");
   console.log("  /missions               show saved missions");
   console.log("  /mission <action>       dry-run or run a mission file");
   console.log("  /memory [add|remove]    manage persistent notes");
@@ -769,6 +775,50 @@ async function handleModels(args, state) {
 function printGoals() {
   const goals = Object.entries(loadState().goals || {}).slice(-10).reverse();
   printRows("Goals", goals.map(([id, item]) => `${id}  ${item.status || ""}  ${item.text || ""}`));
+}
+
+function handleGoal(args) {
+  const [action = "status", idOrText, ...rest] = args;
+  const saved = loadState();
+  if (action === "create") {
+    const text = [idOrText, ...rest].filter(Boolean).join(" ").trim();
+    if (!text) {
+      console.log("Usage: /goal create <goal text>");
+      return;
+    }
+    const id = `goal_${Date.now()}`;
+    saved.goals[id] = { text, status: "created", createdAt: new Date().toISOString(), sessions: [] };
+    saveState(saved);
+    console.log(`goal: ${id} created`);
+    return;
+  }
+  if (action === "status") {
+    if (idOrText) {
+      const goal = saved.goals?.[idOrText];
+      if (!goal) console.log(`goal: no goal ${idOrText}`);
+      else printRows(`Goal ${idOrText}`, [`status  ${goal.status || ""}`, `text    ${goal.text || ""}`, `started ${goal.startedAt || ""}`, `done    ${goal.finishedAt || ""}`]);
+      return;
+    }
+    printGoals();
+    return;
+  }
+  if (action === "stop") {
+    const id = idOrText;
+    if (!id) {
+      console.log("Usage: /goal stop <id>");
+      return;
+    }
+    if (!saved.goals?.[id]) {
+      console.log(`goal: no goal ${id}`);
+      return;
+    }
+    saved.goals[id].status = "stopped";
+    saved.goals[id].finishedAt = new Date().toISOString();
+    saveState(saved);
+    console.log(`goal: ${id} stopped`);
+    return;
+  }
+  console.log("Usage: /goal <create|status|stop>");
 }
 
 function printMissions() {
