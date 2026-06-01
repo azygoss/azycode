@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
+import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
-import { loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode } from "./config.js";
+import { loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -34,19 +35,30 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     return;
   }
 
-  const rl = readline.createInterface({ input, output });
+  const rl = readlinePromises.createInterface({ input, output, completer: () => [[], ""] });
+  emitKeypressEvents(input, rl);
+  const onKeypress = (_, key) => applyShortcut(key, state, { rl });
+  input.on("keypress", onKeypress);
   try {
-    while (true) {
-      const line = (await rl.question(`${style(">", "cyan")} `)).trim();
-      if (!line) continue;
+    rl.setPrompt(promptLabel(state));
+    rl.prompt();
+    for await (const raw of rl) {
+      const line = raw.trim();
+      if (!line) {
+        rl.prompt();
+        continue;
+      }
       if (line.startsWith("/")) {
         const done = await handleCommand(line, state);
         if (done === "exit") break;
-        continue;
+      } else {
+        await askAgent(line, state);
       }
-      await askAgent(line, state);
+      rl.setPrompt(promptLabel(state));
+      rl.prompt();
     }
   } finally {
+    input.off("keypress", onKeypress);
     rl.close();
   }
 }
@@ -57,8 +69,32 @@ function printWelcome(state) {
   const model = state.cfg.activeModel || "no model";
   console.log(style("azycode", "bold"));
   console.log(style(`${repo}  |  ${provider}/${model}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}`, "dim"));
-  console.log(style("Type a task or /help. Ctrl+C exits.", "dim"));
+  console.log(style("Type a task or /help. Tab: reasoning. Shift+Tab: mode. Ctrl+C: exit.", "dim"));
   console.log("");
+}
+
+function promptLabel(state) {
+  return `${style(`[${state.mode} | ${state.cfg.reasoning}]`, "dim")} ${style(">", "cyan")} `;
+}
+
+export function applyShortcut(key, state, options = {}) {
+  if (key?.name !== "tab") return;
+  const persist = options.persist !== false;
+  const notify = options.notify || ((message) => redrawPrompt(options.rl, state, message));
+  if (key.shift) {
+    state.mode = rotateMode(state.mode);
+    state.cfg.mode = state.mode;
+    if (persist) saveConfig(state.cfg);
+    notify(`mode: ${state.mode}`);
+  } else {
+    state.cfg.reasoning = rotateReasoning(state.cfg.reasoning);
+    if (persist) saveConfig(state.cfg);
+    notify(`reasoning: ${state.cfg.reasoning}`);
+  }
+}
+
+function redrawPrompt(rl, state, message) {
+  output.write(`\n${message}\n${promptLabel(state)}${rl.line || ""}`);
 }
 
 async function askAgent(prompt, state) {
