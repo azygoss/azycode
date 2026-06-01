@@ -1,0 +1,5 @@
+name: repo-health-check
+mode: review
+steps:
+  - "Inspect the repository structure and identify the highest-risk missing pieces."
+  - "Run the available test or check command and summarize failures."

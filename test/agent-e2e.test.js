@@ -1,0 +1,201 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { runAgent } from "../src/agent.js";
+import { runMission } from "../src/missions.js";
+
+function mockChatServer(handler) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/v1/chat/completions") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      calls.push(parsed);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(handler(parsed, calls.length)));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ server, calls, port: server.address().port }));
+  });
+}
+
+function cfgFor(port) {
+  return {
+    activeProvider: "byok",
+    activeModel: "mock-coder",
+    mode: "always-approve",
+    reasoning: "medium",
+    alwaysApprove: true,
+    providers: {
+      byok: {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: "sk-test",
+        model: "mock-coder"
+      }
+    },
+    subagents: {
+      implementer: {
+        system: "You write files when requested.",
+        reasoning: "low",
+        model: "mock-coder"
+      }
+    },
+    toolPolicy: {
+      write_file: "auto",
+      read_file: "auto",
+      list_files: "auto",
+      search: "auto",
+      shell: "deny",
+      apply_patch: "auto",
+      git_diff: "auto"
+    }
+  };
+}
+
+test("runAgent performs real tool-call write and records a session", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, port } = await mockChatServer((body, count) => {
+    if (count === 1) {
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "write_file",
+                arguments: JSON.stringify({ file: "created.txt", content: "hello from tool\n" })
+              }
+            }]
+          }
+        }]
+      };
+    }
+    assert.equal(body.messages.at(-1).role, "tool");
+    return { choices: [{ message: { role: "assistant", content: "done" } }] };
+  });
+
+  try {
+    const events = [];
+    const output = await runAgent({ cfg: cfgFor(port), cwd, prompt: "create a file", onEvent: (event) => events.push(event) });
+    assert.equal(output, "done");
+    assert.equal(fs.readFileSync(path.join(cwd, "created.txt"), "utf8"), "hello from tool\n");
+    const state = JSON.parse(fs.readFileSync(path.join(home, "state.json"), "utf8"));
+    assert.equal(Object.keys(state.sessions).length, 1);
+    assert(state.toolRuns.some((run) => run.name === "write_file" && run.ok));
+    assert(events.some((event) => event.type === "tool_start"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("runMission can execute a step through a configured subagent", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const missionFile = path.join(cwd, "mission.json");
+  fs.writeFileSync(missionFile, JSON.stringify({
+    name: "mock-mission",
+    mode: "always-approve",
+    steps: [{ agent: "implementer", prompt: "write mission output" }]
+  }), "utf8");
+
+  const { server, port } = await mockChatServer((body, count) => {
+    if (count === 1) {
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "write_file",
+                arguments: JSON.stringify({ file: "mission.txt", content: "mission ok\n" })
+              }
+            }]
+          }
+        }]
+      };
+    }
+    return { choices: [{ message: { role: "assistant", content: "mission done" } }] };
+  });
+
+  try {
+    const result = await runMission({ cfg: cfgFor(port), cwd, file: missionFile });
+    assert.equal(result.outputs[0].output, "mission done");
+    assert.equal(fs.readFileSync(path.join(cwd, "mission.txt"), "utf8"), "mission ok\n");
+    const state = JSON.parse(fs.readFileSync(path.join(home, "state.json"), "utf8"));
+    const mission = Object.values(state.missions)[0];
+    assert.equal(mission.status, "done");
+    assert.equal(mission.steps[0].status, "done");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("runAgent reports invalid tool-call JSON back to the model instead of crashing", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, calls, port } = await mockChatServer((body, count) => {
+    if (count === 1) {
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            tool_calls: [{
+              id: "call_bad",
+              type: "function",
+              function: { name: "write_file", arguments: "{" }
+            }]
+          }
+        }]
+      };
+    }
+    assert.match(body.messages.at(-1).content, /invalid JSON/);
+    return { choices: [{ message: { role: "assistant", content: "recovered" } }] };
+  });
+
+  try {
+    const output = await runAgent({ cfg: cfgFor(port), cwd, prompt: "bad args" });
+    assert.equal(output, "recovered");
+    assert.equal(calls.length, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("runAgent can include a context pack in the system prompt", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  fs.writeFileSync(path.join(cwd, "README.md"), "# context\n");
+  let sawContext = false;
+  const { server, port } = await mockChatServer((body) => {
+    sawContext = body.messages[0].content.includes("Context Pack") && body.messages[0].content.includes("README.md");
+    return { choices: [{ message: { role: "assistant", content: "ok" } }] };
+  });
+
+  try {
+    const output = await runAgent({ cfg: cfgFor(port), cwd, prompt: "use context", includeContext: true });
+    assert.equal(output, "ok");
+    assert.equal(sawContext, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

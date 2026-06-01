@@ -1,0 +1,27 @@
+{
+  "name": "azycode",
+  "version": "0.1.0",
+  "description": "A lightweight AI coding harness CLI with goals, missions, subagents, provider login, tool calls, and review/plan modes.",
+  "type": "module",
+  "bin": {
+    "azycode": "./bin/azycode.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check bin/azycode.js && node --check src/*.js",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/",
+    "README.md",
+    "ARCHITECTURE.md",
+    "COMPLETION_AUDIT.md",
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

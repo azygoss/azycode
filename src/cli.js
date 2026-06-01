@@ -1,0 +1,1067 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { runAgent } from "./agent.js";
+import { loadConfig, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
+import { LlmClient } from "./llm.js";
+import { providerDiagnostics, providerNames, providerPreset } from "./providers.js";
+import { ask, askSecret } from "./prompt.js";
+import { formatMissionPlan, loadMission, runMission } from "./missions.js";
+import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
+import { addMemory, removeMemory, searchMemory } from "./memory.js";
+import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
+import { formatLocalReview, localReview } from "./local-review.js";
+import { formatGuard, gitGuard } from "./guard.js";
+import * as ui from "./ui.js";
+
+const VERSION = "0.1.0";
+const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const COMMANDS = [
+  "help", "providers", "init", "doctor", "login", "status", "models", "provider", "health",
+  "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
+  "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "keys"
+];
+
+export async function main(argv) {
+  const [cmd = "help", ...args] = argv;
+  switch (cmd) {
+    case "help": return help();
+    case "providers": return providers();
+    case "init": return init();
+    case "doctor": return doctor(args);
+    case "login": return login(args);
+    case "status": return status();
+    case "models": return models(args);
+    case "provider": return providerCmd(args);
+    case "health": return health();
+    case "dashboard": return dashboard();
+    case "tools": return toolsCmd(args);
+    case "guard": return guard(args);
+    case "session": return session(args);
+    case "memory": return memory(args);
+    case "context": return contextCmd(args);
+    case "audit": return audit();
+    case "report": return report(args);
+    case "completion": return completion(args);
+    case "config": return configCmd(args);
+    case "run": return run(args);
+    case "chat": return chat(args);
+    case "always-approve": return directMode("always-approve", args);
+    case "approve": return directMode("always-approve", args);
+    case "plan": return directMode("plan", args);
+    case "review": return directMode("review", args);
+    case "goal": return goal(args);
+    case "mission": return mission(args);
+    case "subagent": return subagent(args);
+    case "keys": return keys(args);
+    default:
+      if (cmd.startsWith("-")) return help();
+      return run([cmd, ...args]);
+  }
+}
+
+function help() {
+  ui.title(`azycode ${VERSION}`);
+  console.log("A lightweight AI coding harness for local repositories.");
+
+  ui.section("Common workflows");
+  ui.list([
+    "azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>",
+    "azycode dashboard",
+    "azycode status",
+    "azycode plan \"task\"",
+    "azycode run --context --progress \"task\"",
+    "azycode review --local",
+    "azycode chat"
+  ]);
+
+  ui.section("Project automation");
+  ui.list([
+    "azycode goal start \"goal\"",
+    "azycode mission run ./mission.yml",
+    "azycode subagent add <name>",
+    "azycode subagent run <name> \"task\""
+  ]);
+
+  ui.section("Inspect and configure");
+  ui.list([
+    "azycode providers",
+    "azycode models | azycode models use <model>",
+    "azycode tools | azycode tools log",
+    "azycode guard status",
+    "azycode context pack",
+    "azycode config set mode <plan|always-approve|goal|review>",
+    "azycode config set reasoning <minimal|low|medium|high>"
+  ]);
+
+  ui.section("Diagnostics");
+  ui.list([
+    "azycode doctor [--json]",
+    "azycode health",
+    "azycode audit",
+    "azycode report [file] [--with-audit]",
+    "azycode completion <bash|zsh|fish>"
+  ]);
+
+  ui.section("Interactive shortcuts");
+  ui.list([
+    "Shift+Tab rotates mode: plan -> always-approve -> goal -> review",
+    "Tab rotates reasoning: minimal -> low -> medium -> high",
+    "Ctrl+D submits the interactive prompt"
+  ]);
+}
+
+function init() {
+  fs.mkdirSync(".azycode/missions", { recursive: true });
+  fs.mkdirSync(".azycode/agents", { recursive: true });
+  const rules = ".azycode/rules.md";
+  const mission = ".azycode/missions/example.yml";
+  if (!fs.existsSync(rules)) {
+    fs.writeFileSync(rules, "# Azycode Rules\n\n- Keep changes scoped.\n- Run relevant checks before final output.\n", "utf8");
+  }
+  if (!fs.existsSync(mission)) {
+    fs.writeFileSync(mission, "name: repo-review\nmode: review\nsteps:\n  - \"Inspect the repository structure.\"\n  - \"Review current git diff and identify risks.\"\n", "utf8");
+  }
+  console.log("Initialized .azycode/ with rules, agents, and missions folders.");
+}
+
+function providers() {
+  ui.title("Providers");
+  const rows = providerNames().map((name) => {
+    const p = providerPreset(name);
+    return {
+      name,
+      model: p.defaultModel,
+      endpoint: p.baseUrl || "(custom)"
+    };
+  });
+  ui.table(rows, [
+    { key: "name", label: "name" },
+    { key: "model", label: "default model" },
+    { key: "endpoint", label: "endpoint" }
+  ]);
+  const notes = providerNames()
+    .map((name) => [name, providerPreset(name).note])
+    .filter(([, note]) => note);
+  if (notes.length) {
+    ui.section("Notes");
+    ui.list(notes.map(([name, note]) => `${name}: ${note}`));
+  }
+}
+
+function dashboard() {
+  const cfg = loadConfig();
+  const state = loadState();
+  const guardState = gitGuard(process.cwd(), cfg);
+  const policy = cfg.toolPolicy || {};
+  const autoTools = Object.values(policy).filter((value) => value === "auto").length;
+  const askTools = Object.values(policy).filter((value) => value === "ask").length;
+  const deniedTools = Object.values(policy).filter((value) => value === "deny").length;
+
+  ui.title("Azycode Dashboard");
+  ui.kv("mode", cfg.mode);
+  ui.kv("reasoning", cfg.reasoning);
+  ui.kv("provider", cfg.activeProvider || "(none)");
+  ui.kv("model", cfg.activeModel || "(none)");
+  ui.kv("always approve", ui.badge(cfg.alwaysApprove || cfg.mode === "always-approve"));
+  ui.kv("git guard", ui.badge(guardState.ok ? "ok" : "blocked"));
+  if (!guardState.ok) ui.kv("guard reason", guardState.reason);
+
+  ui.section("State");
+  ui.table([
+    { item: "sessions", count: Object.keys(state.sessions || {}).length },
+    { item: "goals", count: Object.keys(state.goals || {}).length },
+    { item: "missions", count: Object.keys(state.missions || {}).length },
+    { item: "tool runs", count: (state.toolRuns || []).length }
+  ], [
+    { key: "item", label: "item" },
+    { key: "count", label: "count" }
+  ]);
+
+  ui.section("Tool policy");
+  ui.table([
+    { policy: "auto", count: autoTools },
+    { policy: "ask", count: askTools },
+    { policy: "deny", count: deniedTools }
+  ], [
+    { key: "policy", label: "policy" },
+    { key: "count", label: "count" }
+  ]);
+}
+
+function doctor(args = []) {
+  const info = doctorInfo(process.cwd());
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(info, null, 2));
+    return;
+  }
+  ui.title("Doctor");
+  ui.kv("project", info.project);
+  ui.kv("install root", info.installRoot);
+  ui.kv("package", `${info.packageName} ${info.version}`);
+  ui.kv("node", info.node);
+  ui.kv("npm", info.npm || "(unavailable)");
+  ui.kv("platform", info.platform);
+  ui.kv("local bin", info.localBin);
+  ui.kv("local bin exists", ui.badge(info.localBinExists));
+  ui.kv("PATH azycode", info.pathAzycode || "(none)");
+  if (info.pathAzycode) ui.kv("PATH realpath", info.pathRealpath);
+  if (info.pathAzycode && !info.pathMatchesLocal) {
+    console.log("PATH note: global azycode differs from this workspace; use 'node ./bin/azycode.js' or 'npm link' in this project while developing.");
+  }
+}
+
+function doctorInfo(root) {
+  const localBin = path.resolve(INSTALL_ROOT, "bin", "azycode.js");
+  const localReal = fs.existsSync(localBin) ? fs.realpathSync(localBin) : localBin;
+  const packageJson = JSON.parse(fs.readFileSync(path.join(INSTALL_ROOT, "package.json"), "utf8"));
+  let which = "";
+  let pathReal = "";
+  let npmVersion = "";
+  try {
+    which = execFileSync("sh", ["-lc", "command -v azycode || true"], { encoding: "utf8" }).trim();
+    pathReal = which ? fs.realpathSync(which) : "";
+  } catch {
+    which = "";
+  }
+  try {
+    npmVersion = execFileSync("npm", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    npmVersion = "";
+  }
+  return {
+    project: root,
+    installRoot: INSTALL_ROOT,
+    packageName: packageJson.name,
+    version: packageJson.version,
+    node: process.version,
+    npm: npmVersion,
+    platform: `${os.platform()} ${os.release()} ${os.arch()}`,
+    localBin,
+    localBinExists: fs.existsSync(localBin),
+    localBinRealpath: localReal,
+    pathAzycode: which,
+    pathRealpath: pathReal,
+    pathMatchesLocal: Boolean(which && pathReal === localReal)
+  };
+}
+
+function completion(args = []) {
+  const shell = args[0] || "zsh";
+  const words = COMMANDS.join(" ");
+  if (shell === "bash") {
+    console.log(`_azycode_complete() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "${words}" -- "$cur") )
+}
+complete -F _azycode_complete azycode`);
+    return;
+  }
+  if (shell === "fish") {
+    console.log(`complete -c azycode -f -a "${words}"`);
+    return;
+  }
+  if (shell === "zsh") {
+    console.log(`#compdef azycode
+
+_azycode() {
+  local -a commands
+  commands=(
+    'help:show help'
+    'providers:list provider presets'
+    'init:create .azycode scaffold'
+    'doctor:inspect installation'
+    'login:add provider credentials'
+    'status:show config and provider status'
+    'models:list or select models'
+    'provider:inspect active provider'
+    'health:check configured providers'
+    'dashboard:show local overview'
+    'tools:list tool policy'
+    'guard:show git guard'
+    'session:inspect sessions'
+    'memory:manage memory notes'
+    'context:show repo context'
+    'audit:run local product audit'
+    'report:create redacted support report'
+    'completion:emit shell completion'
+    'config:manage configuration'
+    'run:run coding agent'
+    'chat:start interactive chat'
+    'plan:plan mode'
+    'review:review mode'
+    'goal:manage goals'
+    'mission:run missions'
+    'subagent:manage subagents'
+    'keys:show keyboard shortcuts'
+  )
+  _describe 'azycode command' commands
+}
+
+_azycode "$@"`);
+    return;
+  }
+  throw new Error("Usage: azycode completion <bash|zsh|fish>");
+}
+
+function report(args = []) {
+  const flags = parseFlags(args);
+  const file = positionalArgs(args).find((item) => item !== "report");
+  const state = loadState();
+  const body = {
+    generatedAt: new Date().toISOString(),
+    doctor: doctorInfo(process.cwd()),
+    config: redact(loadConfig()),
+    guard: gitGuard(process.cwd(), loadConfig()),
+    repository: repoSnapshot(process.cwd()),
+    localReview: localReview(process.cwd()),
+    counts: {
+      sessions: Object.keys(state.sessions || {}).length,
+      goals: Object.keys(state.goals || {}).length,
+      missions: Object.keys(state.missions || {}).length,
+      toolRuns: (state.toolRuns || []).length
+    },
+    recentToolRuns: (state.toolRuns || []).slice(-20)
+  };
+  if (flags.withAudit || flags["with-audit"]) body.audit = runAuditForReport();
+  const output = `${JSON.stringify(body, null, 2)}\n`;
+  if (file) {
+    fs.writeFileSync(file, output, "utf8");
+    console.log(`Report written to ${file}.`);
+  } else {
+    process.stdout.write(output);
+  }
+}
+
+function runAuditForReport() {
+  const result = {};
+  for (const [name, [cmd, args]] of auditChecks()) {
+    try {
+      const output = execFileSync(cmd, args, { cwd: INSTALL_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      result[name] = { ok: true, output: output.slice(-4000) };
+    } catch (error) {
+      result[name] = {
+        ok: false,
+        status: error.status ?? null,
+        output: `${error.stdout || ""}${error.stderr || ""}`.slice(-4000)
+      };
+    }
+  }
+  return result;
+}
+
+async function login(args) {
+  const name = args[0];
+  const preset = providerPreset(name);
+  const cfg = loadConfig();
+  const flags = parseFlags(args.slice(1));
+  const baseUrl = flags.baseUrl || flags["base-url"] || await ask("Base URL", preset.baseUrl);
+  const model = flags.model || await ask("Default model", preset.defaultModel);
+  const apiKey = flags.apiKey || flags["api-key"] || await askSecret(`API key (${preset.envKey})`);
+  cfg.providers[name] = { baseUrl, model, apiKey };
+  cfg.activeProvider = name;
+  cfg.activeModel = model;
+  saveConfig(cfg);
+  console.log(`Logged in to ${name} with key ${maskSecret(apiKey)}.`);
+}
+
+function toolsCmd(args = []) {
+  const cfg = loadConfig();
+  if (args[0] === "log") {
+    const state = loadState();
+    ui.title("Tool Runs");
+    ui.table((state.toolRuns || []).slice(-20).map((run) => ({
+      at: run.at,
+      session: run.sessionId,
+      step: run.step,
+      tool: run.name,
+      ok: run.ok,
+      ms: run.durationMs
+    })), [
+      { key: "at", label: "at" },
+      { key: "session", label: "session" },
+      { key: "step", label: "step" },
+      { key: "tool", label: "tool" },
+      { key: "ok", label: "ok" },
+      { key: "ms", label: "ms" }
+    ]);
+    return;
+  }
+  const policy = cfg.toolPolicy || {};
+  const names = ["list_files", "read_file", "search", "write_file", "edit_file", "apply_patch", "git_diff", "shell"];
+  ui.title("Tool Policy");
+  ui.table(names.map((name) => ({ tool: name, policy: policy[name] || "ask" })), [
+    { key: "tool", label: "tool" },
+    { key: "policy", label: "policy" }
+  ]);
+}
+
+function guard(args) {
+  const action = args[0] || "status";
+  if (action !== "status") throw new Error("Usage: azycode guard status");
+  console.log(formatGuard(gitGuard(process.cwd(), loadConfig())));
+}
+
+async function status() {
+  const cfg = loadConfig();
+  ui.title("Status");
+  ui.kv("mode", cfg.mode);
+  ui.kv("reasoning", cfg.reasoning);
+  ui.kv("always approve", ui.badge(cfg.alwaysApprove || cfg.mode === "always-approve"));
+  ui.kv("active provider", cfg.activeProvider || "(none)");
+  ui.kv("active model", cfg.activeModel || "(none)");
+  const providerRows = Object.entries(cfg.providers || {}).map(([name, p]) => {
+    const preset = providerPreset(name);
+    return {
+      name,
+      model: p.model,
+      key: maskSecret(p.apiKey),
+      quota: preset.quota || ""
+    };
+  });
+  if (providerRows.length) {
+    ui.section("Configured providers");
+    ui.table(providerRows, [
+      { key: "name", label: "name" },
+      { key: "model", label: "model" },
+      { key: "key", label: "key" },
+      { key: "quota", label: "quota" }
+    ]);
+  }
+  if (cfg.activeProvider) {
+    ui.section("Remote");
+    try {
+      const client = new LlmClient(cfg);
+      const models = await client.listModels();
+      const count = Array.isArray(models) ? models.length : Object.keys(models || {}).length;
+      ui.kv("status", `${ui.badge("ok")} (${count} models visible)`);
+      const preset = providerPreset(cfg.activeProvider);
+      ui.kv("limits", preset.quota || "provider-specific quota endpoints are not standardized.");
+    } catch (error) {
+      ui.kv("status", `${ui.badge("failed")} ${error.message}`);
+    }
+  }
+}
+
+async function models(args = []) {
+  if (args[0] === "use") {
+    const model = args[1];
+    if (!model) throw new Error("Usage: azycode models use <model>");
+    const cfg = loadConfig();
+    cfg.activeModel = model;
+    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) cfg.providers[cfg.activeProvider].model = model;
+    saveConfig(cfg);
+    console.log(`Active model set to ${model}.`);
+    return;
+  }
+  if (args[0] === "inspect") {
+    const cfg = loadConfig();
+    if (!cfg.activeProvider) {
+      console.log("No active provider. Run 'azycode login <provider>'.");
+      return;
+    }
+    const model = args[1] || cfg.activeModel;
+    const diag = providerDiagnostics({ ...cfg, activeModel: model }, cfg.activeProvider);
+    console.log(JSON.stringify(diag, null, 2));
+    return;
+  }
+  const cfg = loadConfig();
+  const client = new LlmClient(cfg);
+  const result = await client.listModels();
+  if (Array.isArray(result)) {
+    for (const model of result) console.log(model.id || model.name || JSON.stringify(model));
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
+function providerCmd(args = []) {
+  const action = args[0] || "current";
+  if (action === "current") {
+    const cfg = loadConfig();
+    if (!cfg.activeProvider) {
+      console.log("No active provider. Run 'azycode login <provider>'.");
+      return;
+    }
+    console.log(JSON.stringify(providerDiagnostics(cfg), null, 2));
+    return;
+  }
+  throw new Error("Usage: azycode provider current");
+}
+
+async function health() {
+  const cfg = loadConfig();
+  const names = Object.keys(cfg.providers || {});
+  if (!names.length) {
+    console.log("No providers configured. Run 'azycode login <provider>'.");
+    return;
+  }
+  for (const name of names) {
+    try {
+      const client = new LlmClient(cfg, name);
+      const result = await client.listModels();
+      const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
+      console.log(`${name}: ok (${count} models)`);
+    } catch (error) {
+      console.log(`${name}: failed (${error.message})`);
+    }
+  }
+}
+
+async function configCmd(args) {
+  const cfg = loadConfig();
+  if (args[0] === "set" && args[1] === "mode") {
+    const mode = normalizeMode(args[2]);
+    if (!MODES.includes(mode)) throw new Error(`Mode must be one of: ${MODES.join(", ")}`);
+    cfg.mode = mode;
+  } else if (args[0] === "set" && args[1] === "reasoning") {
+    if (!REASONING_LEVELS.includes(args[2])) throw new Error(`Reasoning must be one of: ${REASONING_LEVELS.join(", ")}`);
+    cfg.reasoning = args[2];
+  } else if (args[0] === "set" && args[1] === "model") {
+    cfg.activeModel = args[2];
+    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) cfg.providers[cfg.activeProvider].model = args[2];
+  } else if (args[0] === "set" && args[1] === "tool") {
+    const [, , tool, mode] = args;
+    if (!tool || !["auto", "ask", "deny"].includes(mode)) throw new Error("Usage: azycode config set tool <name> <auto|ask|deny>");
+    cfg.toolPolicy ||= {};
+    cfg.toolPolicy[tool] = mode;
+  } else if (args[0] === "set" && args[1] === "profile") {
+    const profile = args[2];
+    if (!["normal", "read-only", "safe-write", "full-auto"].includes(profile)) {
+      throw new Error("Profile must be one of: normal, read-only, safe-write, full-auto");
+    }
+    cfg.permissionProfile = profile;
+  } else if (args[0] === "set" && args[1] === "guard") {
+    const key = args[2];
+    const value = parseBoolean(args[3]);
+    cfg.gitGuard ||= {};
+    if (key === "enabled") cfg.gitGuard.enabled = value;
+    else if (key === "require-clean") cfg.gitGuard.requireClean = value;
+    else throw new Error("Usage: azycode config set guard <enabled|require-clean> <true|false>");
+  } else if (args[0] === "toggle" && args[1] === "always-approve") {
+    cfg.alwaysApprove = !cfg.alwaysApprove;
+  } else if (args[0] === "export") {
+    const output = JSON.stringify(redact(cfg), null, 2);
+    if (args[1]) fs.writeFileSync(args[1], `${output}\n`, "utf8");
+    else console.log(output);
+    return;
+  } else if (args[0] === "import") {
+    if (!args[1]) throw new Error("Usage: azycode config import <file>");
+    const imported = JSON.parse(fs.readFileSync(args[1], "utf8"));
+    if (JSON.stringify(imported).includes("...")) {
+      throw new Error("Refusing to import redacted config. Use an unredacted config file.");
+    }
+    saveConfig({ ...cfg, ...imported });
+    console.log("Config imported.");
+    return;
+  } else if (args[0] === "path") {
+    console.log(process.env.AZYCODE_HOME || path.join(process.env.HOME, ".azycode"));
+    return;
+  } else {
+    console.log(JSON.stringify(redact(cfg), null, 2));
+    return;
+  }
+  saveConfig(cfg);
+  console.log("Config updated.");
+}
+
+async function session(args) {
+  const state = loadState();
+  const action = args[0] || "list";
+  if (action === "list") {
+    for (const [id, item] of Object.entries(state.sessions || {})) {
+      console.log(`${id} ${item.createdAt} mode=${item.mode} prompt=${String(item.prompt || "").slice(0, 80)}`);
+    }
+    return;
+  }
+  if (action === "show") {
+    const id = args[1];
+    if (!state.sessions?.[id]) throw new Error(`No session ${id}`);
+    console.log(JSON.stringify(state.sessions[id], null, 2));
+    return;
+  }
+  if (action === "transcript") {
+    const id = args[1];
+    if (!state.sessions?.[id]) throw new Error(`No session ${id}`);
+    console.log(formatTranscript(state.sessions[id]));
+    return;
+  }
+  if (action === "export") {
+    const [id, file] = args.slice(1);
+    if (!id || !file) throw new Error("Usage: azycode session export <id> <file>");
+    if (!state.sessions?.[id]) throw new Error(`No session ${id}`);
+    fs.writeFileSync(file, `${JSON.stringify(state.sessions[id], null, 2)}\n`, "utf8");
+    console.log(`Session ${id} exported to ${file}.`);
+    return;
+  }
+  throw new Error("Usage: azycode session list|show <id>|transcript <id>|export <id> <file>");
+}
+
+async function memory(args) {
+  const action = args[0] || "list";
+  if (action === "add") {
+    const text = args[1] || await ask("Memory note");
+    const tags = args.slice(2);
+    const note = addMemory(text, tags);
+    console.log(`${note.id} added.`);
+    return;
+  }
+  if (action === "list") {
+    const notes = searchMemory(args.slice(1).join(" "));
+    for (const note of notes) {
+      const tagText = note.tags.length ? ` [${note.tags.join(",")}]` : "";
+      console.log(`${note.id}${tagText} ${note.text}`);
+    }
+    return;
+  }
+  if (action === "remove") {
+    const ok = removeMemory(args[1]);
+    console.log(ok ? "Memory removed." : "Memory not found.");
+    return;
+  }
+  throw new Error("Usage: azycode memory add|list|remove");
+}
+
+function contextCmd(args) {
+  if (args[0] === "pack") {
+    const flags = parseFlags(args.slice(1));
+    console.log(formatContextPack(contextPack(process.cwd(), {
+      maxFiles: flags.maxFiles || flags["max-files"],
+      maxBytes: flags.maxBytes || flags["max-bytes"]
+    })));
+    return;
+  }
+  const snapshot = repoSnapshot(process.cwd());
+  if (args[0] === "--json") console.log(JSON.stringify(snapshot, null, 2));
+  else console.log(formatSnapshot(snapshot));
+}
+
+function audit() {
+  let failed = 0;
+  for (const [name, [cmd, args]] of auditChecks()) {
+    console.log(`\n== ${name} ==`);
+    try {
+      const output = execFileSync(cmd, args, { cwd: INSTALL_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      process.stdout.write(output);
+    } catch (error) {
+      failed += 1;
+      if (error.stdout) process.stdout.write(error.stdout);
+      if (error.stderr) process.stderr.write(error.stderr);
+      console.log(`${name} failed with exit ${error.status ?? "unknown"}`);
+    }
+  }
+  if (failed) {
+    process.exitCode = 1;
+    console.log(`\naudit failed: ${failed} check(s) failed`);
+  } else {
+    console.log("\naudit passed");
+  }
+}
+
+function auditChecks() {
+  return [
+    ["doctor", [process.execPath, ["./bin/azycode.js", "doctor"]]],
+    ["syntax", ["npm", ["run", "check"]]],
+    ["tests", ["npm", ["test"]]],
+    ["pack", ["npm", ["run", "pack:dry"]]]
+  ];
+}
+
+async function run(args) {
+  const cfg = loadConfig();
+  const flags = parseFlags(args);
+  const prompt = positionalArgs(args).join(" ") || await interactivePrompt(cfg);
+  const output = await runAgent({ cfg, cwd: process.cwd(), prompt, onEvent: flags.progress ? progressPrinter() : null, includeContext: Boolean(flags.context) });
+  console.log(output);
+}
+
+async function chat(args) {
+  const flags = parseFlags(args);
+  const cfg = loadConfig();
+  let mode = normalizeMode(flags.mode || cfg.mode);
+  let includeContext = Boolean(flags.context);
+  let progress = Boolean(flags.progress);
+  console.log(`azycode chat mode=${mode} reasoning=${cfg.reasoning} context=${includeContext} progress=${progress}`);
+  console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /exit");
+  const chatState = { cfg, setMode: (next) => { mode = next; }, getMode: () => mode, setContext: (next) => { includeContext = next; }, getContext: () => includeContext, setProgress: (next) => { progress = next; }, getProgress: () => progress };
+  if (!process.stdin.isTTY) {
+    const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      const done = await handleChatLine(line, chatState);
+      if (done === "exit") break;
+    }
+    return;
+  }
+  const rl = readline.createInterface({ input, output });
+  try {
+    while (true) {
+      const line = (await rl.question("azycode> ")).trim();
+      if (!line) continue;
+      const done = await handleChatLine(line, chatState);
+      if (done === "exit") break;
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+async function directMode(mode, args) {
+  const cfg = loadConfig();
+  mode = normalizeMode(mode);
+  const flags = parseFlags(args);
+  if (mode === "review" && flags.local) {
+    console.log(formatLocalReview(localReview(process.cwd())));
+    return;
+  }
+  const prompt = positionalArgs(args, ["save"]).join(" ") || await interactivePrompt({ ...cfg, mode });
+  const result = await runAgent({
+    cfg,
+    cwd: process.cwd(),
+    prompt,
+    mode,
+    returnSession: Boolean(flags.save),
+    onEvent: flags.progress ? progressPrinter() : null,
+    includeContext: Boolean(flags.context)
+  });
+  if (flags.save) {
+    fs.writeFileSync(flags.save, planArtifact({ mode, prompt, result }), "utf8");
+    console.log(`Saved ${mode} artifact to ${flags.save}.`);
+  }
+  console.log(typeof result === "string" ? result : result.content);
+}
+
+async function goal(args) {
+  const action = args[0] || "status";
+  const state = loadState();
+  if (action === "create") {
+    const text = args.slice(1).join(" ");
+    if (!text) throw new Error("Usage: azycode goal create \"goal text\"");
+    const goalId = `goal_${Date.now()}`;
+    state.goals[goalId] = { text, status: "created", createdAt: new Date().toISOString(), sessions: [] };
+    saveState(state);
+    console.log(goalId);
+    return;
+  }
+  if (action === "start") {
+    const cfg = loadConfig();
+    const text = args.slice(1).join(" ");
+    if (!text) throw new Error("Usage: azycode goal start \"goal text\"");
+    const goalId = `goal_${Date.now()}`;
+    state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
+    saveState(state);
+    const output = await runAgent({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", maxSteps: 20 });
+    const done = loadState();
+    done.goals[goalId].status = "done";
+    done.goals[goalId].finishedAt = new Date().toISOString();
+    saveState(done);
+    console.log(output);
+    return;
+  }
+  if (action === "resume") {
+    const goalId = args[1];
+    const selected = state.goals[goalId];
+    if (!selected) throw new Error(`No goal ${goalId}`);
+    const cfg = loadConfig();
+    selected.status = "running";
+    selected.resumedAt = new Date().toISOString();
+    saveState(state);
+    const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
+    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, mode: "goal", maxSteps: 20 });
+    const done = loadState();
+    done.goals[goalId].status = "done";
+    done.goals[goalId].finishedAt = new Date().toISOString();
+    saveState(done);
+    console.log(output);
+    return;
+  }
+  if (action === "status") {
+    console.log(JSON.stringify(state.goals, null, 2));
+    return;
+  }
+  if (action === "stop") {
+    const id = args[1];
+    if (!state.goals[id]) throw new Error(`No goal ${id}`);
+    state.goals[id].status = "stopped";
+    state.goals[id].finishedAt = new Date().toISOString();
+    saveState(state);
+    console.log(`Goal ${id} stopped.`);
+    return;
+  }
+  throw new Error("Usage: azycode goal create|start|resume|status|stop");
+}
+
+async function mission(args) {
+  if ((args[0] || "list") === "list") {
+    const state = loadState();
+    console.log(JSON.stringify(state.missions || {}, null, 2));
+    return;
+  }
+  if (args[0] === "status") {
+    const state = loadState();
+    console.log(JSON.stringify(args[1] ? state.missions?.[args[1]] : state.missions, null, 2));
+    return;
+  }
+  if (args[0] === "dry-run" && args[1]) {
+    console.log(formatMissionPlan(loadMission(args[1]), loadConfig()));
+    return;
+  }
+  if (args[0] === "report" && args[1]) {
+    const state = loadState();
+    const selected = state.missions?.[args[1]];
+    if (!selected) throw new Error(`No mission ${args[1]}`);
+    console.log(formatMissionReport(args[1], selected));
+    return;
+  }
+  if (args[0] !== "run" || !args[1]) throw new Error("Usage: azycode mission run ./mission.yml");
+  const cfg = loadConfig();
+  const result = await runMission({ cfg, cwd: process.cwd(), file: args[1] });
+  console.log(`Mission ${result.missionId} completed.`);
+  for (const step of result.outputs) {
+    console.log(`\n# Step ${step.index}\n${step.output}`);
+  }
+}
+
+async function subagent(args) {
+  const action = args[0] || "list";
+  if (action === "list") {
+    for (const agent of listSubagents(loadConfig())) {
+      console.log(`${agent.name}: ${agent.description || ""} model=${agent.model || "(active)"} reasoning=${agent.reasoning}`);
+    }
+    return;
+  }
+  if (action === "add") {
+    const flags = parseFlags(args.slice(2));
+    const name = args[1] || await ask("Name");
+    const description = flags.description || await ask("Description", "");
+    const system = flags.system || await ask("System prompt", "You are a focused coding subagent.");
+    const model = flags.model || await ask("Model override", "");
+    const reasoning = flags.reasoning || await ask("Reasoning", "medium");
+    addSubagent({ name, description, system, model: model || null, reasoning });
+    console.log(`Subagent ${name} added.`);
+    return;
+  }
+  if (action === "remove") {
+    removeSubagent(args[1]);
+    console.log(`Subagent ${args[1]} removed.`);
+    return;
+  }
+  if (action === "run") {
+    const cfg = loadConfig();
+    const name = args[1];
+    const selected = cfg.subagents?.[name];
+    if (!selected) throw new Error(`No subagent named ${name}.`);
+    const prompt = args.slice(2).join(" ") || await interactivePrompt(cfg);
+    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, subagent: selected });
+    console.log(output);
+    return;
+  }
+  throw new Error("Usage: azycode subagent list|add|remove|run");
+}
+
+async function keys(args) {
+  if (args[0] !== "shortcuts") return help();
+  console.log("Shift+Tab: rotate mode. Tab: rotate reasoning. These are active in the multiline prompt reader.");
+}
+
+async function interactivePrompt(cfg) {
+  if (!process.stdin.isTTY) return fs.readFileSync(0, "utf8");
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding("utf8");
+  let text = "";
+  process.stdout.write(`[mode=${cfg.mode} reasoning=${cfg.reasoning}] Enter task, Ctrl+D to run\n> `);
+  return await new Promise((resolve) => {
+    process.stdin.on("data", (chunk) => {
+      if (chunk === "\u0004") {
+        process.stdin.setRawMode(false);
+        process.stdout.write("\n");
+        saveConfig(cfg);
+        resolve(text.trim());
+      } else if (chunk === "\u001b[Z") {
+        cfg.mode = rotateMode(cfg.mode);
+        process.stdout.write(`\n[mode=${cfg.mode}]\n> ${text}`);
+      } else if (chunk === "\t") {
+        cfg.reasoning = rotateReasoning(cfg.reasoning);
+        process.stdout.write(`\n[reasoning=${cfg.reasoning}]\n> ${text}`);
+      } else if (chunk === "\u0003") {
+        process.stdin.setRawMode(false);
+        process.exit(130);
+      } else {
+        text += chunk;
+        process.stdout.write(chunk);
+      }
+    });
+  });
+}
+
+function redact(cfg) {
+  return {
+    ...cfg,
+    providers: Object.fromEntries(Object.entries(cfg.providers || {}).map(([name, p]) => [name, { ...p, apiKey: maskSecret(p.apiKey) }]))
+  };
+}
+
+function parseFlags(args) {
+  const flags = {};
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = args[i + 1];
+    if (next && !next.startsWith("--")) {
+      flags[key] = next;
+      i += 1;
+    } else {
+      flags[key] = true;
+    }
+  }
+  return flags;
+}
+
+function parseBoolean(value) {
+  if (value === "true" || value === "1" || value === "yes") return true;
+  if (value === "false" || value === "0" || value === "no") return false;
+  throw new Error("Boolean value must be true or false.");
+}
+
+function progressPrinter() {
+  return (event) => {
+    if (event.type === "model_start") console.error(`[${event.sessionId}] step ${event.step}: model ${event.model || "(active)"}`);
+    else if (event.type === "model_end") console.error(`[${event.sessionId}] step ${event.step}: ${event.toolCalls} tool call(s)`);
+    else if (event.type === "tool_start") console.error(`[${event.sessionId}] step ${event.step}: tool ${event.tool}`);
+    else if (event.type === "tool_end") console.error(`[${event.sessionId}] step ${event.step}: tool ${event.tool} ${event.ok ? "ok" : "failed"} ${event.durationMs}ms`);
+    else if (event.type === "final") console.error(`[${event.sessionId}] final`);
+  };
+}
+
+function formatTranscript(session) {
+  const lines = [];
+  for (const msg of session.messages || []) {
+    if (msg.role === "system") continue;
+    if (msg.role === "assistant") {
+      lines.push(`assistant: ${msg.content || ""}`);
+      for (const call of msg.tool_calls || []) lines.push(`assistant tool_call: ${call.function?.name} ${call.function?.arguments || "{}"}`);
+    } else if (msg.role === "tool") {
+      lines.push(`tool ${msg.name}: ${String(msg.content || "").slice(0, 2000)}`);
+    } else {
+      lines.push(`${msg.role}: ${msg.content || ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatMissionReport(id, mission) {
+  const lines = [
+    `mission: ${id}`,
+    `name: ${mission.name}`,
+    `status: ${mission.status}`,
+    `startedAt: ${mission.startedAt || ""}`,
+    `finishedAt: ${mission.finishedAt || ""}`,
+    "steps:"
+  ];
+  for (const step of mission.steps || []) {
+    lines.push(`- ${step.index}. ${step.status} ${step.prompt || ""}`);
+    if (step.error) lines.push(`  error: ${step.error}`);
+  }
+  return lines.join("\n");
+}
+
+function positionalArgs(args, valueFlags = []) {
+  const positional = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      if (valueFlags.includes(arg.slice(2))) i += 1;
+      continue;
+    }
+    positional.push(arg);
+  }
+  return positional;
+}
+
+function planArtifact({ mode, prompt, result }) {
+  const content = typeof result === "string" ? result : result.content;
+  const sessionId = typeof result === "string" ? null : result.sessionId;
+  return [
+    `# Azycode ${mode} Artifact`,
+    "",
+    `createdAt: ${new Date().toISOString()}`,
+    sessionId ? `sessionId: ${sessionId}` : null,
+    "",
+    "## Prompt",
+    "",
+    prompt,
+    "",
+    "## Output",
+    "",
+    content,
+    ""
+  ].filter((line) => line !== null).join("\n");
+}
+
+async function handleChatCommand(line, state) {
+  const [command, ...rest] = line.slice(1).split(/\s+/);
+  if (command === "exit" || command === "quit") return "exit";
+  if (command === "mode") {
+    const next = normalizeMode(rest[0]);
+    if (!MODES.includes(next)) console.log(`Mode must be one of: ${MODES.join(", ")}`);
+    else {
+      state.setMode(next);
+      console.log(`mode=${next}`);
+    }
+    return;
+  }
+  if (command === "reasoning") {
+    const next = rest[0];
+    if (!REASONING_LEVELS.includes(next)) console.log(`Reasoning must be one of: ${REASONING_LEVELS.join(", ")}`);
+    else {
+      state.cfg.reasoning = next;
+      saveConfig(state.cfg);
+      console.log(`reasoning=${next}`);
+    }
+    return;
+  }
+  if (command === "context") {
+    state.setContext(!state.getContext());
+    console.log(`context=${state.getContext()}`);
+    return;
+  }
+  if (command === "progress") {
+    state.setProgress(!state.getProgress());
+    console.log(`progress=${state.getProgress()}`);
+    return;
+  }
+  if (command === "review") {
+    console.log(formatLocalReview(localReview(process.cwd())));
+    return;
+  }
+  if (command === "status") {
+    console.log(`mode=${state.getMode()} reasoning=${state.cfg.reasoning} context=${state.getContext()} progress=${state.getProgress()}`);
+    console.log(formatGuard(gitGuard(process.cwd(), state.cfg)));
+    return;
+  }
+  if (command === "help") {
+    console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /exit");
+    return;
+  }
+  console.log(`Unknown slash command: /${command}`);
+}
+
+async function handleChatLine(line, state) {
+  if (line.startsWith("/")) return handleChatCommand(line, state);
+  const result = await runAgent({
+    cfg: state.cfg,
+    cwd: process.cwd(),
+    prompt: line,
+    mode: state.getMode(),
+    includeContext: state.getContext(),
+    onEvent: state.getProgress() ? progressPrinter() : null
+  });
+  console.log(result);
+}

@@ -1,0 +1,265 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { promisify } from "node:util";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+
+const root = path.resolve(import.meta.dirname, "..");
+const bin = path.join(root, "bin", "azycode.js");
+const execFileAsync = promisify(execFile);
+
+function run(args, env = {}) {
+  return execFileSync(process.execPath, [bin, ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: 10000
+  });
+}
+
+async function runAsync(args, env = {}) {
+  const { stdout } = await execFileAsync(process.execPath, [bin, ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: 10000
+  });
+  return stdout;
+}
+
+test("non-interactive byok login writes isolated config", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["login", "byok", "--base-url", "http://127.0.0.1:9999/v1", "--model", "mock", "--api-key", "sk-123456789"], { AZYCODE_HOME: home });
+  assert.match(out, /Logged in to byok/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeProvider, "byok");
+  assert.equal(cfg.providers.byok.model, "mock");
+});
+
+test("tool policy command updates config", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  run(["config", "set", "tool", "shell", "deny"], { AZYCODE_HOME: home });
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.toolPolicy.shell, "deny");
+  const tools = run(["tools"], { AZYCODE_HOME: home });
+  assert.match(tools, /Tool Policy/);
+  assert.match(tools, /shell\s+deny/);
+});
+
+test("health reports no configured providers", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["health"], { AZYCODE_HOME: home });
+  assert.match(out, /No providers configured/);
+});
+
+test("guard status command reports git guard", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["guard", "status"], { AZYCODE_HOME: home });
+  assert.match(out, /git guard:/);
+});
+
+test("models use updates active model", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  run(["login", "byok", "--base-url", "http://127.0.0.1:9999/v1", "--model", "old", "--api-key", "sk-123456789"], { AZYCODE_HOME: home });
+  run(["models", "use", "new-model"], { AZYCODE_HOME: home });
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeModel, "new-model");
+  assert.equal(cfg.providers.byok.model, "new-model");
+});
+
+test("provider current reports missing provider without stack trace", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["provider", "current"], { AZYCODE_HOME: home });
+  assert.match(out, /No active provider/);
+});
+
+test("models inspect reports missing provider without stack trace", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["models", "inspect"], { AZYCODE_HOME: home });
+  assert.match(out, /No active provider/);
+});
+
+test("doctor json reports local binary details", () => {
+  const out = run(["doctor", "--json"]);
+  const info = JSON.parse(out);
+  assert.equal(info.packageName, "azycode");
+  assert.equal(info.installRoot, root);
+  assert.equal(info.localBinExists, true);
+  assert.match(info.node, /^v\d+/);
+});
+
+test("doctor works outside the installation repository", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-external-"));
+  const out = execFileSync(process.execPath, [bin, "doctor", "--json"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 10000
+  });
+  const info = JSON.parse(out);
+  assert.equal(info.project, fs.realpathSync(cwd));
+  assert.equal(info.installRoot, root);
+  assert.equal(info.packageName, "azycode");
+});
+
+test("completion command emits shell completion scripts", () => {
+  assert.match(run(["completion", "zsh"]), /#compdef azycode/);
+  assert.match(run(["completion", "bash"]), /complete -F _azycode_complete azycode/);
+  assert.match(run(["completion", "fish"]), /complete -c azycode/);
+});
+
+test("report command emits redacted diagnostic json", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  run(["login", "byok", "--base-url", "http://127.0.0.1:9999/v1", "--model", "mock", "--api-key", "sk-123456789"], { AZYCODE_HOME: home });
+  const out = run(["report"], { AZYCODE_HOME: home });
+  const report = JSON.parse(out);
+  assert.equal(report.doctor.packageName, "azycode");
+  assert.equal(report.config.providers.byok.apiKey, "sk-1...6789");
+  assert.equal(report.counts.sessions, 0);
+});
+
+test("chat slash commands work with piped stdin", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput(["chat"], "/status\n/context\n/progress\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /azycode chat/);
+  assert.match(stdout, /mode=plan/);
+  assert.match(stdout, /context=true/);
+  assert.match(stdout, /progress=true/);
+});
+
+test("plan --save writes an artifact using a configured mock provider", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const outFile = path.join(home, "plan.md");
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/v1/chat/completions") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "mock plan" } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    run(["login", "byok", "--base-url", `http://127.0.0.1:${port}/v1`, "--model", "mock", "--api-key", "sk-test"], { AZYCODE_HOME: home });
+    const out = await runAsync(["plan", "--save", outFile, "make a plan"], { AZYCODE_HOME: home });
+    assert.match(out, /mock plan/);
+    const artifact = fs.readFileSync(outFile, "utf8");
+    assert.match(artifact, /Azycode plan Artifact/);
+    assert.match(artifact, /sessionId:/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("session export writes selected session JSON", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: { ses_test: { mode: "plan", prompt: "x", messages: [] } },
+    goals: {},
+    missions: {}
+  }));
+  const outFile = path.join(home, "session.json");
+  const out = run(["session", "export", "ses_test", outFile], { AZYCODE_HOME: home });
+  assert.match(out, /exported/);
+  const exported = JSON.parse(fs.readFileSync(outFile, "utf8"));
+  assert.equal(exported.prompt, "x");
+});
+
+test("session transcript and tools log commands format state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: {
+      ses_test: {
+        mode: "plan",
+        prompt: "x",
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "hi" },
+          { role: "tool", name: "read_file", content: "file" }
+        ]
+      }
+    },
+    toolRuns: [{ at: "now", sessionId: "ses_test", step: 1, name: "read_file", ok: true, durationMs: 3 }],
+    goals: {},
+    missions: {}
+  }));
+  assert.match(run(["session", "transcript", "ses_test"], { AZYCODE_HOME: home }), /assistant: hi/);
+  const log = run(["tools", "log"], { AZYCODE_HOME: home });
+  assert.match(log, /Tool Runs/);
+  assert.match(log, /read_file\s+true/);
+});
+
+test("help groups commands into a compact interface", () => {
+  const out = run(["help"]);
+  assert.match(out, /Common workflows/);
+  assert.match(out, /Project automation/);
+  assert.match(out, /Diagnostics/);
+});
+
+test("status uses labeled output without configured providers", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["status"], { AZYCODE_HOME: home });
+  assert.match(out, /Status/);
+  assert.match(out, /active provider\s+\(none\)/);
+});
+
+test("dashboard shows local overview without provider network", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["dashboard"], { AZYCODE_HOME: home });
+  assert.match(out, /Azycode Dashboard/);
+  assert.match(out, /Tool policy/);
+  assert.match(out, /sessions\s+0/);
+});
+
+test("mission report formats stored mission state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify({
+    version: 1,
+    sessions: {},
+    toolRuns: [],
+    goals: {},
+    missions: {
+      mis_test: { name: "demo", status: "done", steps: [{ index: 1, status: "done", prompt: "step" }] }
+    }
+  }));
+  const out = run(["mission", "report", "mis_test"], { AZYCODE_HOME: home });
+  assert.match(out, /mission: mis_test/);
+  assert.match(out, /1\. done step/);
+});
+
+function runWithInput(args, inputText, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bin, ...args], {
+      cwd: root,
+      env: { ...process.env, ...env },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`Command timed out: ${args.join(" ")}`));
+    }, 10000);
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`Command failed with ${code}: ${stderr}`));
+    });
+    child.stdin.end(inputText);
+  });
+}
