@@ -96,7 +96,7 @@ function help(args = []) {
   ui.section("Inspect and configure");
   ui.list([
     "azycode providers",
-    "azycode model | azycode model <provider/model>",
+    "azycode model | azycode model <provider/model> | azycode model sync [all]",
     "azycode models sync [all] | azycode models use <model>",
     "azycode tools | azycode tools log",
     "azycode guard status",
@@ -178,7 +178,7 @@ function commandHelp(topic) {
       usage: [
         "azycode model",
         "azycode model <provider/model>",
-        "azycode models sync all"
+        "azycode model sync all"
       ],
       notes: ["Configured providers are shown first. Selecting provider/model updates both active provider and active model."]
     },
@@ -594,6 +594,7 @@ async function models(args = []) {
 }
 
 function modelCmd(args = []) {
+  if (args[0] === "sync") return models(args);
   const cfg = loadConfig();
   if (!args.length) {
     printCliModelHub(cfg);

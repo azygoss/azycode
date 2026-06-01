@@ -168,7 +168,7 @@ test("models sync all updates each configured provider independently", async () 
         openai: { baseUrl: `http://127.0.0.1:${port}/b`, model: "local-b", models: ["local-b"], apiKey: "sk-b" }
       }
     }));
-    const out = await runAsync(["models", "sync", "all"], { AZYCODE_HOME: home });
+    const out = await runAsync(["model", "sync", "all"], { AZYCODE_HOME: home });
     assert.match(out, /byok: synced 1 remote models/);
     assert.match(out, /openai: synced 1 remote models/);
     const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
@@ -461,7 +461,7 @@ test("tui models sync all updates configured provider model lists", async () => 
         openai: { baseUrl: `http://127.0.0.1:${port}/b`, model: "local-b", models: ["local-b"], apiKey: "sk-b" }
       }
     }));
-    const stdout = await runWithInput([], "/models sync all\n/exit\n", { AZYCODE_HOME: home });
+    const stdout = await runWithInput([], "/model sync all\n/exit\n", { AZYCODE_HOME: home });
     assert.match(stdout, /models: byok synced 1 remote/);
     assert.match(stdout, /models: openai synced 1 remote/);
     const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));

@@ -192,7 +192,8 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "goal") return ["create", "status", "stop"];
   if (command === "context") return ["show"];
   if (command === "memory") return ["add", "remove", "list"];
-  if (command === "model") return modelSelectionEntries(state).map((entry) => entry.id);
+  if (command === "model" && fixedArgs.length === 0) return ["sync", ...modelSelectionEntries(state).map((entry) => entry.id)];
+  if (command === "model" && fixedArgs[0] === "sync") return ["all"];
   if (command === "models" && fixedArgs.length === 0) return ["sync"];
   if (command === "models" && fixedArgs[0] === "sync") return ["all"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
@@ -292,6 +293,10 @@ async function handleCommand(line, state, rl = null) {
     return;
   }
   if (command === "model") {
+    if (args[0] === "sync") {
+      await handleModels(args, state);
+      return;
+    }
     const next = args.join(" ");
     if (!next) await chooseModel(state, rl);
     else {
@@ -452,8 +457,8 @@ function printHelp(topic = null) {
       model: [
         "/model",
         "/model <provider/model>",
-        "/models sync",
-        "/models sync all"
+        "/model sync",
+        "/model sync all"
       ],
       login: [
         "/login",
@@ -491,7 +496,7 @@ function printHelp(topic = null) {
   console.log("  /doctor                 show local binary and config paths");
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
-  console.log("  /model [provider/model] show all models and switch provider/model");
+  console.log("  /model [provider/model] show, sync, or switch provider/model");
   console.log("  /models [sync|sync all] list or sync provider model ids");
   console.log("  /providers              show available and configured providers");
   console.log("  /provider <name>        switch to a configured provider");
