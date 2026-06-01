@@ -20,7 +20,8 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     mode: normalizeMode(cfg.mode),
     includeContext: false,
     progress: true,
-    conversation: []
+    conversation: [],
+    subagent: null
   };
   printWelcome(state);
 
@@ -71,7 +72,8 @@ function printWelcome(state) {
 }
 
 function promptLabel(state) {
-  return `${style(`[${state.mode} | ${state.cfg.reasoning}]`, "dim")} ${style(">", "cyan")} `;
+  const agent = state.subagent ? ` | @${state.subagent.name}` : "";
+  return `${style(`[${state.mode} | ${state.cfg.reasoning}${agent}]`, "dim")} ${style(">", "cyan")} `;
 }
 
 export function applyShortcut(key, state, options = {}) {
@@ -111,7 +113,8 @@ async function askAgent(prompt, state, rl = null) {
       onEvent: state.progress ? progressLine : null,
       conversation: state.conversation,
       returnSession: true,
-      confirmTool: rl ? (question) => confirmInTui(rl, question) : null
+      confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
+      subagent: state.subagent
     });
     state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
     console.log("");
@@ -236,13 +239,32 @@ async function handleCommand(line, state) {
     printMissions();
     return;
   }
+  if (command === "agents") {
+    printAgents(state);
+    return;
+  }
+  if (command === "agent") {
+    const name = args[0];
+    if (!name) {
+      console.log(`agent: ${state.subagent?.name || "off"}`);
+    } else if (name === "off") {
+      state.subagent = null;
+      console.log("agent: off");
+    } else if (!state.cfg.subagents?.[name]) {
+      console.log(`No subagent '${name}'. Use /agents.`);
+    } else {
+      state.subagent = { name, ...state.cfg.subagents[name] };
+      console.log(`agent: @${name}`);
+    }
+    return;
+  }
   if (command === "login") {
     console.log("Configure a provider in another terminal, then restart this workspace:");
     console.log("  azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>");
     return;
   }
   if (command === "status") {
-    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  profile ${state.cfg.permissionProfile || "normal"}  |  context ${state.includeContext}`);
+    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  profile ${state.cfg.permissionProfile || "normal"}  |  agent ${state.subagent?.name || "off"}  |  context ${state.includeContext}`);
     console.log(formatGuard(gitGuard(state.cwd, state.cfg)));
     return;
   }
@@ -265,6 +287,8 @@ function printHelp() {
   console.log("  /tools                  show recent tool activity");
   console.log("  /goals                  show saved goals");
   console.log("  /missions               show saved missions");
+  console.log("  /agents                 show available subagents");
+  console.log("  /agent <name|off>       select a subagent for this conversation");
   console.log("  /new                    start a fresh conversation");
   console.log("  /compact                keep only recent conversation context");
   console.log("  /login                  show provider setup command");
@@ -289,6 +313,7 @@ function printDashboard(state) {
   console.log(`  missions    ${Object.keys(saved.missions || {}).length}`);
   console.log(`  tool runs   ${(saved.toolRuns || []).length}`);
   console.log(`  messages    ${state.conversation.length}`);
+  console.log(`  agent       ${state.subagent?.name || "off"}`);
   console.log("");
 }
 
@@ -310,6 +335,11 @@ function printGoals() {
 function printMissions() {
   const missions = Object.entries(loadState().missions || {}).slice(-10).reverse();
   printRows("Missions", missions.map(([id, item]) => `${id}  ${item.status || ""}  ${item.name || ""}`));
+}
+
+function printAgents(state) {
+  const agents = Object.entries(state.cfg.subagents || {});
+  printRows("Subagents", agents.map(([name, item]) => `${name}  ${item.reasoning || "medium"}  ${item.model || "(active model)"}  ${item.description || ""}`));
 }
 
 function printRows(label, rows) {

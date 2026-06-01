@@ -162,6 +162,16 @@ test("tui can inspect sessions tools goals and missions", async () => {
   assert.match(stdout, /Missions[\s\S]*mis_test\s+done\s+release/);
 });
 
+test("tui can list and select subagents", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/agents\n/agent planner\n/status\n/dashboard\n/agent off\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Subagents[\s\S]*planner\s+high/);
+  assert.match(stdout, /agent: @planner/);
+  assert.match(stdout, /agent planner/);
+  assert.match(stdout, /agent\s+planner/);
+  assert.match(stdout, /agent: off/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");
