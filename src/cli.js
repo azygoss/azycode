@@ -239,6 +239,8 @@ function providers() {
     ui.section("Notes");
     ui.list(notes.map(([name, note]) => `${name}: ${note}`));
   }
+  ui.section("Model selection");
+  ui.list(["Use `azycode model` to see providers and models in one view.", "Use `azycode model <provider/model>` to switch both together."]);
 }
 
 function dashboard() {

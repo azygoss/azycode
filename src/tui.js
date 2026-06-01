@@ -1090,6 +1090,8 @@ function printProviders(state) {
     return `${active} ${name.padEnd(12)} ${configured ? "configured" : "not configured"}  ${String(modelCount).padStart(2)} models  ${model}`;
   });
   printRows("Providers", rows);
+  console.log(style("Use /model to choose provider and model together.", "dim"));
+  console.log("");
 }
 
 function printCredentials(state) {
