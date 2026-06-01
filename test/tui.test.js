@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyShortcut, loginProvider, trimConversation } from "../src/tui.js";
+import { applyShortcut, completeTuiInput, loginProvider, trimConversation } from "../src/tui.js";
 
 test("trimConversation starts retained context at a user boundary", () => {
   const messages = [
@@ -42,6 +42,27 @@ test("applyShortcut ignores tab while the TUI is busy", () => {
   assert.equal(state.mode, "plan");
   assert.equal(state.cfg.reasoning, "medium");
   assert.deepEqual(events, []);
+});
+
+test("applyShortcut leaves slash commands to readline completion", () => {
+  const state = { mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+  const events = [];
+  applyShortcut({ name: "tab" }, state, { persist: false, rl: { line: "/sta" }, notify: (message) => events.push(message) });
+  assert.equal(state.cfg.reasoning, "medium");
+  assert.deepEqual(events, []);
+});
+
+test("completeTuiInput suggests slash commands and common arguments", () => {
+  const state = {
+    cfg: {
+      providers: { kimi: { model: "kimi-k2.6" } },
+      subagents: { planner: {}, reviewer: {} }
+    }
+  };
+  assert.deepEqual(completeTuiInput("/sta", state), [["/status"], "/sta"]);
+  assert.deepEqual(completeTuiInput("/mode a", state), [["/mode always-approve"], "/mode a"]);
+  assert.deepEqual(completeTuiInput("/provider ", state), [["/provider kimi"], "/provider "]);
+  assert.deepEqual(completeTuiInput("/agent r", state), [["/agent reviewer"], "/agent r"]);
 });
 
 test("loginProvider selects a preset and stores only the entered key", async () => {

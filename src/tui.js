@@ -15,6 +15,11 @@ import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
+const TUI_COMMANDS = [
+  "help", "status", "dashboard", "sessions", "tools", "goals", "missions", "mission",
+  "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
+  "model", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
+];
 
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
@@ -44,7 +49,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     return;
   }
 
-  const rl = readlinePromises.createInterface({ input, output, completer: () => [[], ""] });
+  const rl = readlinePromises.createInterface({ input, output, completer: (line) => completeTuiInput(line, state) });
   emitKeypressEvents(input, rl);
   const onKeypress = (_, key) => applyShortcut(key, state, { rl });
   input.on("keypress", onKeypress);
@@ -106,6 +111,7 @@ function promptLabel(state, { styled = true } = {}) {
 export function applyShortcut(key, state, options = {}) {
   if (key?.name !== "tab") return;
   if (state.acceptingInput === false && options.force !== true) return;
+  if (options.rl?.line?.startsWith("/")) return;
   const persist = options.persist !== false;
   const notify = options.notify || ((message) => redrawPrompt(options.rl, state, message));
   if (key.shift) {
@@ -131,6 +137,40 @@ function redrawPrompt(rl, state, message) {
   cursorTo(output, 0);
   output.write(`${promptLabel(state)}${line}`);
   cursorTo(output, promptLabel(state, { styled: false }).length + cursor);
+}
+
+export function completeTuiInput(line, state) {
+  if (!line.startsWith("/")) return [[], line];
+  const body = line.slice(1);
+  const hasTrailingSpace = /\s$/.test(line);
+  const parts = body.split(/\s+/).filter(Boolean);
+  const command = parts[0] || "";
+  if (parts.length === 0 || (parts.length === 1 && !hasTrailingSpace)) {
+    const completions = TUI_COMMANDS.map((item) => `/${item}`).filter((item) => item.startsWith(`/${command}`));
+    return [completions.length ? completions : TUI_COMMANDS.map((item) => `/${item}`), line];
+  }
+
+  const argPrefix = hasTrailingSpace ? "" : parts.at(-1);
+  const fixedArgs = hasTrailingSpace ? parts.slice(1) : parts.slice(1, -1);
+  const base = `/${command}${fixedArgs.length ? ` ${fixedArgs.join(" ")}` : ""} `;
+  const candidates = tuiArgCandidates(command, fixedArgs, state);
+  const completions = candidates
+    .filter((item) => item.startsWith(argPrefix))
+    .map((item) => `${base}${item}`);
+  return [completions.length ? completions : candidates.map((item) => `${base}${item}`), line];
+}
+
+function tuiArgCandidates(command, fixedArgs, state) {
+  if (command === "mode") return MODES;
+  if (command === "reasoning") return REASONING_LEVELS;
+  if (command === "profile") return PROFILES;
+  if (command === "login") return providerNames();
+  if (command === "provider") return Object.keys(state.cfg.providers || {}).length ? Object.keys(state.cfg.providers) : providerNames();
+  if (command === "agent") return ["off", ...Object.keys(state.cfg.subagents || {})];
+  if (command === "help") return TUI_COMMANDS;
+  if (command === "memory") return ["add", "remove", "list"];
+  if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run"];
+  return [];
 }
 
 async function askAgent(prompt, state, rl = null) {
