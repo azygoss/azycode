@@ -42,6 +42,7 @@ azycode dashboard
 azycode help mission
 azycode models
 azycode models sync
+azycode models sync all
 azycode models use <model>
 azycode models inspect [model]
 azycode provider current
@@ -121,7 +122,7 @@ In the interactive `azycode run` prompt:
 - Z.AI Coding Plan: preset uses the Coding Plan OpenAI-compatible endpoint.
 - MiniMax: preset uses the OpenAI-compatible endpoint.
 - OpenCode Go: preset includes the current Go coding model list and routes MiniMax models through the Anthropic `messages` endpoint when required.
-- Models: `azycode models sync` or `/models sync` fetches the active provider's remote `/models` list and stores it without dropping saved models.
+- Models: `azycode models sync` or `/models sync` fetches the active provider's remote `/models` list and stores it without dropping saved models. Use `azycode models sync all` or `/models sync all` to refresh every configured provider.
 - Status: `azycode status` verifies the active provider through `/models` when available. Exact remaining subscription limits are not standardized across providers; OpenCode Go documents $12/5-hour, $30/week, and $60/month limits, while other providers generally require their dashboards for exact remaining quota.
 
 ## Safety

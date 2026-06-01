@@ -8,7 +8,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { loadConfig, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { LlmClient } from "./llm.js";
-import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
@@ -94,7 +95,7 @@ function help(args = []) {
   ui.section("Inspect and configure");
   ui.list([
     "azycode providers",
-    "azycode models | azycode models use <model>",
+    "azycode models | azycode models sync [all] | azycode models use <model>",
     "azycode tools | azycode tools log",
     "azycode guard status",
     "azycode context pack",
@@ -528,18 +529,24 @@ async function status() {
 async function models(args = []) {
   if (args[0] === "sync") {
     const cfg = loadConfig();
+    if (args[1] === "all") {
+      const names = Object.keys(cfg.providers || {});
+      if (!names.length) throw new Error("No configured providers. Run 'azycode login <provider>'.");
+      const results = await syncConfiguredProviderModels(cfg, names);
+      saveConfig(cfg);
+      for (const result of results) {
+        if (result.ok) {
+          console.log(`${result.provider}: synced ${result.remoteCount} remote models (${result.totalCount} total).`);
+        } else {
+          console.log(`${result.provider}: failed: ${result.error}`);
+        }
+      }
+      return;
+    }
     if (!cfg.activeProvider) throw new Error("No active provider. Run 'azycode login <provider>'.");
-    const client = new LlmClient(cfg);
-    const result = await client.listModels();
-    const remoteModels = modelIdsFromResponse(result);
-    const scopedCfg = { ...cfg, activeModel: cfg.providers[cfg.activeProvider]?.model || cfg.activeModel };
-    cfg.providers[cfg.activeProvider] = withProviderModels(scopedCfg, cfg.activeProvider, {
-      ...cfg.providers[cfg.activeProvider],
-      models: [...providerModelList(scopedCfg, cfg.activeProvider), ...remoteModels]
-    });
-    cfg.activeModel = cfg.providers[cfg.activeProvider].model;
+    const result = await syncProviderModels(cfg, cfg.activeProvider);
     saveConfig(cfg);
-    console.log(`Synced ${remoteModels.length} remote models for ${cfg.activeProvider}.`);
+    console.log(`Synced ${result.remoteCount} remote models for ${cfg.activeProvider}.`);
     return;
   }
   if (args[0] === "use") {

@@ -99,6 +99,45 @@ test("models sync stores remote model ids without dropping saved models", async 
   }
 });
 
+test("models sync all updates each configured provider independently", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const server = http.createServer((req, res) => {
+    if (req.url === "/a/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "remote-a" }] }));
+      return;
+    }
+    if (req.url === "/b/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "remote-b" }] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+      activeProvider: "byok",
+      activeModel: "local-a",
+      providers: {
+        byok: { baseUrl: `http://127.0.0.1:${port}/a`, model: "local-a", models: ["local-a"], apiKey: "sk-a" },
+        openai: { baseUrl: `http://127.0.0.1:${port}/b`, model: "local-b", models: ["local-b"], apiKey: "sk-b" }
+      }
+    }));
+    const out = await runAsync(["models", "sync", "all"], { AZYCODE_HOME: home });
+    assert.match(out, /byok: synced 1 remote models/);
+    assert.match(out, /openai: synced 1 remote models/);
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert.equal(cfg.activeModel, "local-a");
+    assert.deepEqual(cfg.providers.byok.models, ["local-a", "remote-a"]);
+    assert.ok(cfg.providers.openai.models.includes("remote-b"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("provider current reports missing provider without stack trace", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const out = run(["provider", "current"], { AZYCODE_HOME: home });
@@ -310,6 +349,44 @@ test("tui model command lists and preserves provider models", async () => {
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeModel, "candidate");
   assert.deepEqual(cfg.providers.byok.models, ["old", "candidate"]);
+});
+
+test("tui models sync all updates configured provider model lists", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const server = http.createServer((req, res) => {
+    if (req.url === "/a/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "remote-a" }] }));
+      return;
+    }
+    if (req.url === "/b/models") {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "remote-b" }] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+      activeProvider: "byok",
+      activeModel: "local-a",
+      providers: {
+        byok: { baseUrl: `http://127.0.0.1:${port}/a`, model: "local-a", models: ["local-a"], apiKey: "sk-a" },
+        openai: { baseUrl: `http://127.0.0.1:${port}/b`, model: "local-b", models: ["local-b"], apiKey: "sk-b" }
+      }
+    }));
+    const stdout = await runWithInput([], "/models sync all\n/exit\n", { AZYCODE_HOME: home });
+    assert.match(stdout, /models: byok synced 1 remote/);
+    assert.match(stdout, /models: openai synced 1 remote/);
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert.deepEqual(cfg.providers.byok.models, ["local-a", "remote-a"]);
+    assert.ok(cfg.providers.openai.models.includes("remote-b"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("tui slash by itself opens the command palette", async () => {

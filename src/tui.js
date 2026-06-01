@@ -11,7 +11,8 @@ import { applyPermissionProfile, azyHome, loadConfig, loadState, saveConfig, sav
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
-import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
+import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { contextPack, formatContextPack } from "./context.js";
@@ -191,7 +192,8 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "goal") return ["create", "status", "stop"];
   if (command === "context") return ["show"];
   if (command === "memory") return ["add", "remove", "list"];
-  if (command === "models") return ["sync"];
+  if (command === "models" && fixedArgs.length === 0) return ["sync"];
+  if (command === "models" && fixedArgs[0] === "sync") return ["all"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
   if (command === "tool" && fixedArgs.length === 1) return TOOL_POLICY_MODES;
   if (command === "mission" && fixedArgs.length === 0) return ["dry-run", "run", "report", "status"];
@@ -448,7 +450,7 @@ function printHelp() {
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
   console.log("  /model <id>             show or change the active model");
-  console.log("  /models [sync]          list or sync provider model ids");
+  console.log("  /models [sync|sync all] list or sync provider model ids");
   console.log("  /providers              show available and configured providers");
   console.log("  /provider <name>        switch to a configured provider");
   console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
@@ -774,22 +776,33 @@ async function handleModels(args, state) {
     printModels(state);
     return;
   }
+  if (args[1] === "all") {
+    const names = Object.keys(state.cfg.providers || {});
+    if (!names.length) {
+      console.log("models: no configured providers");
+      return;
+    }
+    console.log(style("syncing all providers...", "dim"));
+    const results = await syncConfiguredProviderModels(state.cfg, names);
+    saveConfig(state.cfg);
+    for (const result of results) {
+      if (result.ok) {
+        console.log(`models: ${result.provider} synced ${result.remoteCount} remote (${result.totalCount} total)`);
+      } else {
+        console.log(style(`models: ${result.provider} failed: ${result.error}`, "red"));
+      }
+    }
+    return;
+  }
   if (!state.cfg.activeProvider) {
     console.log("models: no active provider");
     return;
   }
   try {
     console.log(style("syncing models...", "dim"));
-    const result = await new LlmClient(state.cfg).listModels();
-    const remoteModels = modelIdsFromResponse(result);
-    const scopedCfg = { ...state.cfg, activeModel: state.cfg.providers[state.cfg.activeProvider]?.model || state.cfg.activeModel };
-    state.cfg.providers[state.cfg.activeProvider] = withProviderModels(scopedCfg, state.cfg.activeProvider, {
-      ...state.cfg.providers[state.cfg.activeProvider],
-      models: [...providerModelList(scopedCfg, state.cfg.activeProvider), ...remoteModels]
-    });
-    state.cfg.activeModel = state.cfg.providers[state.cfg.activeProvider].model;
+    const result = await syncProviderModels(state.cfg, state.cfg.activeProvider);
     saveConfig(state.cfg);
-    console.log(`models: synced ${remoteModels.length} remote models`);
+    console.log(`models: synced ${result.remoteCount} remote models`);
   } catch (error) {
     console.log(style(`models: ${error.message}`, "red"));
   }
