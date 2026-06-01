@@ -14,6 +14,7 @@ import { style } from "./ui.js";
 import { modelIdsFromResponse, providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
+import { contextPack, formatContextPack } from "./context.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -188,6 +189,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "agent") return ["off", ...Object.keys(state.cfg.subagents || {})];
   if (command === "help") return TUI_COMMANDS;
   if (command === "goal") return ["create", "status", "stop"];
+  if (command === "context") return ["show"];
   if (command === "memory") return ["add", "remove", "list"];
   if (command === "models") return ["sync"];
   if (command === "tool" && fixedArgs.length === 0) return Object.keys(state.cfg.toolPolicy || {});
@@ -337,6 +339,10 @@ async function handleCommand(line, state, rl = null) {
     return;
   }
   if (command === "context") {
+    if (args[0] === "show") {
+      console.log(formatContextPack(contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 })));
+      return;
+    }
     state.includeContext = !state.includeContext;
     console.log(`context: ${state.includeContext}`);
     return;
@@ -446,6 +452,7 @@ function printHelp() {
   console.log("  /provider <name>        switch to a configured provider");
   console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
   console.log("  /context                toggle bounded repository context");
+  console.log("  /context show           preview bounded repository context");
   console.log("  /progress               toggle inline model/tool activity");
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
