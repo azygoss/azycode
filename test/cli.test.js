@@ -230,6 +230,15 @@ test("tui can manage persistent memory notes", async () => {
   assert.match(removed, /Memory\s+\(none\)/);
 });
 
+test("tui can preview mission files", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const mission = path.join(home, "mission.yml");
+  fs.writeFileSync(mission, "name: preview\nmode: goal\nsteps:\n  - \"inspect repository\"\n", "utf8");
+  const stdout = await runWithInput([], `/mission dry-run ${mission}\n/exit\n`, { AZYCODE_HOME: home });
+  assert.match(stdout, /1\. step-1 mode=goal maxSteps=12/);
+  assert.match(stdout, /inspect repository/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

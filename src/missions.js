@@ -9,7 +9,7 @@ export function loadMission(file) {
   return parseTinyYaml(text);
 }
 
-export async function runMission({ cfg, cwd, file }) {
+export async function runMission({ cfg, cwd, file, confirmTool = null, onEvent = null }) {
   const mission = loadMission(file);
   const steps = missionPlan(mission, cfg);
   if (!mission.name) mission.name = path.basename(file);
@@ -35,7 +35,9 @@ export async function runMission({ cfg, cwd, file }) {
         prompt: normalized.prompt,
         mode: normalized.mode,
         subagent,
-        maxSteps: normalized.maxSteps
+        maxSteps: normalized.maxSteps,
+        confirmTool,
+        onEvent
       });
     } catch (error) {
       const latest = loadState();

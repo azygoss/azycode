@@ -10,6 +10,7 @@ import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
 import { providerNames, providerPreset } from "./providers.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
+import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -51,7 +52,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
       const line = (await rl.question(promptLabel(state))).trim();
       if (!line) continue;
       if (line.startsWith("/")) {
-        const done = await handleCommand(line, state);
+        const done = await handleCommand(line, state, rl);
         if (done === "exit") break;
       } else {
         await askAgent(line, state, rl);
@@ -140,7 +141,7 @@ function progressLine(event) {
   else if (event.type === "tool_end") console.log(style(`  done  ${event.tool} (${event.durationMs}ms)`, event.ok ? "green" : "red"));
 }
 
-async function handleCommand(line, state) {
+async function handleCommand(line, state, rl = null) {
   const [command, ...args] = line.slice(1).trim().split(/\s+/);
   if (command === "exit" || command === "quit") return "exit";
   if (command === "help") {
@@ -259,6 +260,10 @@ async function handleCommand(line, state) {
     printMissions();
     return;
   }
+  if (command === "mission") {
+    await handleMission(args, state, rl);
+    return;
+  }
   if (command === "memory") {
     handleMemory(args);
     return;
@@ -313,6 +318,7 @@ function printHelp() {
   console.log("  /tools                  show recent tool activity");
   console.log("  /goals                  show saved goals");
   console.log("  /missions               show saved missions");
+  console.log("  /mission <action>       dry-run or run a mission file");
   console.log("  /memory [add|remove]    manage persistent notes");
   console.log("  /agents                 show available subagents");
   console.log("  /agent <name|off>       select a subagent for this conversation");
@@ -381,6 +387,28 @@ function handleMemory(args) {
   const query = args.join(" ");
   const notes = searchMemory(query);
   printRows("Memory", notes.map((note) => `${note.id}  ${note.text}`));
+}
+
+async function handleMission(args, state, rl) {
+  const [action, file] = args;
+  if (!["dry-run", "run"].includes(action) || !file) {
+    console.log("Usage: /mission <dry-run|run> <file>");
+    return;
+  }
+  if (action === "dry-run") {
+    console.log(formatMissionPlan(loadMission(file), state.cfg));
+    return;
+  }
+  console.log(`mission: running ${file}`);
+  const result = await runMission({
+    cfg: state.cfg,
+    cwd: state.cwd,
+    file,
+    confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
+    onEvent: state.progress ? progressLine : null
+  });
+  console.log(`mission: ${result.missionId} completed`);
+  for (const step of result.outputs) console.log(`\nstep ${step.index}\n${step.output}`);
 }
 
 function printAgents(state) {
