@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { clearLine, cursorTo, emitKeypressEvents } from "node:readline";
+import { clearLine, cursorTo, emitKeypressEvents, moveCursor } from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASO
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
-import { providerDiagnostics, providerNames, providerPreset } from "./providers.js";
+import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
@@ -220,6 +220,10 @@ function progressLine(event) {
 
 async function handleCommand(line, state, rl = null) {
   const [command, ...args] = line.slice(1).trim().split(/\s+/);
+  if (!command) {
+    printCommandPalette(state);
+    return;
+  }
   if (command === "exit" || command === "quit") return "exit";
   if (command === "help") {
     printHelp();
@@ -264,11 +268,15 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "model") {
     const next = args.join(" ");
-    if (!next) console.log(`model: ${state.cfg.activeModel || "no model"}`);
+    if (!next) await chooseModel(state, rl);
     else {
       state.cfg.activeModel = next;
       if (state.cfg.activeProvider && state.cfg.providers[state.cfg.activeProvider]) {
-        state.cfg.providers[state.cfg.activeProvider].model = next;
+        state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
+          ...state.cfg.providers[state.cfg.activeProvider],
+          model: next,
+          models: [...providerModelList(state.cfg, state.cfg.activeProvider), next]
+        });
       }
       saveConfig(state.cfg);
       console.log(`model: ${next}`);
@@ -282,7 +290,7 @@ async function handleCommand(line, state, rl = null) {
   if (command === "provider") {
     const name = args[0];
     if (!name) {
-      console.log(`provider: ${state.cfg.activeProvider || "none"}`);
+      await chooseConfiguredProvider(state, rl);
     } else if (!state.cfg.providers?.[name]) {
       console.log(`Provider '${name}' is not configured. Run: azycode login ${name}`);
     } else {
@@ -416,6 +424,36 @@ function printHelp() {
   console.log("");
 }
 
+function printCommandPalette(state) {
+  const rows = [
+    ["/status", "active model, provider, guard"],
+    ["/login", "connect a provider"],
+    ["/provider", "switch configured provider"],
+    ["/providers", "show provider presets"],
+    ["/mode", "set plan, always-approve, goal, review"],
+    ["/reasoning", "set minimal, low, medium, high"],
+    ["/policy", "show tool approvals"],
+    ["/tool", "set tool approval mode"],
+    ["/agents", "show subagents"],
+    ["/agent", "select subagent"],
+    ["/missions", "show missions"],
+    ["/memory", "manage notes"],
+    ["/review", "local review"],
+    ["/dashboard", "local overview"],
+    ["/clear", "redraw screen"],
+    ["/exit", "leave azycode"]
+  ];
+  console.log("");
+  console.log(style("Commands", "cyan"));
+  const width = rows.reduce((max, [command]) => Math.max(max, command.length), 0);
+  for (const [command, summary] of rows) {
+    console.log(`  ${style(command.padEnd(width), "bold")}  ${summary}`);
+  }
+  console.log("");
+  console.log(style(`active: ${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  ${state.mode}  reasoning ${state.cfg.reasoning}`, "dim"));
+  console.log("");
+}
+
 export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAGES) {
   if (messages.length <= maxMessages) return messages;
   const tailStart = Math.max(0, messages.length - maxMessages);
@@ -543,6 +581,47 @@ function handleToolPolicy(args, state) {
   console.log(`tool: ${tool} -> ${mode}`);
 }
 
+function printModels(state) {
+  if (!state.cfg.activeProvider) {
+    console.log("model: no active provider");
+    return;
+  }
+  const models = providerModelList(state.cfg, state.cfg.activeProvider);
+  const rows = models.map((model) => `${state.cfg.activeModel === model ? "*" : " "} ${model}`);
+  printRows(`Models (${state.cfg.activeProvider})`, rows);
+}
+
+async function chooseModel(state, rl) {
+  if (!state.cfg.activeProvider) {
+    console.log("model: no active provider");
+    return;
+  }
+  const models = providerModelList(state.cfg, state.cfg.activeProvider);
+  if (!input.isTTY || !rl) {
+    printModels(state);
+    return;
+  }
+  const selected = await selectFromList({
+    title: `Select model (${state.cfg.activeProvider})`,
+    items: models,
+    active: state.cfg.activeModel,
+    rl,
+    format: (model) => model
+  });
+  if (!selected) {
+    console.log(`model: ${state.cfg.activeModel || "no model"}`);
+    return;
+  }
+  state.cfg.activeModel = selected;
+  state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
+    ...state.cfg.providers[state.cfg.activeProvider],
+    model: selected,
+    models
+  });
+  saveConfig(state.cfg);
+  console.log(`model: ${selected}`);
+}
+
 function printGoals() {
   const goals = Object.entries(loadState().goals || {}).slice(-10).reverse();
   printRows("Goals", goals.map(([id, item]) => `${id}  ${item.status || ""}  ${item.text || ""}`));
@@ -609,6 +688,29 @@ function printProviders(state) {
   printRows("Providers", rows);
 }
 
+async function chooseConfiguredProvider(state, rl) {
+  const names = Object.keys(state.cfg.providers || {});
+  if (!names.length) {
+    console.log("provider: none configured. Use /login.");
+    return;
+  }
+  const selected = await selectFromList({
+    title: "Switch provider",
+    items: names,
+    active: state.cfg.activeProvider,
+    rl,
+    format: (name) => `${name}  ${state.cfg.providers[name]?.model || ""}`
+  });
+  if (!selected) {
+    console.log(`provider: ${state.cfg.activeProvider || "none"}`);
+    return;
+  }
+  state.cfg.activeProvider = selected;
+  state.cfg.activeModel = state.cfg.providers[selected].model;
+  saveConfig(state.cfg);
+  console.log(`provider: ${selected}/${state.cfg.activeModel}`);
+}
+
 export async function loginProvider(state, rl) {
   if (!rl) {
     console.log("Interactive login requires a terminal. Run: azycode login <provider>");
@@ -616,12 +718,15 @@ export async function loginProvider(state, rl) {
   }
   const names = providerNames();
   console.log("");
-  console.log(style("Connect provider", "cyan"));
-  for (const [index, name] of names.entries()) {
-    console.log(`  ${index + 1}. ${name.padEnd(12)} ${providerPreset(name).label}`);
-  }
-  const rawChoice = (await rl.question("Choose provider: ")).trim();
-  const name = names[Number(rawChoice) - 1] || (names.includes(rawChoice) ? rawChoice : null);
+  const name = input.isTTY
+    ? await selectFromList({
+      title: "Connect provider",
+      items: names,
+      active: state.cfg.activeProvider,
+      rl,
+      format: (item) => `${item.padEnd(12)} ${providerPreset(item).label}`
+    })
+    : names[Number((await rl.question("Choose provider: ")).trim()) - 1];
   if (!name) {
     console.log("login: cancelled");
     return;
@@ -642,7 +747,7 @@ export async function loginProvider(state, rl) {
       return;
     }
   }
-  state.cfg.providers[name] = { baseUrl, model, apiKey };
+  state.cfg.providers[name] = withProviderModels(state.cfg, name, { ...(state.cfg.providers[name] || {}), baseUrl, model, apiKey });
   state.cfg.activeProvider = name;
   state.cfg.activeModel = model;
   saveConfig(state.cfg);
@@ -660,6 +765,71 @@ async function readSecret(label, rl) {
     execFileSync("stty", ["echo"], { stdio: ["inherit", "ignore", "ignore"] });
     output.write("\n");
   }
+}
+
+async function selectFromList({ title, items, active = null, rl, format = (item) => item }) {
+  if (!items.length) return null;
+  if (!input.isTTY || !rl) {
+    console.log(style(title, "cyan"));
+    for (const [index, item] of items.entries()) console.log(`  ${index + 1}. ${format(item)}`);
+    const raw = (await rl.question("Choose: ")).trim();
+    return items[Number(raw) - 1] || (items.includes(raw) ? raw : null);
+  }
+
+  let index = Math.max(0, items.indexOf(active));
+  let renderedLines = 0;
+  const wasRaw = Boolean(input.isRaw);
+  rl.pause();
+  input.setRawMode?.(true);
+  input.resume();
+  const render = () => {
+    if (renderedLines) {
+      moveCursor(output, 0, -renderedLines);
+      for (let line = 0; line < renderedLines; line += 1) {
+        clearLine(output, 0);
+        if (line < renderedLines - 1) moveCursor(output, 0, 1);
+      }
+      moveCursor(output, 0, -(renderedLines - 1));
+    }
+    const lines = [
+      style(title, "cyan"),
+      style("Use ↑/↓ or j/k, Enter to select, Esc to cancel", "dim"),
+      ...items.map((item, itemIndex) => {
+        const marker = itemIndex === index ? style("›", "cyan") : " ";
+        return `  ${marker} ${format(item)}`;
+      })
+    ];
+    output.write(`${lines.join("\n")}\n`);
+    renderedLines = lines.length;
+  };
+
+  return new Promise((resolve) => {
+    const cleanup = (value) => {
+      input.off("keypress", onKeypress);
+      input.setRawMode?.(wasRaw);
+      rl.resume();
+      rl.write(null, { ctrl: true, name: "u" });
+      clearLine(output, 0);
+      cursorTo(output, 0);
+      output.write("\n");
+      resolve(value);
+    };
+    const onKeypress = (_, key) => {
+      if (key?.name === "up" || key?.name === "k") {
+        index = (index - 1 + items.length) % items.length;
+        render();
+      } else if (key?.name === "down" || key?.name === "j") {
+        index = (index + 1) % items.length;
+        render();
+      } else if (key?.name === "return") {
+        cleanup(items[index]);
+      } else if (key?.name === "escape" || (key?.ctrl && key?.name === "c")) {
+        cleanup(null);
+      }
+    };
+    input.on("keypress", onKeypress);
+    render();
+  });
 }
 
 function printRows(label, rows) {

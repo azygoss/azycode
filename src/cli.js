@@ -8,7 +8,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { loadConfig, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { LlmClient } from "./llm.js";
-import { providerDiagnostics, providerNames, providerPreset } from "./providers.js";
+import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
@@ -438,7 +438,7 @@ async function login(args) {
   const baseUrl = flags.baseUrl || flags["base-url"] || await ask("Base URL", preset.baseUrl);
   const model = flags.model || await ask("Default model", preset.defaultModel);
   const apiKey = flags.apiKey || flags["api-key"] || await askSecret(`API key (${preset.envKey})`);
-  cfg.providers[name] = { baseUrl, model, apiKey };
+  cfg.providers[name] = withProviderModels(cfg, name, { ...(cfg.providers[name] || {}), baseUrl, model, apiKey });
   cfg.activeProvider = name;
   cfg.activeModel = model;
   saveConfig(cfg);
@@ -495,6 +495,7 @@ async function status() {
     return {
       name,
       model: p.model,
+      models: providerModelList(cfg, name).length,
       key: maskSecret(p.apiKey),
       quota: preset.quota || ""
     };
@@ -504,6 +505,7 @@ async function status() {
     ui.table(providerRows, [
       { key: "name", label: "name" },
       { key: "model", label: "model" },
+      { key: "models", label: "models" },
       { key: "key", label: "key" },
       { key: "quota", label: "quota" }
     ]);
@@ -529,7 +531,13 @@ async function models(args = []) {
     if (!model) throw new Error("Usage: azycode models use <model>");
     const cfg = loadConfig();
     cfg.activeModel = model;
-    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) cfg.providers[cfg.activeProvider].model = model;
+    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) {
+      cfg.providers[cfg.activeProvider] = withProviderModels(cfg, cfg.activeProvider, {
+        ...cfg.providers[cfg.activeProvider],
+        model,
+        models: [...providerModelList(cfg, cfg.activeProvider), model]
+      });
+    }
     saveConfig(cfg);
     console.log(`Active model set to ${model}.`);
     return;

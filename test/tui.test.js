@@ -79,6 +79,16 @@ test("loginProvider selects a preset and stores only the entered key", async () 
   assert.deepEqual(state.cfg.providers.kimi, {
     baseUrl: "https://api.moonshot.ai/v1",
     model: "kimi-k2.6",
+    models: [
+      "kimi-k2.6",
+      "kimi-k2.5",
+      "moonshot-v1-8k",
+      "moonshot-v1-32k",
+      "moonshot-v1-128k",
+      "moonshot-v1-8k-vision-preview",
+      "moonshot-v1-32k-vision-preview",
+      "moonshot-v1-128k-vision-preview"
+    ],
     apiKey: "sk-kimi"
   });
 });
@@ -94,6 +104,7 @@ test("loginProvider asks BYOK for endpoint and model", async () => {
   assert.deepEqual(state.cfg.providers.byok, {
     baseUrl: "http://127.0.0.1:11434/v1",
     model: "local-coder",
+    models: ["local-coder"],
     apiKey: "sk-local"
   });
 });

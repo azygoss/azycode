@@ -74,10 +74,19 @@ export class LlmClient {
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`${this.provider.name} HTTP ${response.status}: ${text.slice(0, 800)}`);
+      throw new Error(formatProviderHttpError(this.provider.name, response.status, text));
     }
     return response;
   }
+}
+
+export function formatProviderHttpError(providerName, status, body = "") {
+  const detail = body.slice(0, 800);
+  const prefix = `${providerName} HTTP ${status}`;
+  if (status === 401 || status === 403) {
+    return `${prefix}: authentication failed. The saved API key was rejected by ${providerName}. Run '/login' in the TUI or 'azycode login ${providerName}' and enter a valid API key for this provider. Detail: ${detail}`;
+  }
+  return `${prefix}: ${detail}`;
 }
 
 export function applyReasoning(body, reasoning) {

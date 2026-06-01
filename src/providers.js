@@ -6,6 +6,19 @@ export const PROVIDERS = {
     modelsPath: "/models",
     chatPath: "/chat/completions",
     defaultModel: "gpt-5.2",
+    models: [
+      "gpt-5.2",
+      "gpt-5.2-codex",
+      "gpt-5.2-pro",
+      "gpt-5.1",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5",
+      "gpt-5-codex",
+      "gpt-5-mini",
+      "gpt-5-nano"
+    ],
     envKey: "OPENAI_API_KEY",
     note: "ChatGPT subscription credentials are not an API key. Use an OpenAI API key or a compatible endpoint.",
     quota: "OpenAI API usage and limits are account/project specific; check the OpenAI dashboard when no quota endpoint is exposed."
@@ -17,6 +30,16 @@ export const PROVIDERS = {
     modelsPath: "/models",
     chatPath: "/chat/completions",
     defaultModel: "kimi-k2.6",
+    models: [
+      "kimi-k2.6",
+      "kimi-k2.5",
+      "moonshot-v1-8k",
+      "moonshot-v1-32k",
+      "moonshot-v1-128k",
+      "moonshot-v1-8k-vision-preview",
+      "moonshot-v1-32k-vision-preview",
+      "moonshot-v1-128k-vision-preview"
+    ],
     envKey: "MOONSHOT_API_KEY",
     quota: "Kimi/Moonshot quota is account specific; Azycode can verify connectivity through /models."
   },
@@ -27,6 +50,7 @@ export const PROVIDERS = {
     modelsPath: "/models",
     chatPath: "/chat/completions",
     defaultModel: "glm-5.1",
+    models: ["glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.6", "glm-4.5"],
     envKey: "ZHIPU_API_KEY",
     quota: "Z.AI Coding Plan exposes coding models through the dedicated coding endpoint; remaining plan limits may require the Z.AI dashboard."
   },
@@ -37,6 +61,16 @@ export const PROVIDERS = {
     modelsPath: "/models",
     chatPath: "/chat/completions",
     defaultModel: "MiniMax-M2.7",
+    models: [
+      "MiniMax-M3",
+      "MiniMax-M2.7",
+      "MiniMax-M2.7-highspeed",
+      "MiniMax-M2.5",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2"
+    ],
     envKey: "MINIMAX_API_KEY",
     quota: "MiniMax plan usage is provider-account specific; use /models for availability and the dashboard for exact remaining usage."
   },
@@ -48,8 +82,24 @@ export const PROVIDERS = {
     chatPath: "/chat/completions",
     messagesPath: "/messages",
     defaultModel: "kimi-k2.6",
+    models: [
+      "glm-5.1",
+      "glm-5",
+      "kimi-k2.5",
+      "kimi-k2.6",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
+      "mimo-v2.5",
+      "mimo-v2.5-pro",
+      "minimax-m3",
+      "minimax-m2.7",
+      "minimax-m2.5",
+      "qwen3.7-max",
+      "qwen3.6-plus",
+      "qwen3.5-plus"
+    ],
     envKey: "OPENCODE_GO_API_KEY",
-    anthropicModels: ["minimax-m3", "minimax-m2.7", "minimax-m2.5", "qwen3.7-max", "qwen3.6-plus"],
+    anthropicModels: ["minimax-m3", "minimax-m2.7", "minimax-m2.5"],
     note: "OpenCode Go routes Kimi/GLM/DeepSeek/MiMo through chat/completions and MiniMax/Qwen through Anthropic messages.",
     quota: "Documented Go limits: $12 per 5 hours, $30 weekly, $60 monthly. Exact remaining usage is tracked in the OpenCode console."
   },
@@ -81,6 +131,26 @@ export function normalizeBaseUrl(baseUrl) {
   return String(baseUrl || "").replace(/\/+$/, "");
 }
 
+export function providerModelList(cfg, name) {
+  const preset = providerPreset(name);
+  const saved = cfg.providers?.[name] || {};
+  return uniqueModels([
+    ...(saved.models || []),
+    saved.model,
+    cfg.activeProvider === name ? cfg.activeModel : null,
+    ...(preset.models || []),
+    preset.defaultModel
+  ]);
+}
+
+export function withProviderModels(cfg, name, saved = cfg.providers?.[name] || {}) {
+  return {
+    ...saved,
+    model: saved.model || cfg.activeModel || providerPreset(name).defaultModel,
+    models: providerModelList({ ...cfg, providers: { ...(cfg.providers || {}), [name]: saved } }, name)
+  };
+}
+
 export function providerConfig(cfg, name = cfg.activeProvider) {
   if (!name) throw new Error("No active provider. Run 'azycode login <provider>'.");
   const preset = providerPreset(name);
@@ -91,6 +161,7 @@ export function providerConfig(cfg, name = cfg.activeProvider) {
     ...saved,
     baseUrl: normalizeBaseUrl(saved.baseUrl || preset.baseUrl),
     model: saved.model || cfg.activeModel || preset.defaultModel,
+    models: providerModelList(cfg, name),
     apiKey: saved.apiKey || process.env[preset.envKey]
   };
 }
@@ -99,6 +170,10 @@ export function resolveProtocol(provider, model = provider.model) {
   if (provider.protocol !== "auto") return provider.protocol;
   if (provider.anthropicModels?.includes(model)) return "anthropic-messages";
   return "openai-chat";
+}
+
+function uniqueModels(models) {
+  return [...new Set(models.filter(Boolean).map(String))];
 }
 
 export function chatPathFor(provider, model = provider.model) {

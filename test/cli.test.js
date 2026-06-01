@@ -68,6 +68,7 @@ test("models use updates active model", () => {
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeModel, "new-model");
   assert.equal(cfg.providers.byok.model, "new-model");
+  assert.deepEqual(cfg.providers.byok.models, ["old", "new-model"]);
 });
 
 test("provider current reports missing provider without stack trace", () => {
@@ -201,6 +202,31 @@ test("tui can inspect and update tool policy", async () => {
   assert.match(stdout, /Tool policy[\s\S]*shell\s+auto/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.toolPolicy.shell, "auto");
+});
+
+test("tui model command lists and preserves provider models", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "old",
+    providers: {
+      byok: { baseUrl: "http://127.0.0.1:9999/v1", model: "old", models: ["old", "candidate"], apiKey: "sk-local" }
+    }
+  }));
+  const stdout = await runWithInput([], "/model\n/model candidate\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Models \(byok\)[\s\S]*\* old[\s\S]*candidate/);
+  assert.match(stdout, /model: candidate/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeModel, "candidate");
+  assert.deepEqual(cfg.providers.byok.models, ["old", "candidate"]);
+});
+
+test("tui slash by itself opens the command palette", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Commands[\s\S]*\/status\s+active model/);
+  assert.match(stdout, /\/login\s+connect a provider/);
+  assert.match(stdout, /active: no provider\/no model/);
 });
 
 test("tui sends follow-up messages with conversation context", async () => {

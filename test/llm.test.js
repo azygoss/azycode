@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { LlmClient, fromAnthropicMessage, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
+import { LlmClient, formatProviderHttpError, fromAnthropicMessage, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
 
 test("converts OpenAI tool schema to Anthropic tool schema", () => {
   const tool = toAnthropicTool({
@@ -41,6 +41,13 @@ test("normalizes Anthropic response to OpenAI completion shape", () => {
   const message = normalized.choices[0].message;
   assert.equal(message.content, "Use tool");
   assert.equal(message.tool_calls[0].function.name, "search");
+});
+
+test("provider auth errors explain how to recover", () => {
+  const message = formatProviderHttpError("kimi", 401, "{\"error\":\"Invalid Authentication\"}");
+  assert.match(message, /authentication failed/);
+  assert.match(message, /azycode login kimi/);
+  assert.match(message, /Invalid Authentication/);
 });
 
 test("LlmClient sends OpenAI chat request to configured BYOK endpoint", async () => {
