@@ -24,6 +24,7 @@ azycode doctor
 azycode doctor --json
 azycode completion zsh
 azycode login kimi
+azycode login kimi-api
 azycode login zai-coding
 azycode login minimax
 azycode login opencode-go
@@ -40,6 +41,7 @@ azycode status
 azycode dashboard
 azycode help mission
 azycode models
+azycode models sync
 azycode models use <model>
 azycode models inspect [model]
 azycode provider current
@@ -73,12 +75,12 @@ azycode subagent list
 azycode subagent add security-reviewer
 ```
 
-Run `azycode` without arguments to open the interactive terminal workspace. Type a task directly, or use slash commands such as `/status`, `/dashboard`, `/sessions`, `/tools`, `/goals`, `/missions`, `/mission`, `/memory`, `/agents`, `/agent`, `/providers`, `/provider`, `/login`, `/new`, `/compact`, `/mode`, `/reasoning`, `/model`, `/profile`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
+Run `azycode` without arguments to open the interactive terminal workspace. Type `/` to show the command palette, type a task directly, or use slash commands such as `/status`, `/dashboard`, `/sessions`, `/tools`, `/policy`, `/goals`, `/missions`, `/mission`, `/memory`, `/agents`, `/agent`, `/providers`, `/provider`, `/login`, `/new`, `/compact`, `/mode`, `/reasoning`, `/model`, `/models`, `/profile`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
 
 Inside the terminal workspace, `Tab` rotates reasoning effort and `Shift+Tab` rotates mode. The prompt always shows the active mode and reasoning level.
 Messages in one terminal workspace share conversation and tool context. Use `/compact` to retain only recent context or `/new` when you want a clean conversation. Long conversations are trimmed automatically at user-message boundaries.
 
-Use `/login` inside the terminal workspace to choose a provider from a numbered list and enter its API key. Preset endpoint and model details are filled automatically; BYOK additionally asks for its custom URL and model.
+Use `/login` inside the terminal workspace to choose a provider from the picker and enter its API key. Preset endpoint and model details are filled automatically; BYOK additionally asks for its custom URL and model. Use `/provider` and `/model` without arguments to switch configured providers and saved models from a picker.
 
 Use `azycode doctor` to confirm which binary you are running while developing. If another global `azycode` exists on `PATH`, run this project directly with `node ./bin/azycode.js ...` or use `npm link` from this directory.
 
@@ -107,10 +109,12 @@ In the interactive `azycode run` prompt:
 ## Provider notes
 
 - OpenAI/Codex: ChatGPT subscription login is not an API credential. Use an OpenAI API key or compatible endpoint.
-- Kimi: preset uses Moonshot's OpenAI-compatible endpoint.
+- Kimi Code: `kimi` uses the Kimi Code/Coding Plan endpoint (`https://api.kimi.com/coding/v1`) with model `kimi-for-coding`. This is separate from the standard Moonshot API.
+- Kimi API: `kimi-api` uses Moonshot's standard OpenAI-compatible endpoint (`https://api.moonshot.ai/v1`) and API billing.
 - Z.AI Coding Plan: preset uses the Coding Plan OpenAI-compatible endpoint.
 - MiniMax: preset uses the OpenAI-compatible endpoint.
-- OpenCode Go: preset supports the Go `chat/completions` models. Go models served through Anthropic `messages` are represented in docs but need a future Anthropic adapter.
+- OpenCode Go: preset includes the current Go coding model list and routes MiniMax models through the Anthropic `messages` endpoint when required.
+- Models: `azycode models sync` or `/models sync` fetches the active provider's remote `/models` list and stores it without dropping saved models.
 - Status: `azycode status` verifies the active provider through `/models` when available. Exact remaining subscription limits are not standardized across providers; OpenCode Go documents $12/5-hour, $30/week, and $60/month limits, while other providers generally require their dashboards for exact remaining quota.
 
 ## Safety
