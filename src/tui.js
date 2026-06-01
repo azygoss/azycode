@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { emitKeypressEvents } from "node:readline";
+import { clearLine, cursorTo, emitKeypressEvents } from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
@@ -50,7 +50,9 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
   input.on("keypress", onKeypress);
   try {
     while (true) {
+      state.acceptingInput = true;
       const line = (await rl.question(promptLabel(state))).trim();
+      state.acceptingInput = false;
       if (!line) continue;
       if (line.startsWith("/")) {
         const done = await handleCommand(line, state, rl);
@@ -69,20 +71,41 @@ function printWelcome(state) {
   const repo = path.basename(state.cwd);
   const provider = state.cfg.activeProvider || "no provider";
   const model = state.cfg.activeModel || "no model";
-  console.log(style("┌─ azycode ─────────────────────────────────────────────────────", "cyan"));
-  console.log(`${style("│", "cyan")} ${style(repo, "bold")}  ${style("•", "dim")}  ${provider}/${model}`);
-  console.log(`${style("│", "cyan")} ${state.mode}  ${style("•", "dim")}  reasoning ${state.cfg.reasoning}  ${style("•", "dim")}  profile ${state.cfg.permissionProfile || "normal"}`);
-  console.log(style("└─ type a task  /help commands  Tab reasoning  Shift+Tab mode ─", "cyan"));
+  const width = Math.max(56, Math.min(output.columns || 88, 96));
+  const rule = "─".repeat(width);
+  console.log(style("azycode", "bold"));
+  console.log(style(rule, "cyan"));
+  console.log(formatHeaderRow("workspace", repo, width));
+  console.log(formatHeaderRow("model", `${provider}/${model}`, width));
+  console.log(formatHeaderRow("session", `${state.mode}  •  reasoning ${state.cfg.reasoning}  •  profile ${state.cfg.permissionProfile || "normal"}`, width));
+  console.log(formatHeaderRow("shortcuts", "type a task  /help commands  Tab reasoning  Shift+Tab mode", width));
+  console.log(style(rule, "cyan"));
   console.log("");
 }
 
-function promptLabel(state) {
+function formatHeaderRow(label, value, width) {
+  const labelText = label.padEnd(10);
+  const available = Math.max(12, width - labelText.length - 1);
+  return `${style(labelText, "dim")} ${clipText(value, available)}`;
+}
+
+function clipText(value, max) {
+  const text = String(value ?? "");
+  if (text.length <= max) return text;
+  if (max <= 1) return "…";
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function promptLabel(state, { styled = true } = {}) {
   const agent = state.subagent ? ` | @${state.subagent.name}` : "";
-  return `${style(`[${state.mode} | ${state.cfg.reasoning}${agent}]`, "dim")} ${style(">", "cyan")} `;
+  const label = `[${state.mode} | ${state.cfg.reasoning}${agent}]`;
+  if (!styled) return `${label} > `;
+  return `${style(label, "dim")} ${style(">", "cyan")} `;
 }
 
 export function applyShortcut(key, state, options = {}) {
   if (key?.name !== "tab") return;
+  if (state.acceptingInput === false && options.force !== true) return;
   const persist = options.persist !== false;
   const notify = options.notify || ((message) => redrawPrompt(options.rl, state, message));
   if (key.shift) {
@@ -98,7 +121,16 @@ export function applyShortcut(key, state, options = {}) {
 }
 
 function redrawPrompt(rl, state, message) {
-  output.write(`\n${message}\n${promptLabel(state)}${rl.line || ""}`);
+  if (!rl || !output.isTTY) {
+    if (message) console.log(message);
+    return;
+  }
+  const line = rl.line || "";
+  const cursor = rl.cursor ?? line.length;
+  clearLine(output, 0);
+  cursorTo(output, 0);
+  output.write(`${promptLabel(state)}${line}`);
+  cursorTo(output, promptLabel(state, { styled: false }).length + cursor);
 }
 
 async function askAgent(prompt, state, rl = null) {

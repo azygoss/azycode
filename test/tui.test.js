@@ -35,6 +35,15 @@ test("applyShortcut rotates reasoning and mode without persistence when requeste
   assert.deepEqual(events, ["reasoning: high", "mode: always-approve"]);
 });
 
+test("applyShortcut ignores tab while the TUI is busy", () => {
+  const state = { acceptingInput: false, mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+  const events = [];
+  applyShortcut({ name: "tab", shift: true }, state, { persist: false, notify: (message) => events.push(message) });
+  assert.equal(state.mode, "plan");
+  assert.equal(state.cfg.reasoning, "medium");
+  assert.deepEqual(events, []);
+});
+
 test("loginProvider selects a preset and stores only the entered key", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
   process.env.AZYCODE_HOME = home;
