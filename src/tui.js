@@ -17,7 +17,7 @@ import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
 const TUI_COMMANDS = [
-  "help", "status", "dashboard", "sessions", "tools", "goals", "missions", "mission",
+  "help", "status", "health", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
   "model", "models", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
@@ -410,6 +410,10 @@ async function handleCommand(line, state, rl = null) {
     printStatus(state);
     return;
   }
+  if (command === "health") {
+    await printHealth(state);
+    return;
+  }
   console.log(`Unknown command: /${command}. Use /help.`);
 }
 
@@ -417,6 +421,7 @@ function printHelp() {
   console.log("");
   console.log(style("Commands", "cyan"));
   console.log("  /status                 show active model and git guard");
+  console.log("  /health                 check configured provider connectivity");
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
   console.log("  /model <id>             show or change the active model");
@@ -449,6 +454,7 @@ function printHelp() {
 function printCommandPalette(state) {
   const rows = [
     ["/status", "active model, provider, guard"],
+    ["/health", "provider connectivity"],
     ["/login", "connect a provider"],
     ["/provider", "switch configured provider"],
     ["/providers", "show provider presets"],
@@ -572,6 +578,28 @@ function printSessions() {
 function printToolRuns() {
   const runs = (loadState().toolRuns || []).slice(-10).reverse();
   printRows("Tool runs", runs.map((run) => `${run.name}  ${run.ok ? "ok" : "failed"}  ${run.durationMs}ms  ${run.sessionId}`));
+}
+
+async function printHealth(state) {
+  const names = Object.keys(state.cfg.providers || {});
+  console.log("");
+  console.log(style("Health", "cyan"));
+  if (!names.length) {
+    console.log("  No providers configured. Use /login.");
+    console.log("");
+    return;
+  }
+  for (const name of names) {
+    try {
+      const result = await new LlmClient(state.cfg, name).listModels();
+      const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
+      const active = state.cfg.activeProvider === name ? "*" : " ";
+      console.log(`  ${active} ${name.padEnd(12)} ok (${count} models)`);
+    } catch (error) {
+      console.log(`  ! ${name.padEnd(12)} failed (${error.message})`);
+    }
+  }
+  console.log("");
 }
 
 function printToolPolicy(state) {
