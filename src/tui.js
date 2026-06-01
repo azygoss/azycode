@@ -335,6 +335,7 @@ async function handleCommand(line, state, rl = null) {
       applyPermissionProfile(state.cfg);
       saveConfig(state.cfg);
       console.log(`profile: ${next}`);
+      printPolicySummary(state);
     }
     return;
   }
@@ -689,6 +690,12 @@ function printToolPolicy(state) {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, mode]) => `${name.padEnd(14)} ${mode}`);
   printRows("Tool policy", rows);
+}
+
+function printPolicySummary(state) {
+  const values = Object.values(state.cfg.toolPolicy || {});
+  const count = (mode) => values.filter((value) => value === mode).length;
+  console.log(`policy: auto ${count("auto")}  ask ${count("ask")}  deny ${count("deny")}`);
 }
 
 function handleToolPolicy(args, state) {

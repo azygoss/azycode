@@ -166,6 +166,7 @@ test("default command launches the interactive tui", async () => {
   assert.match(stdout, /type a task\s+\/help commands\s+Tab reasoning\s+Shift\+Tab mode/);
   assert.match(stdout, /no provider\/no model/);
   assert.match(stdout, /Status[\s\S]*provider\s+no provider[\s\S]*model\s+mock-next[\s\S]*mode\s+goal[\s\S]*reasoning\s+high[\s\S]*profile\s+read-only/);
+  assert.match(stdout, /policy: auto \d+\s+ask \d+\s+deny \d+/);
   assert.match(stdout, /conversation: 0 -> 0 messages/);
   assert.match(stdout, /conversation: cleared/);
   assert.match(stdout, /Dashboard/);
