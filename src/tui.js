@@ -657,10 +657,12 @@ async function handleModels(args, state) {
     console.log(style("syncing models...", "dim"));
     const result = await new LlmClient(state.cfg).listModels();
     const remoteModels = modelIdsFromResponse(result);
-    state.cfg.providers[state.cfg.activeProvider] = withProviderModels(state.cfg, state.cfg.activeProvider, {
+    const scopedCfg = { ...state.cfg, activeModel: state.cfg.providers[state.cfg.activeProvider]?.model || state.cfg.activeModel };
+    state.cfg.providers[state.cfg.activeProvider] = withProviderModels(scopedCfg, state.cfg.activeProvider, {
       ...state.cfg.providers[state.cfg.activeProvider],
-      models: [...providerModelList(state.cfg, state.cfg.activeProvider), ...remoteModels]
+      models: [...providerModelList(scopedCfg, state.cfg.activeProvider), ...remoteModels]
     });
+    state.cfg.activeModel = state.cfg.providers[state.cfg.activeProvider].model;
     saveConfig(state.cfg);
     console.log(`models: synced ${remoteModels.length} remote models`);
   } catch (error) {

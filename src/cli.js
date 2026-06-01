@@ -532,10 +532,12 @@ async function models(args = []) {
     const client = new LlmClient(cfg);
     const result = await client.listModels();
     const remoteModels = modelIdsFromResponse(result);
-    cfg.providers[cfg.activeProvider] = withProviderModels(cfg, cfg.activeProvider, {
+    const scopedCfg = { ...cfg, activeModel: cfg.providers[cfg.activeProvider]?.model || cfg.activeModel };
+    cfg.providers[cfg.activeProvider] = withProviderModels(scopedCfg, cfg.activeProvider, {
       ...cfg.providers[cfg.activeProvider],
-      models: [...providerModelList(cfg, cfg.activeProvider), ...remoteModels]
+      models: [...providerModelList(scopedCfg, cfg.activeProvider), ...remoteModels]
     });
+    cfg.activeModel = cfg.providers[cfg.activeProvider].model;
     saveConfig(cfg);
     console.log(`Synced ${remoteModels.length} remote models for ${cfg.activeProvider}.`);
     return;

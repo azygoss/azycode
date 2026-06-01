@@ -86,9 +86,13 @@ test("models sync stores remote model ids without dropping saved models", async 
   try {
     const { port } = server.address();
     run(["login", "byok", "--base-url", `http://127.0.0.1:${port}/v1`, "--model", "local", "--api-key", "sk-local"], { AZYCODE_HOME: home });
+    const before = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    before.activeModel = "stale";
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify(before));
     const out = await runAsync(["models", "sync"], { AZYCODE_HOME: home });
     assert.match(out, /Synced 2 remote models/);
     const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    assert.equal(cfg.activeModel, "local");
     assert.deepEqual(cfg.providers.byok.models, ["local", "remote-a", "remote-b"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
