@@ -260,6 +260,13 @@ test("tui health checks configured provider connectivity", async () => {
   }
 });
 
+test("tui doctor shows local runtime paths", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/doctor\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Doctor[\s\S]*install root/);
+  assert.match(stdout, /config home[\s\S]*azy-cli-/);
+});
+
 test("tui model command lists and preserves provider models", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({

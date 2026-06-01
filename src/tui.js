@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { clearLine, cursorTo, emitKeypressEvents, moveCursor } from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import { style } from "./ui.js";
@@ -16,8 +17,9 @@ import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
+const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TUI_COMMANDS = [
-  "help", "status", "health", "dashboard", "sessions", "tools", "goals", "missions", "mission",
+  "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
   "model", "models", "profile", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
@@ -414,6 +416,10 @@ async function handleCommand(line, state, rl = null) {
     await printHealth(state);
     return;
   }
+  if (command === "doctor") {
+    printDoctor(state);
+    return;
+  }
   console.log(`Unknown command: /${command}. Use /help.`);
 }
 
@@ -422,6 +428,7 @@ function printHelp() {
   console.log(style("Commands", "cyan"));
   console.log("  /status                 show active model and git guard");
   console.log("  /health                 check configured provider connectivity");
+  console.log("  /doctor                 show local binary and config paths");
   console.log("  /mode <name>            plan, always-approve, goal, review");
   console.log("  /reasoning <level>      minimal, low, medium, high");
   console.log("  /model <id>             show or change the active model");
@@ -455,6 +462,7 @@ function printCommandPalette(state) {
   const rows = [
     ["/status", "active model, provider, guard"],
     ["/health", "provider connectivity"],
+    ["/doctor", "local binary and config paths"],
     ["/login", "connect a provider"],
     ["/provider", "switch configured provider"],
     ["/providers", "show provider presets"],
@@ -599,6 +607,20 @@ async function printHealth(state) {
       console.log(`  ! ${name.padEnd(12)} failed (${error.message})`);
     }
   }
+  console.log("");
+}
+
+function printDoctor(state) {
+  console.log("");
+  console.log(style("Doctor", "cyan"));
+  printKeyValues([
+    ["project", state.cwd],
+    ["install root", INSTALL_ROOT],
+    ["node", process.version],
+    ["config home", azyHome()],
+    ["active provider", state.cfg.activeProvider || "(none)"],
+    ["active model", state.cfg.activeModel || "(none)"]
+  ]);
   console.log("");
 }
 
