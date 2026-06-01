@@ -695,8 +695,8 @@ async function configCmd(args) {
     if (!REASONING_LEVELS.includes(args[2])) throw new Error(`Reasoning must be one of: ${REASONING_LEVELS.join(", ")}`);
     cfg.reasoning = args[2];
   } else if (args[0] === "set" && args[1] === "model") {
-    cfg.activeModel = args[2];
-    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) cfg.providers[cfg.activeProvider].model = args[2];
+    if (!args[2]) throw new Error("Usage: azycode config set model <model|provider/model>");
+    selectCliModel(cfg, args[2]);
   } else if (args[0] === "set" && args[1] === "tool") {
     const [, , tool, mode] = args;
     if (!tool || !["auto", "ask", "deny"].includes(mode)) throw new Error("Usage: azycode config set tool <name> <auto|ask|deny>");

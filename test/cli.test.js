@@ -90,6 +90,23 @@ test("model command lists and switches provider/model together", () => {
   assert.equal(cfg.activeModel, "gpt-test");
 });
 
+test("config set model can switch provider and model together", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "local-a",
+    providers: {
+      byok: { baseUrl: "http://127.0.0.1:9999/a", model: "local-a", models: ["local-a"], apiKey: "sk-a" },
+      openai: { baseUrl: "http://127.0.0.1:9999/b", model: "gpt-test", models: ["gpt-test"], apiKey: "sk-b" }
+    }
+  }));
+  const out = run(["config", "set", "model", "openai/gpt-test"], { AZYCODE_HOME: home });
+  assert.match(out, /Config updated/);
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.activeProvider, "openai");
+  assert.equal(cfg.activeModel, "gpt-test");
+});
+
 test("models sync stores remote model ids without dropping saved models", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const server = http.createServer((req, res) => {
