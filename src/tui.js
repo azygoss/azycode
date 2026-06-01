@@ -10,6 +10,7 @@ import { formatGuard, gitGuard } from "./guard.js";
 import { style } from "./ui.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
+const MAX_CONVERSATION_MESSAGES = 80;
 
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
@@ -118,7 +119,7 @@ async function askAgent(prompt, state) {
       conversation: state.conversation,
       returnSession: true
     });
-    state.conversation = result.messages.filter((message) => message.role !== "system");
+    state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
     console.log("");
     console.log(style("assistant", "cyan"));
     console.log(result.content);
@@ -150,6 +151,12 @@ async function handleCommand(line, state) {
   if (command === "new") {
     state.conversation = [];
     console.log("conversation: cleared");
+    return;
+  }
+  if (command === "compact") {
+    const before = state.conversation.length;
+    state.conversation = trimConversation(state.conversation, 20);
+    console.log(`conversation: ${before} -> ${state.conversation.length} messages`);
     return;
   }
   if (command === "mode") {
@@ -240,10 +247,18 @@ function printHelp() {
   console.log("  /review                 inspect local git changes");
   console.log("  /dashboard              show local session and automation counts");
   console.log("  /new                    start a fresh conversation");
+  console.log("  /compact                keep only recent conversation context");
   console.log("  /login                  show provider setup command");
   console.log("  /clear                  clear the terminal");
   console.log("  /exit                   leave azycode");
   console.log("");
+}
+
+export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAGES) {
+  if (messages.length <= maxMessages) return messages;
+  const tailStart = Math.max(0, messages.length - maxMessages);
+  const userBoundary = messages.findIndex((message, index) => index >= tailStart && message.role === "user");
+  return messages.slice(userBoundary === -1 ? tailStart : userBoundary);
 }
 
 function printDashboard(state) {

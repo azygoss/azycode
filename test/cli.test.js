@@ -131,12 +131,13 @@ test("chat slash commands work with piped stdin", async () => {
 
 test("default command launches the interactive tui", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
-  const stdout = await runWithInput([], "/reasoning high\n/mode goal\n/model mock-next\n/profile read-only\n/status\n/new\n/dashboard\n/login\n/exit\n", { AZYCODE_HOME: home });
+  const stdout = await runWithInput([], "/reasoning high\n/mode goal\n/model mock-next\n/profile read-only\n/status\n/compact\n/new\n/dashboard\n/login\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /azycode/);
   assert.match(stdout, /Type a task or \/help/);
   assert.match(stdout, /Tab: reasoning\. Shift\+Tab: mode/);
   assert.match(stdout, /no provider\/no model/);
   assert.match(stdout, /no provider\/mock-next\s+\|\s+goal\s+\|\s+reasoning high\s+\|\s+profile read-only/);
+  assert.match(stdout, /conversation: 0 -> 0 messages/);
   assert.match(stdout, /conversation: cleared/);
   assert.match(stdout, /Dashboard/);
   assert.match(stdout, /azycode login <openai/);
