@@ -173,6 +173,15 @@ function commandHelp(topic) {
       ],
       notes: ["Keys are stored in ~/.azycode/config.json with 0600 permissions."]
     },
+    model: {
+      summary: "Show all known models under one provider-grouped view and switch provider/model together.",
+      usage: [
+        "azycode model",
+        "azycode model <provider/model>",
+        "azycode models sync all"
+      ],
+      notes: ["Configured providers are shown first. Selecting provider/model updates both active provider and active model."]
+    },
     review: {
       summary: "Review local changes or ask the model for review.",
       usage: ["azycode review --local", "azycode review \"review current changes\""],

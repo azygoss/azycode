@@ -624,6 +624,9 @@ test("topic help shows focused command usage", () => {
   assert.match(out, /azycode mission/);
   assert.match(out, /mission dry-run/);
   assert.match(out, /dependencies/);
+  const model = run(["help", "model"]);
+  assert.match(model, /azycode model <provider\/model>/);
+  assert.match(model, /updates both active provider and active model/);
 });
 
 test("status uses labeled output without configured providers", () => {
