@@ -17,6 +17,7 @@ import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import * as ui from "./ui.js";
+import { launchTui } from "./tui.js";
 
 const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,7 +28,8 @@ const COMMANDS = [
 ];
 
 export async function main(argv) {
-  const [cmd = "help", ...args] = argv;
+  const [cmd, ...args] = argv;
+  if (!cmd) return launchTui({ cwd: process.cwd() });
   switch (cmd) {
     case "help": return help(args);
     case "providers": return providers();

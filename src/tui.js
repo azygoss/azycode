@@ -1,0 +1,185 @@
+import fs from "node:fs";
+import path from "node:path";
+import readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { runAgent } from "./agent.js";
+import { loadConfig, loadState, saveConfig, MODES, REASONING_LEVELS, normalizeMode } from "./config.js";
+import { formatLocalReview, localReview } from "./local-review.js";
+import { formatGuard, gitGuard } from "./guard.js";
+import { style } from "./ui.js";
+
+export async function launchTui({ cwd = process.cwd() } = {}) {
+  const cfg = loadConfig();
+  const state = {
+    cfg,
+    cwd,
+    mode: normalizeMode(cfg.mode),
+    includeContext: false,
+    progress: true
+  };
+  printWelcome(state);
+
+  if (!input.isTTY) {
+    const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith("/")) {
+        const done = await handleCommand(line, state);
+        if (done === "exit") break;
+      } else {
+        await askAgent(line, state);
+      }
+    }
+    return;
+  }
+
+  const rl = readline.createInterface({ input, output });
+  try {
+    while (true) {
+      const line = (await rl.question(`${style(">", "cyan")} `)).trim();
+      if (!line) continue;
+      if (line.startsWith("/")) {
+        const done = await handleCommand(line, state);
+        if (done === "exit") break;
+        continue;
+      }
+      await askAgent(line, state);
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+function printWelcome(state) {
+  const repo = path.basename(state.cwd);
+  const provider = state.cfg.activeProvider || "no provider";
+  const model = state.cfg.activeModel || "no model";
+  console.log(style("azycode", "bold"));
+  console.log(style(`${repo}  |  ${provider}/${model}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}`, "dim"));
+  console.log(style("Type a task or /help. Ctrl+C exits.", "dim"));
+  console.log("");
+}
+
+async function askAgent(prompt, state) {
+  if (!state.cfg.activeProvider) {
+    console.log(style("No provider configured. Run `azycode login <provider>` in another terminal, then restart.", "yellow"));
+    console.log("");
+    return;
+  }
+  console.log(style("working...", "dim"));
+  try {
+    const answer = await runAgent({
+      cfg: state.cfg,
+      cwd: state.cwd,
+      prompt,
+      mode: state.mode,
+      includeContext: state.includeContext,
+      onEvent: state.progress ? progressLine : null
+    });
+    console.log("");
+    console.log(style("assistant", "cyan"));
+    console.log(answer);
+    console.log("");
+  } catch (error) {
+    console.log(style(`error: ${error.message}`, "red"));
+    console.log("");
+  }
+}
+
+function progressLine(event) {
+  if (event.type === "model_start") console.log(style(`  model step ${event.step}`, "dim"));
+  else if (event.type === "tool_start") console.log(style(`  tool  ${event.tool}`, "dim"));
+  else if (event.type === "tool_end") console.log(style(`  done  ${event.tool} (${event.durationMs}ms)`, event.ok ? "green" : "red"));
+}
+
+async function handleCommand(line, state) {
+  const [command, ...args] = line.slice(1).trim().split(/\s+/);
+  if (command === "exit" || command === "quit") return "exit";
+  if (command === "help") {
+    printHelp();
+    return;
+  }
+  if (command === "clear") {
+    if (output.isTTY) output.write("\x1b[2J\x1b[H");
+    printWelcome(state);
+    return;
+  }
+  if (command === "mode") {
+    const next = normalizeMode(args[0]);
+    if (!MODES.includes(next)) console.log(`mode: ${MODES.join(", ")}`);
+    else {
+      state.mode = next;
+      state.cfg.mode = next;
+      saveConfig(state.cfg);
+      console.log(`mode: ${next}`);
+    }
+    return;
+  }
+  if (command === "reasoning") {
+    const next = args[0];
+    if (!REASONING_LEVELS.includes(next)) console.log(`reasoning: ${REASONING_LEVELS.join(", ")}`);
+    else {
+      state.cfg.reasoning = next;
+      saveConfig(state.cfg);
+      console.log(`reasoning: ${next}`);
+    }
+    return;
+  }
+  if (command === "context") {
+    state.includeContext = !state.includeContext;
+    console.log(`context: ${state.includeContext}`);
+    return;
+  }
+  if (command === "progress") {
+    state.progress = !state.progress;
+    console.log(`progress: ${state.progress}`);
+    return;
+  }
+  if (command === "review") {
+    console.log(formatLocalReview(localReview(state.cwd)));
+    return;
+  }
+  if (command === "dashboard") {
+    printDashboard(state);
+    return;
+  }
+  if (command === "login") {
+    console.log("Configure a provider in another terminal, then restart this workspace:");
+    console.log("  azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>");
+    return;
+  }
+  if (command === "status") {
+    console.log(`${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  |  ${state.mode}  |  reasoning ${state.cfg.reasoning}  |  context ${state.includeContext}`);
+    console.log(formatGuard(gitGuard(state.cwd, state.cfg)));
+    return;
+  }
+  console.log(`Unknown command: /${command}. Use /help.`);
+}
+
+function printHelp() {
+  console.log("");
+  console.log(style("Commands", "cyan"));
+  console.log("  /status                 show active model and git guard");
+  console.log("  /mode <name>            plan, always-approve, goal, review");
+  console.log("  /reasoning <level>      minimal, low, medium, high");
+  console.log("  /context                toggle bounded repository context");
+  console.log("  /progress               toggle inline model/tool activity");
+  console.log("  /review                 inspect local git changes");
+  console.log("  /dashboard              show local session and automation counts");
+  console.log("  /login                  show provider setup command");
+  console.log("  /clear                  clear the terminal");
+  console.log("  /exit                   leave azycode");
+  console.log("");
+}
+
+function printDashboard(state) {
+  const saved = loadState();
+  console.log("");
+  console.log(style("Dashboard", "cyan"));
+  console.log(`  sessions    ${Object.keys(saved.sessions || {}).length}`);
+  console.log(`  goals       ${Object.keys(saved.goals || {}).length}`);
+  console.log(`  missions    ${Object.keys(saved.missions || {}).length}`);
+  console.log(`  tool runs   ${(saved.toolRuns || []).length}`);
+  console.log("");
+}

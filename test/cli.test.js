@@ -129,6 +129,16 @@ test("chat slash commands work with piped stdin", async () => {
   assert.match(stdout, /progress=true/);
 });
 
+test("default command launches the interactive tui", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const stdout = await runWithInput([], "/status\n/dashboard\n/login\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /azycode/);
+  assert.match(stdout, /Type a task or \/help/);
+  assert.match(stdout, /no provider\/no model/);
+  assert.match(stdout, /Dashboard/);
+  assert.match(stdout, /azycode login <openai/);
+});
+
 test("plan --save writes an artifact using a configured mock provider", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const outFile = path.join(home, "plan.md");

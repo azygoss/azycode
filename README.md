@@ -35,6 +35,7 @@ API keys are stored in `~/.azycode/config.json` with file mode `0600`. You can o
 ## Core commands
 
 ```sh
+azycode
 azycode status
 azycode dashboard
 azycode help mission
@@ -71,6 +72,8 @@ azycode mission report <id>
 azycode subagent list
 azycode subagent add security-reviewer
 ```
+
+Run `azycode` without arguments to open the interactive terminal workspace. Type a task directly, or use slash commands such as `/status`, `/dashboard`, `/login`, `/mode`, `/reasoning`, `/context`, `/progress`, `/review`, `/clear`, and `/exit`.
 
 Use `azycode doctor` to confirm which binary you are running while developing. If another global `azycode` exists on `PATH`, run this project directly with `node ./bin/azycode.js ...` or use `npm link` from this directory.
 
