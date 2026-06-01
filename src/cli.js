@@ -23,7 +23,7 @@ import { launchTui } from "./tui.js";
 const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const COMMANDS = [
-  "help", "providers", "init", "doctor", "login", "status", "models", "provider", "health",
+  "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
   "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "keys"
 ];
@@ -38,6 +38,7 @@ export async function main(argv) {
     case "doctor": return doctor(args);
     case "login": return login(args);
     case "status": return status();
+    case "model": return modelCmd(args);
     case "models": return models(args);
     case "provider": return providerCmd(args);
     case "health": return health();
@@ -95,7 +96,8 @@ function help(args = []) {
   ui.section("Inspect and configure");
   ui.list([
     "azycode providers",
-    "azycode models | azycode models sync [all] | azycode models use <model>",
+    "azycode model | azycode model <provider/model>",
+    "azycode models sync [all] | azycode models use <model>",
     "azycode tools | azycode tools log",
     "azycode guard status",
     "azycode context pack",
@@ -553,16 +555,8 @@ async function models(args = []) {
     const model = args[1];
     if (!model) throw new Error("Usage: azycode models use <model>");
     const cfg = loadConfig();
-    cfg.activeModel = model;
-    if (cfg.activeProvider && cfg.providers[cfg.activeProvider]) {
-      cfg.providers[cfg.activeProvider] = withProviderModels(cfg, cfg.activeProvider, {
-        ...cfg.providers[cfg.activeProvider],
-        model,
-        models: [...providerModelList(cfg, cfg.activeProvider), model]
-      });
-    }
-    saveConfig(cfg);
-    console.log(`Active model set to ${model}.`);
+    const selected = selectCliModel(cfg, model);
+    console.log(`Active model set to ${selected.provider}/${selected.model}.`);
     return;
   }
   if (args[0] === "inspect") {
@@ -584,6 +578,69 @@ async function models(args = []) {
   } else {
     console.log(JSON.stringify(result, null, 2));
   }
+}
+
+function modelCmd(args = []) {
+  const cfg = loadConfig();
+  if (!args.length) {
+    printCliModelHub(cfg);
+    return;
+  }
+  const selected = selectCliModel(cfg, args.join(" "));
+  console.log(`Active model set to ${selected.provider}/${selected.model}.`);
+}
+
+function printCliModelHub(cfg) {
+  ui.title("Models");
+  for (const provider of orderedProviderNames(cfg)) {
+    const configured = Boolean(cfg.providers?.[provider]);
+    const activeProvider = cfg.activeProvider === provider ? "*" : " ";
+    console.log(`${activeProvider} ${provider}${configured ? "" : " (not configured)"}`);
+    for (const model of providerModelList(cfg, provider)) {
+      const activeModel = cfg.activeProvider === provider && cfg.activeModel === model ? "*" : " ";
+      console.log(`  ${activeModel} ${model}`);
+    }
+  }
+}
+
+function orderedProviderNames(cfg) {
+  const known = providerNames();
+  const configured = Object.keys(cfg.providers || {}).filter((name) => known.includes(name));
+  const active = cfg.activeProvider && known.includes(cfg.activeProvider) ? [cfg.activeProvider] : [];
+  return [...new Set([...active, ...configured, ...known])];
+}
+
+function selectCliModel(cfg, requested) {
+  const configured = Object.keys(cfg.providers || {});
+  const entries = configured.flatMap((provider) => providerModelList(cfg, provider).map((model) => ({
+    provider,
+    model,
+    id: `${provider}/${model}`
+  })));
+  const exact = entries.find((entry) => entry.id === requested);
+  const matches = entries.filter((entry) => entry.model === requested);
+  const selected = exact || (matches.length === 1 ? matches[0] : null);
+  if (selected) {
+    cfg.activeProvider = selected.provider;
+    cfg.activeModel = selected.model;
+    cfg.providers[selected.provider] = withProviderModels(cfg, selected.provider, {
+      ...cfg.providers[selected.provider],
+      model: selected.model,
+      models: [...providerModelList(cfg, selected.provider), selected.model]
+    });
+    saveConfig(cfg);
+    return selected;
+  }
+  if (matches.length > 1) throw new Error(`Model '${requested}' exists in multiple providers. Use provider/model.`);
+  if (!cfg.activeProvider || !cfg.providers[cfg.activeProvider]) throw new Error("No configured provider. Run 'azycode login <provider>'.");
+  cfg.activeModel = requested;
+  cfg.providers[cfg.activeProvider] = withProviderModels(cfg, cfg.activeProvider, {
+    ...cfg.providers[cfg.activeProvider],
+    model: requested,
+    models: [...providerModelList(cfg, cfg.activeProvider), requested]
+  });
+  saveConfig(cfg);
+  return { provider: cfg.activeProvider, model: requested };
 }
 
 function providerCmd(args = []) {

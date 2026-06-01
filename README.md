@@ -40,6 +40,8 @@ azycode
 azycode status
 azycode dashboard
 azycode help mission
+azycode model
+azycode model <provider/model>
 azycode models
 azycode models sync
 azycode models sync all

@@ -815,7 +815,7 @@ function printModels(state) {
     return;
   }
   const rows = [];
-  for (const name of providerNames()) {
+  for (const name of orderedProviderNames(state.cfg)) {
     const providerEntries = entries.filter((entry) => entry.provider === name);
     if (!providerEntries.length) continue;
     const configured = Boolean(state.cfg.providers?.[name]);
@@ -890,7 +890,7 @@ function selectModel(state, requested) {
 
 function modelSelectionEntries(state) {
   const rows = [];
-  for (const provider of providerNames()) {
+  for (const provider of orderedProviderNames(state.cfg)) {
     const configured = Boolean(state.cfg.providers?.[provider]);
     const models = providerModelList(state.cfg, provider);
     for (const model of models) {
@@ -903,6 +903,13 @@ function modelSelectionEntries(state) {
     }
   }
   return rows;
+}
+
+function orderedProviderNames(cfg) {
+  const known = providerNames();
+  const configured = Object.keys(cfg.providers || {}).filter((name) => known.includes(name));
+  const active = cfg.activeProvider && known.includes(cfg.activeProvider) ? [cfg.activeProvider] : [];
+  return [...new Set([...active, ...configured, ...known])];
 }
 
 async function handleModels(args, state) {
