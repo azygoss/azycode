@@ -49,3 +49,18 @@ test("loginProvider selects a preset and stores only the entered key", async () 
     apiKey: "sk-kimi"
   });
 });
+
+test("loginProvider asks BYOK for endpoint and model", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  process.env.AZYCODE_HOME = home;
+  const answers = ["6", "sk-local", "http://127.0.0.1:11434/v1", "local-coder"];
+  const state = { cfg: { providers: {} } };
+  await loginProvider(state, { question: async () => answers.shift() });
+  assert.equal(state.cfg.activeProvider, "byok");
+  assert.equal(state.cfg.activeModel, "local-coder");
+  assert.deepEqual(state.cfg.providers.byok, {
+    baseUrl: "http://127.0.0.1:11434/v1",
+    model: "local-coder",
+    apiKey: "sk-local"
+  });
+});

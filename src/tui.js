@@ -466,6 +466,8 @@ export async function loginProvider(state, rl) {
   state.cfg.activeModel = model;
   saveConfig(state.cfg);
   console.log(`connected: ${name}/${model}`);
+  console.log(`endpoint: ${baseUrl || "(custom)"}`);
+  console.log("next: type a task, or use /status to inspect the active setup");
 }
 
 async function readSecret(label, rl) {
