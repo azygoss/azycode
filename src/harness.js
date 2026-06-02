@@ -64,7 +64,7 @@ export function summarizeToolArgs(tool, args = {}) {
 
 function stepLabel(step, maxSteps) {
   if (!step) return "";
-  if (maxSteps) return `Step ${step}/${maxSteps}`;
+  if (maxSteps && step <= maxSteps) return `Step ${step}/${maxSteps}`;
   return `Step ${step}`;
 }
 

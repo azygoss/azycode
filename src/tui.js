@@ -343,6 +343,7 @@ async function askAgent(prompt, state, rl = null) {
       confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
       subagent: state.subagent,
       onModeChange: ({ mode, persist }) => {
+        if (state.subagent) return;
         state.mode = mode;
         state.cfg.mode = mode;
         if (persist) saveConfig(state.cfg);

@@ -168,12 +168,11 @@ export function saveConfig(cfg) {
 
 export function loadState() {
   ensureHome();
-  const state = readJson(statePath(), { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [], todos: {} });
+  const state = readJson(statePath(), { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] });
   state.sessions ||= {};
   state.goals ||= {};
   state.missions ||= {};
   state.toolRuns ||= [];
-  state.todos ||= {};
   return state;
 }
 

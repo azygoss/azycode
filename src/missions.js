@@ -27,6 +27,7 @@ export async function runMission({ cfg, cwd, file, confirmTool = null, onEvent =
   const outputs = [];
   for (const [index, normalized] of steps.entries()) {
     const subagent = normalized.agent ? cfg.subagents?.[normalized.agent] : null;
+    let stepMode = normalized.mode;
     let output;
     try {
       output = await runAgent({
@@ -37,11 +38,14 @@ export async function runMission({ cfg, cwd, file, confirmTool = null, onEvent =
         subagent,
         maxSteps: normalized.maxSteps,
         confirmTool,
-        onEvent
+        onEvent,
+        onModeChange: ({ mode }) => {
+          stepMode = mode;
+        }
       });
     } catch (error) {
       const latest = loadState();
-      latest.missions[missionId].steps.push({ index: index + 1, prompt: normalized.prompt, status: "failed", error: error.message });
+      latest.missions[missionId].steps.push({ index: index + 1, prompt: normalized.prompt, status: "failed", error: error.message, mode: stepMode });
       if (!normalized.continueOnError) {
         latest.missions[missionId].status = "failed";
         latest.missions[missionId].finishedAt = new Date().toISOString();
@@ -54,7 +58,7 @@ export async function runMission({ cfg, cwd, file, confirmTool = null, onEvent =
     }
     outputs.push({ index: index + 1, prompt: normalized.prompt, output });
     const latest = loadState();
-    latest.missions[missionId].steps.push({ index: index + 1, prompt: normalized.prompt, status: "done" });
+    latest.missions[missionId].steps.push({ index: index + 1, prompt: normalized.prompt, status: "done", mode: stepMode });
     saveState(latest);
   }
 
