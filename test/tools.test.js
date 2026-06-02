@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTools } from "../src/tools.js";
+import { createModeRuntime } from "../src/agent-runtime.js";
 
 test("apply_patch tool applies a unified diff inside workspace", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
@@ -106,4 +107,28 @@ test("ask policy can use a TUI confirmation callback", async () => {
   const readFile = tools.find((tool) => tool.name === "read_file");
   assert.equal(await readFile.run({ file: "hello.txt" }), "hello\n");
   assert.match(questions[0], /Approve tool read_file/);
+});
+
+test("todo tool manages workspace todos", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-todo-home-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-todo-"));
+  process.env.AZYCODE_HOME = home;
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const todo = tools.find((tool) => tool.name === "todo");
+  assert.match(await todo.run({ action: "add", text: "Ship feature" }), /added todo_/);
+  assert.match(await todo.run({ action: "list" }), /Ship feature/);
+});
+
+test("set_mode tool switches runtime mode for the agent run", async () => {
+  const runtime = createModeRuntime("always-approve");
+  const tools = createTools({
+    cwd: process.cwd(),
+    cfg: { alwaysApprove: true, toolPolicy: {} },
+    resolveCfg: () => ({ alwaysApprove: true, toolPolicy: {} }),
+    modeRuntime: runtime
+  });
+  const setMode = tools.find((tool) => tool.name === "set_mode");
+  assert.ok(setMode);
+  assert.match(await setMode.run({ mode: "plan", reason: "plan first" }), /plan/);
+  assert.equal(runtime.getMode(), "plan");
 });

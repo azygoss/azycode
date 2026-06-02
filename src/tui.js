@@ -59,6 +59,7 @@ import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { contextPack, formatContextPack } from "./context.js";
 import { toolCatalog } from "./tools.js";
 import { createAgentProgress, hasActiveProvider, runtimeSnapshot } from "./harness.js";
+import { formatTodoList, listTodos, runTodoAction } from "./todos.js";
 import { createPromptSession, normalizeTabKey } from "./terminal-input.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
@@ -67,7 +68,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "session", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
+  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "review", "todo", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
@@ -278,6 +279,7 @@ function tuiArgCandidates(command, fixedArgs, state) {
   if (command === "goal") return ["create", "status", "stop"];
   if (command === "context") return ["show"];
   if (command === "memory") return ["add", "remove", "list"];
+  if (command === "todo") return ["list", "add", "complete", "clear"];
   if (command === "model" && fixedArgs.length === 0) return ["sync", ...modelSelectionEntries(state).map((entry) => entry.id)];
   if (command === "model" && fixedArgs[0] === "sync") return ["all"];
   if (command === "models" && fixedArgs.length === 0) return ["sync"];
@@ -321,7 +323,12 @@ async function askAgent(prompt, state, rl = null) {
       conversation: state.conversation,
       returnSession: true,
       confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
-      subagent: state.subagent
+      subagent: state.subagent,
+      onModeChange: ({ mode, persist }) => {
+        state.mode = mode;
+        state.cfg.mode = mode;
+        if (persist) saveConfig(state.cfg);
+      }
     });
     state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
     if (spinner) stopSpinner({ finalLabel: `done  ${truncate(prompt, 36)}` });
@@ -516,6 +523,10 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "memory") {
     handleMemory(args);
+    return;
+  }
+  if (command === "todo") {
+    handleTodo(args, state);
     return;
   }
   if (command === "agents") {
@@ -1204,6 +1215,35 @@ function handleMemory(args) {
   const query = args.join(" ");
   const notes = searchMemory(query);
   printRows("Memory", notes.map((note) => `${muted(note.id)}  ${note.text}`));
+}
+
+function handleTodo(args, state) {
+  const action = args[0] || "list";
+  try {
+    if (action === "list") {
+      printRows("Todos", formatTodoList(listTodos(state.cwd)).split("\n").filter(Boolean));
+      return;
+    }
+    if (action === "add") {
+      const text = args.slice(1).join(" ").trim();
+      if (!text) console.log(`${warnText(icon("warn"))} Usage: /todo add <text>`);
+      else console.log(runTodoAction(state.cwd, "add", { text }));
+      return;
+    }
+    if (action === "complete") {
+      const id = args[1];
+      if (!id) console.log(`${warnText(icon("warn"))} Usage: /todo complete <id>`);
+      else console.log(runTodoAction(state.cwd, "complete", { id }));
+      return;
+    }
+    if (action === "clear") {
+      console.log(runTodoAction(state.cwd, "clear_completed", {}));
+      return;
+    }
+    console.log(`${warnText(icon("warn"))} Usage: /todo <list|add|complete|clear>`);
+  } catch (error) {
+    console.log(errorText(`${icon("cross")}  ${error.message}`));
+  }
 }
 
 async function handleMission(args, state, rl) {

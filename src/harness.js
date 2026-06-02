@@ -44,7 +44,15 @@ export function runtimeSnapshot(cfg, cwd = process.cwd(), extras = {}) {
 
 export function summarizeToolArgs(tool, args = {}) {
   if (!args || typeof args !== "object") return "";
+  if (tool === "todo") {
+    const bits = [args.action].filter(Boolean);
+    if (args.id) bits.push(args.id);
+    else if (args.text) bits.push(String(args.text).slice(0, 48));
+    return bits.join(" ");
+  }
+  if (tool === "set_mode" && args.mode) return String(args.mode);
   if (args.path) return String(args.path);
+  if (args.file) return String(args.file);
   if (args.command) return String(args.command).slice(0, 72);
   if (args.query) return String(args.query).slice(0, 72);
   if (Array.isArray(args.paths) && args.paths.length) return `${args.paths.length} paths`;
@@ -57,6 +65,7 @@ export function formatAgentEvent(event, { style = "tui" } = {}) {
   if (!event?.type) return "";
   const summary = event.summary ? ` ${event.summary}` : "";
   if (style === "cli") {
+    if (event.type === "mode_change") return `[${event.sessionId}] step ${event.step}: mode -> ${event.mode}`;
     if (event.type === "model_start") return `[${event.sessionId}] step ${event.step}: model ${event.model || "(active)"}`;
     if (event.type === "model_end") return `[${event.sessionId}] step ${event.step}: ${event.toolCalls} tool call(s)`;
     if (event.type === "tool_start") return `[${event.sessionId}] step ${event.step}: tool ${event.tool}${summary}`;
@@ -64,6 +73,7 @@ export function formatAgentEvent(event, { style = "tui" } = {}) {
     if (event.type === "final") return `[${event.sessionId}] final`;
     return "";
   }
+  if (event.type === "mode_change") return `mode -> ${event.mode}`;
   if (event.type === "model_start") return `model step ${event.step}`;
   if (event.type === "tool_start") return `tool ${event.tool}${summary}`;
   if (event.type === "tool_end") return `${event.tool} ${event.ok ? "ok" : "failed"} ${prettyMs(event.durationMs)}`;
@@ -76,7 +86,7 @@ export function createAgentProgress({ spinner = null, log = true, style = "tui",
     const text = formatAgentEvent(event, { style });
     if (!text) return;
     if (spinner) {
-      if (event.type === "model_start" || event.type === "tool_start" || event.type === "tool_end") {
+      if (event.type === "model_start" || event.type === "tool_start" || event.type === "tool_end" || event.type === "mode_change") {
         updateSpinnerLabel(text);
       }
       return;

@@ -5,12 +5,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { confirm } from "./prompt.js";
 import { gitGuard } from "./guard.js";
+import { runTodoAction } from "./todos.js";
 
 const execFileAsync = promisify(execFile);
 
-export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
+export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confirmTool = null, modeRuntime = null }) {
   const root = path.resolve(cwd);
-  const policy = cfg.toolPolicy || {};
+  const policySource = resolveCfg || (() => cfg);
+  const policy = () => policySource().toolPolicy || {};
   const tools = [
     tool("list_files", "List files below a directory.", {
       type: "object",
@@ -93,7 +95,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { dir: { type: "string" } },
       required: ["dir"]
     }, async ({ dir }) => {
-      assertGuard(root, cfg, "make_dir");
+      assertGuard(root, policySource(), "make_dir");
       const target = safePath(root, dir);
       fs.mkdirSync(target, { recursive: true });
       return `created ${path.relative(root, target) || "."}`;
@@ -103,7 +105,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { file: { type: "string" }, content: { type: "string" } },
       required: ["file", "content"]
     }, async ({ file, content }) => {
-      assertGuard(root, cfg, "write_file");
+      assertGuard(root, policySource(), "write_file");
       const target = safePath(root, file);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, content, "utf8");
@@ -118,7 +120,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       },
       required: ["file", "search", "replace"]
     }, async ({ file, search, replace }) => {
-      assertGuard(root, cfg, "edit_file");
+      assertGuard(root, policySource(), "edit_file");
       const target = safePath(root, file);
       const original = fs.readFileSync(target, "utf8");
       if (!original.includes(search)) throw new Error(`Search text not found in ${file}`);
@@ -131,7 +133,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { from: { type: "string" }, to: { type: "string" } },
       required: ["from", "to"]
     }, async ({ from, to }) => {
-      assertGuard(root, cfg, "copy_path");
+      assertGuard(root, policySource(), "copy_path");
       const source = safePath(root, from);
       const target = safePath(root, to);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -143,7 +145,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { from: { type: "string" }, to: { type: "string" } },
       required: ["from", "to"]
     }, async ({ from, to }) => {
-      assertGuard(root, cfg, "move_path");
+      assertGuard(root, policySource(), "move_path");
       const source = safePath(root, from);
       const target = safePath(root, to);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -155,7 +157,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { path: { type: "string" }, recursive: { type: "boolean" } },
       required: ["path"]
     }, async ({ path: requested, recursive = false }) => {
-      assertGuard(root, cfg, "delete_path");
+      assertGuard(root, policySource(), "delete_path");
       const target = safePath(root, requested);
       if (target === root) throw new Error("Refusing to delete workspace root.");
       fs.rmSync(target, { recursive: Boolean(recursive), force: false });
@@ -169,7 +171,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       },
       required: ["patch"]
     }, async ({ patch, checkOnly = false }) => {
-      if (!checkOnly) assertGuard(root, cfg, "apply_patch");
+      if (!checkOnly) assertGuard(root, policySource(), "apply_patch");
       const temp = path.join(os.tmpdir(), `azycode-patch-${process.pid}-${Date.now()}.diff`);
       fs.writeFileSync(temp, patch, "utf8");
       try {
@@ -218,20 +220,50 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
       properties: { command: { type: "string" }, timeoutMs: { type: "number" } },
       required: ["command"]
     }, async ({ command, timeoutMs = 60000 }) => {
-      assertGuard(root, cfg, "shell");
+      assertGuard(root, policySource(), "shell");
       const { stdout, stderr } = await execFileAsync(process.env.SHELL || "sh", ["-lc", command], {
         cwd: root,
         timeout: Number(timeoutMs) || 60000,
         maxBuffer: 1024 * 1024 * 8
       });
       return [stdout, stderr].filter(Boolean).join("\n") || "(no output)";
-    })
+    }),
+    tool("todo", "Manage the workspace todo list for multi-step tasks.", {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "add", "update", "complete", "remove", "clear_completed"]
+        },
+        id: { type: "string" },
+        text: { type: "string" },
+        status: { type: "string", enum: ["pending", "in_progress", "completed", "cancelled"] },
+        tags: { type: "array", items: { type: "string" } }
+      },
+      required: ["action"]
+    }, async (args) => runTodoAction(root, args.action, args)),
+    ...(modeRuntime ? [tool("set_mode", "Switch harness mode for the rest of this agent run. Use plan before risky edits; use always-approve or goal to implement.", {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["plan", "always-approve", "goal", "review"] },
+        reason: { type: "string" },
+        persist: { type: "boolean" }
+      },
+      required: ["mode"]
+    }, async ({ mode, reason = "", persist = false }) => {
+      const result = modeRuntime.setMode(mode, { persist: Boolean(persist), reason });
+      const bits = [`Mode switched from ${result.previous} to ${result.mode} for subsequent steps.`];
+      if (result.reason) bits.push(`Reason: ${result.reason}`);
+      if (result.persist) bits.push("Persisted to config.");
+      return bits.join(" ");
+    })] : [])
   ];
 
   return tools.map((entry) => ({
     ...entry,
     run: async (args) => {
-      if (!(await approved(entry.name, args, policy, cfg, confirmTool))) {
+      const activeCfg = policySource();
+      if (!(await approved(entry.name, args, policy(), activeCfg, confirmTool))) {
         return "Tool call rejected by user.";
       }
       return entry.run(args);
@@ -241,7 +273,7 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
 
 export function toolCatalog({ cwd = process.cwd(), cfg }) {
   const policy = cfg.toolPolicy || {};
-  return createTools({ cwd, cfg: { ...cfg, alwaysApprove: true }, confirmTool: async () => true })
+  return createTools({ cwd, cfg: { ...cfg, alwaysApprove: true }, resolveCfg: () => ({ ...cfg, alwaysApprove: true }), confirmTool: async () => true })
     .map((entry) => {
       const fn = entry.schema.function;
       return {

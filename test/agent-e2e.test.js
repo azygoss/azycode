@@ -57,7 +57,9 @@ function cfgFor(port) {
       search: "auto",
       shell: "deny",
       apply_patch: "auto",
-      git_diff: "auto"
+      git_diff: "auto",
+      todo: "auto",
+      set_mode: "auto"
     }
   };
 }
@@ -65,10 +67,59 @@ function cfgFor(port) {
 test("system prompts describe tool discipline and mode behavior", () => {
   const plan = systemForMode("plan");
   assert.match(plan, /Use bounded tools deliberately/);
+  assert.match(plan, /todo tool/);
+  assert.match(plan, /set_mode/);
   assert.match(plan, /Do not modify files/);
   const review = systemForMode("review");
   assert.match(review, /strict code reviewer/);
   assert.match(review, /security risks/);
+});
+
+test("runAgent can switch to plan mode mid-run via set_mode tool", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, calls, port } = await mockChatServer((body, count) => {
+    if (count === 1) {
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            tool_calls: [{
+              id: "call_mode",
+              type: "function",
+              function: {
+                name: "set_mode",
+                arguments: JSON.stringify({ mode: "plan", reason: "inspect before editing" })
+              }
+            }]
+          }
+        }]
+      };
+    }
+    if (count === 2) {
+      const system = body.messages.find((message) => message.role === "system")?.content || "";
+      assert.match(system, /Plan mode/);
+      return { choices: [{ message: { role: "assistant", content: "planned" } }] };
+    }
+    throw new Error(`unexpected model call ${count}`);
+  });
+
+  try {
+    const events = [];
+    const output = await runAgent({
+      cfg: cfgFor(port),
+      cwd,
+      prompt: "plan this change",
+      mode: "always-approve",
+      onEvent: (event) => events.push(event)
+    });
+    assert.equal(output, "planned");
+    assert(events.some((event) => event.type === "mode_change" && event.mode === "plan"));
+    assert.equal(calls.length, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("runAgent performs real tool-call write and records a session", async () => {

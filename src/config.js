@@ -56,7 +56,9 @@ export function defaultConfig() {
       move_path: "ask",
       delete_path: "ask",
       apply_patch: "ask",
-      git_diff: "auto"
+      git_diff: "auto",
+      todo: "auto",
+      set_mode: "auto"
     }
   };
 }
@@ -132,11 +134,12 @@ export function saveConfig(cfg) {
 
 export function loadState() {
   ensureHome();
-  const state = readJson(statePath(), { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] });
+  const state = readJson(statePath(), { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [], todos: {} });
   state.sessions ||= {};
   state.goals ||= {};
   state.missions ||= {};
   state.toolRuns ||= [];
+  state.todos ||= {};
   return state;
 }
 

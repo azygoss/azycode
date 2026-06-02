@@ -6,12 +6,15 @@ import { id, loadState, saveState } from "./config.js";
 import { searchMemory } from "./memory.js";
 import { contextPack, formatContextPack } from "./context.js";
 import { summarizeToolArgs } from "./harness.js";
+import { createModeRuntime } from "./agent-runtime.js";
+import { formatActiveTodos } from "./todos.js";
 
 export function systemForMode(mode) {
   const base = [
     "You are Azycode, an AI coding harness running inside the user's local repository.",
     "Operate like a senior coding agent: inspect current files before changing them, keep edits scoped, and verify behavior with the most relevant available checks.",
     "Use bounded tools deliberately: prefer search/list/file_info before broad reads, use read_file line ranges for large files, and use search maxResults/contextLines to keep context small.",
+    "Use the todo tool to track multi-step work. Use set_mode when the task phase changes: switch to plan before large or risky changes, then switch back to always-approve or goal to implement.",
     "Do not claim a file changed unless a write/edit/copy/move/delete/apply_patch/shell tool actually changed it.",
     "Respect tool policy and git guard. If a write-like tool is rejected or blocked, explain the blocker and continue with safe inspection when useful.",
     "When editing, preserve existing style and avoid unrelated refactors. When reviewing, lead with concrete defects and cite files, commands, or evidence.",
@@ -26,14 +29,25 @@ export function systemForMode(mode) {
   return `${base}\n${modes[mode] || modes.plan}`;
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null }) {
+export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null }) {
   const client = new LlmClient(cfg);
   const activeModel = subagent?.model || client.provider.model;
-  const effectiveCfg = mode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
-  const tools = createTools({ cwd, cfg: effectiveCfg, confirmTool });
+  const modeRuntime = createModeRuntime(mode, { cfg, onModeChange });
+  const resolveCfg = () => {
+    const activeMode = modeRuntime.getMode();
+    return activeMode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
+  };
+  const tools = createTools({ cwd, resolveCfg, confirmTool, modeRuntime });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  const buildSystemContent = () => [
+    subagent?.system || systemForMode(modeRuntime.getMode()),
+    loadProjectRules(cwd),
+    loadRelevantMemory(prompt),
+    formatActiveTodos(cwd),
+    includeContext ? loadContextPack(cwd) : ""
+  ].filter(Boolean).join("\n\n");
   const messages = [
-    { role: "system", content: [subagent?.system || systemForMode(mode), loadProjectRules(cwd), loadRelevantMemory(prompt), includeContext ? loadContextPack(cwd) : ""].filter(Boolean).join("\n\n") },
+    { role: "system", content: buildSystemContent() },
     ...conversation.filter((message) => message.role !== "system"),
     { role: "user", content: prompt }
   ];
@@ -46,7 +60,8 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   };
 
   for (let step = 0; step < maxSteps; step += 1) {
-    emit({ type: "model_start", step: step + 1, model: activeModel, mode });
+    const activeMode = modeRuntime.getMode();
+    emit({ type: "model_start", step: step + 1, model: activeModel, mode: activeMode });
     const completion = await client.chat({
       messages,
       tools,
@@ -61,7 +76,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     const calls = message.tool_calls || [];
     if (!calls.length) {
       emit({ type: "final", step: step + 1 });
-      recordSession(sessionId, { mode, prompt, messages, events });
+      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
       const content = message.content || "";
       return returnSession ? { content, sessionId, messages } : content;
     }
@@ -101,9 +116,15 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
         content: String(content).slice(0, 120000)
       });
     }
+
+    const nextMode = modeRuntime.consumeModeChange();
+    if (nextMode) {
+      messages[0] = { role: "system", content: buildSystemContent() };
+      emit({ type: "mode_change", step: step + 1, mode: nextMode });
+    }
   }
 
-  recordSession(sessionId, { mode, prompt, messages, events });
+  recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
   throw new Error(`Agent stopped after ${maxSteps} steps without a final answer.`);
 }
 
