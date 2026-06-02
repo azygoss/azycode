@@ -176,3 +176,67 @@ JSON missions can use object steps:
   ]
 }
 ```
+
+## Usage examples
+
+### Start a goal and let the agent work autonomously
+
+```sh
+azycode goal start "add unit tests for src/logger.js"
+```
+
+The agent runs in `goal` mode, makes a plan, executes steps, and writes results to `~/.azycode/goals/`.
+
+### Review local changes before committing
+
+```sh
+azycode review --local
+```
+
+Shows a diff of uncommitted changes with security heuristics (eval, innerHTML, unsafe shell exec).
+
+### Run a mission file
+
+```sh
+azycode mission run examples/mission.yml
+```
+
+Missions are reusable step lists. Each step runs through the agent loop with full tool access.
+
+### Switch mode on the fly in the TUI
+
+```sh
+azycode
+```
+
+Inside the terminal workspace, press `Shift+Tab` to rotate mode (`plan -> always-approve -> goal -> review`) and `Tab` to rotate reasoning effort.
+
+### Debug a provider issue
+
+```sh
+azycode doctor
+azycode doctor --json
+```
+
+Shows provider connectivity, active model, protocol, API key source, and quota notes.
+
+### Export a session transcript
+
+```sh
+azycode session list
+azycode session transcript <id>
+azycode session export <id> ./session.json
+```
+
+### Inspect repository context before sending to the model
+
+```sh
+azycode context pack --max-files 40 --max-bytes 80000
+```
+
+### Non-interactive login for CI/scripts
+
+```sh
+azycode login byok --base-url http://127.0.0.1:11434/v1 --model local-model --api-key sk-local
+```
+```

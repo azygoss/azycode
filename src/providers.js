@@ -230,10 +230,12 @@ export function providerDiagnostics(cfg, name = cfg.activeProvider) {
     label: provider.label,
     baseUrl: provider.baseUrl,
     model: provider.model,
+    models: provider.models,
     protocol: resolveProtocol(provider, provider.model),
     chatPath: chatPathFor(provider, provider.model),
     hasApiKey: Boolean(provider.apiKey),
     apiKeySource: cfg.providers?.[name]?.apiKey ? "config" : provider.envKey,
-    quota: provider.quota || null
+    quota: provider.quota || null,
+    note: provider.note || null
   };
 }

@@ -479,12 +479,11 @@ export function renderTable(rows, columns, options = {}) {
     }
   }
   rows.forEach((row, rowIndex) => {
-    if (zebra && rowIndex % 2 === 1) {
-      // Subtle zebra is just a faint background — we keep it as a dimmed prefix in CLI.
-    }
+    const isZebra = zebra && rowIndex % 2 === 1;
     out.push(columns.map((column, index) => {
       const cell = String(row[column.key] ?? "");
-      return index === columns.length - 1 ? cell : padEnd(cell, widths[index]);
+      const rendered = index === columns.length - 1 ? cell : padEnd(cell, widths[index]);
+      return isZebra ? dim(rendered) : rendered;
     }).join(sep));
   });
   return out;
