@@ -26,6 +26,18 @@ export function localReview(cwd = process.cwd()) {
   if (added.some((line) => /api[_-]?key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|sk-[a-z0-9_-]{16,}/i.test(line))) {
     findings.push(finding("high", "Possible secret added.", "Inspect added credentials and move secrets to login/env storage."));
   }
+  if (added.some((line) => /eval\s*\(|new\s+Function\s*\(/.test(line))) {
+    findings.push(finding("high", "Possible code injection pattern.", "Avoid eval() and new Function(); they execute arbitrary code."));
+  }
+  if (added.some((line) => /\.innerHTML\s*=/.test(line))) {
+    findings.push(finding("medium", "Possible XSS via innerHTML.", "Prefer textContent or sanitized insertion over direct innerHTML assignment."));
+  }
+  if (added.some((line) => /child_process\.exec\s*\(/.test(line))) {
+    findings.push(finding("medium", "Unsafe shell execution.", "child_process.exec() interpolates a shell; prefer execFile() or execFileSync()."));
+  }
+  if (added.some((line) => /\b(?:TODO|FIXME|HACK|XXX)\b/.test(line))) {
+    findings.push(finding("low", "Code markers found in diff.", "Review TODO/FIXME/HACK/XXX comments before merging."));
+  }
 
   return { status, files, stats: { added: added.length, removed: removed.length }, findings };
 }

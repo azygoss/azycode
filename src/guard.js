@@ -12,7 +12,7 @@ export function gitGuard(cwd = process.cwd(), cfg = {}) {
   if (guard.requireClean && status) {
     return { ok: false, reason: "Working tree is not clean and gitGuard.requireClean is enabled." };
   }
-  if (!branch) warnings.push("No current git branch detected.");
+  if (!branch) warnings.push("No current git branch detected (detached HEAD or not a git repository).");
   return { ok: true, branch, dirty: Boolean(status), warnings };
 }
 
@@ -38,7 +38,7 @@ function git(args, cwd) {
 /** Branch names safe for git checkout -b / checkout. */
 export function validateBranchName(name) {
   const branch = String(name || "").trim();
-  if (!branch || branch.includes("..") || branch.startsWith("-") || /[\s\x00]/.test(branch)) {
+  if (!branch || branch.includes("..") || branch.startsWith("-") || /[\s\x00@:~?*[\]^]/.test(branch)) {
     throw new Error("Invalid branch name.");
   }
   return branch;
