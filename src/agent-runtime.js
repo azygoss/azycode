@@ -1,4 +1,5 @@
 import { MODES, normalizeMode, saveConfig } from "./config.js";
+import { info } from "./logger.js";
 
 export function createModeRuntime(initialMode, { cfg = null, onModeChange = null } = {}) {
   let current = normalizeMode(initialMode);
@@ -25,6 +26,7 @@ export function createModeRuntime(initialMode, { cfg = null, onModeChange = null
         cfg.mode = next;
         saveConfig(cfg);
       }
+      info(`Mode switched from ${previous} to ${next}${persist ? " (persisted)" : ""}${reason ? `: ${reason}` : ""}`);
       const payload = { mode: next, previous, persist: Boolean(persist), reason: reason ? String(reason) : "" };
       if (onModeChange) onModeChange(payload);
       return payload;
