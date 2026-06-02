@@ -43,11 +43,13 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   };
   const tools = createTools({ cwd, resolveCfg, confirmTool, modeRuntime });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  debug(`Agent start mode=${mode} model=${activeModel} stepLimit=${stepLimit ?? "unlimited"} tools=${tools.map((t) => t.name).join(",")}`);
 
   // Cache expensive static parts of the system message so rebuilds (mode/todo changes) are cheap.
   const projectRules = loadProjectRules(cwd);
   const relevantMemory = loadRelevantMemory(prompt);
   const contextPackStr = includeContext ? await loadContextPack(cwd) : "";
+  if (includeContext) debug(`Context pack loaded: ${contextPackStr.length} chars`);
   let activeTodos = formatActiveTodos(cwd);
 
   const buildSystemContent = () => [
