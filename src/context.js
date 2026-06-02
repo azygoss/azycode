@@ -2,7 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const DEFAULT_IGNORE = [".git", "node_modules", "dist", "coverage", ".DS_Store", "package-lock.json"];
+const DEFAULT_IGNORE = [
+  ".git", "node_modules", "dist", "coverage", ".DS_Store",
+  ".env", ".env.local", ".env.production", ".env.development",
+  "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
+  ".next", ".nuxt", ".svelte-kit", ".astro", ".vinxi",
+  ".cache", ".turbo", ".vercel", ".output",
+  "build", "out", "target", "tmp", "temp",
+  ".idea", ".vscode",
+  "*.log"
+];
 
 export function repoSnapshot(cwd = process.cwd()) {
   const root = path.resolve(cwd);
