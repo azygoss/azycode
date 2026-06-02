@@ -89,6 +89,15 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
         return limitLines(stdout || "(no matches)", Number(maxResults) || 200);
       } catch (error) {
         if (error.stdout) return limitLines(error.stdout, Number(maxResults) || 200);
+        if (error.code === "ENOENT") {
+          try {
+            const { stdout } = await execFileAsync("grep", ["-rn", "--exclude-dir=node_modules", query, base], { timeout: 20000, maxBuffer: 1024 * 1024 * 8 });
+            return limitLines(stdout || "(no matches)", Number(maxResults) || 200);
+          } catch (grepError) {
+            if (grepError.stdout) return limitLines(grepError.stdout, Number(maxResults) || 200);
+            return "(no matches)";
+          }
+        }
         return "(no matches)";
       }
     }),
