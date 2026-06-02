@@ -15,6 +15,9 @@ Azycode is a dependency-free Node.js CLI. The main process owns:
 - repository snapshots in `src/context.js`
 - long-lived local notes in `src/memory.js`
 - local git-diff review heuristics in `src/local-review.js`
+- terminal UI primitives in `src/ui.js`
+- interactive TUI in `src/tui.js`
+- centralized logging in `src/logger.js`
 
 It is intentionally not a wrapper around any existing local `azy-code` binary or repository. The CLI entrypoint is `bin/azycode.js`, and all runtime behavior lives under this repository's `src/` directory.
 
@@ -23,6 +26,8 @@ It is intentionally not a wrapper around any existing local `azy-code` binary or
 Default config directory is `~/.azycode`; set `AZYCODE_HOME` to isolate a project, test run, or CI environment.
 
 The CLI stores keys with `0600` file permissions. It does not hardcode user keys and can also read provider-specific environment variables.
+
+Config, state, and todos are loaded with an in-memory cache keyed on file mtime to reduce repeated disk reads during a single process. Config values are validated on load: unknown modes, reasoning levels, permission profiles, and tool policies are normalized to safe defaults.
 
 ## Agent Loop
 

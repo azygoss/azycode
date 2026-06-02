@@ -33,9 +33,19 @@ azycode login byok
 
 API keys are stored in `~/.azycode/config.json` with file mode `0600`. You can override the config directory with `AZYCODE_HOME=/path/to/config`.
 
+## Environment variables
+
+- `AZYCODE_HOME` — override the default config/state directory (`~/.azycode`).
+- `AZYCODE_AGENT_MAX_STEPS` — cap agent steps per run (`unlimited`, `0`, or a positive number).
+- `AZYCODE_REQUEST_TIMEOUT_MS` — LLM request timeout in milliseconds (default: `60000`).
+- `AZYCODE_LOG_LEVEL` — logger level: `debug`, `info`, `warn`, `error` (default: `info`).
+- `AZYCODE_DEBUG` — set to `1` or `true` to show full stack traces on CLI errors.
+- `NO_COLOR` — disable ANSI colors in output.
+
 ## Core commands
 
 ```sh
+azycode --version
 azycode
 azycode status
 azycode dashboard
