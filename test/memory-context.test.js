@@ -30,14 +30,14 @@ test("repo snapshot summarizes files and package scripts", () => {
   assert.match(formatted, /scripts: test/);
 });
 
-test("contextPack respects .azyignore and formats selected files", () => {
+test("contextPack respects .azyignore and formats selected files", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-context-"));
   fs.writeFileSync(path.join(dir, "README.md"), "# demo\n");
   fs.writeFileSync(path.join(dir, "secret.txt"), "secret\n");
   fs.writeFileSync(path.join(dir, ".azyignore"), "secret.txt\n");
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(path.join(dir, "src", "index.js"), "console.log('x')\n");
-  const pack = contextPack(dir, { maxFiles: 10, maxBytes: 2000 });
+  const pack = await contextPack(dir, { maxFiles: 10, maxBytes: 2000 });
   assert(pack.files.some((item) => item.file === "README.md"));
   assert(pack.files.some((item) => item.file === "src/index.js"));
   assert(!pack.files.some((item) => item.file === "secret.txt"));

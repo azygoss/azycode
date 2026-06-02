@@ -69,7 +69,7 @@ export async function main(argv) {
     case "guard": return guard(args);
     case "session": return session(args);
     case "memory": return memory(args);
-    case "context": return contextCmd(args);
+    case "context": return await contextCmd(args);
     case "audit": return audit();
     case "report": return report(args);
     case "completion": return completion(args);
@@ -892,10 +892,10 @@ async function memory(args) {
   throw new Error("Usage: azycode memory add|list|remove");
 }
 
-function contextCmd(args) {
+async function contextCmd(args) {
   if (args[0] === "pack") {
     const flags = parseFlags(args.slice(1));
-    console.log(formatContextPack(contextPack(process.cwd(), {
+    console.log(formatContextPack(await contextPack(process.cwd(), {
       maxFiles: flags.maxFiles || flags["max-files"],
       maxBytes: flags.maxBytes || flags["max-bytes"]
     })));

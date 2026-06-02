@@ -77,7 +77,7 @@ function listConfigFiles(root) {
   return names.filter((name) => fs.existsSync(path.join(root, name)));
 }
 
-export function contextPack(cwd = process.cwd(), options = {}) {
+export async function contextPack(cwd = process.cwd(), options = {}) {
   const root = path.resolve(cwd);
   const maxFiles = Number(options.maxFiles) || 40;
   const maxBytes = Number(options.maxBytes) || 80000;
@@ -92,7 +92,8 @@ export function contextPack(cwd = process.cwd(), options = {}) {
     const stat = fs.statSync(full);
     if (stat.size > Math.min(maxBytes, 120000)) continue;
     if (usedBytes + stat.size > maxBytes) break;
-    selected.push({ file, content: fs.readFileSync(full, "utf8") });
+    const content = await fs.promises.readFile(full, "utf8");
+    selected.push({ file, content });
     usedBytes += stat.size;
   }
   return { root, files: selected, usedBytes, ignored: ignore };

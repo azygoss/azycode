@@ -492,7 +492,7 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "context") {
     if (args[0] === "show") {
-      const pack = contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 });
+      const pack = await contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 });
       console.log(`${muted(icon("chevron"))} ${formatContextPack(pack)}`);
       return;
     }
