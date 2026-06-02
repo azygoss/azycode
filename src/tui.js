@@ -87,7 +87,8 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     progress: true,
     conversation: [],
     skills: [],
-    subagent: null
+    subagent: null,
+    maxConversationMessages: cfg.maxConversationMessages || MAX_CONVERSATION_MESSAGES
   };
   printWelcome(state);
   const promptSession = createPromptSession({
@@ -352,7 +353,7 @@ async function askAgent(prompt, state, rl = null) {
         if (persist) saveConfig(state.cfg);
       }
     });
-    state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
+    state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"), state.maxConversationMessages);
     if (spinner) stopSpinner({ finalLabel: `done  ${truncate(prompt, 36)}` });
     blank();
     console.log(`${brand(icon("spike"))} ${bold(brand("assistant"))}`);
