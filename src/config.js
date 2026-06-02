@@ -48,6 +48,10 @@ export function statePath() {
   return path.join(azyHome(), "state.json");
 }
 
+export function todosPath() {
+  return path.join(azyHome(), "todos.json");
+}
+
 export function ensureHome() {
   fs.mkdirSync(azyHome(), { recursive: true, mode: 0o700 });
 }
@@ -178,6 +182,17 @@ export function saveState(state) {
   const tmp = `${statePath()}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, statePath());
+}
+
+export function loadTodos() {
+  return readJson(todosPath(), {});
+}
+
+export function saveTodos(todos) {
+  ensureHome();
+  const tmp = `${todosPath()}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(todos, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, todosPath());
 }
 
 export function maskSecret(value) {

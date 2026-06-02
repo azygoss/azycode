@@ -1,5 +1,5 @@
 import path from "node:path";
-import { id, loadState, saveState } from "./config.js";
+import { id, loadTodos, saveTodos } from "./config.js";
 
 export const TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 
@@ -8,11 +8,10 @@ function workspaceKey(cwd) {
 }
 
 function bucket(cwd) {
-  const state = loadState();
-  state.todos ||= {};
+  const todos = loadTodos();
   const key = workspaceKey(cwd);
-  state.todos[key] ||= { items: [] };
-  return { state, key, bucket: state.todos[key] };
+  todos[key] ||= { items: [] };
+  return { todos, key, bucket: todos[key] };
 }
 
 export function listTodos(cwd, { status = null } = {}) {
@@ -35,7 +34,7 @@ export function addTodo(cwd, text, { status = "pending", tags = [] } = {}) {
   const trimmed = String(text || "").trim();
   if (!trimmed) throw new Error("Todo text is required.");
   const nextStatus = normalizeTodoStatus(status);
-  const { state, bucket: store } = bucket(cwd);
+  const { todos, bucket: store } = bucket(cwd);
   const item = {
     id: id("todo"),
     text: trimmed,
@@ -45,12 +44,12 @@ export function addTodo(cwd, text, { status = "pending", tags = [] } = {}) {
     updatedAt: new Date().toISOString()
   };
   store.items.push(item);
-  saveState(state);
+  saveTodos(todos);
   return item;
 }
 
 export function updateTodo(cwd, todoId, patch = {}) {
-  const { state, bucket: store } = bucket(cwd);
+  const { todos, bucket: store } = bucket(cwd);
   const item = store.items.find((entry) => entry.id === todoId);
   if (!item) throw new Error(`Todo not found: ${todoId}`);
   if (patch.text !== undefined) {
@@ -61,7 +60,7 @@ export function updateTodo(cwd, todoId, patch = {}) {
   if (patch.status !== undefined) item.status = normalizeTodoStatus(patch.status);
   if (patch.tags !== undefined) item.tags = Array.isArray(patch.tags) ? patch.tags.map(String) : [];
   item.updatedAt = new Date().toISOString();
-  saveState(state);
+  saveTodos(todos);
   return item;
 }
 
@@ -70,20 +69,20 @@ export function completeTodo(cwd, todoId) {
 }
 
 export function removeTodo(cwd, todoId) {
-  const { state, bucket: store } = bucket(cwd);
+  const { todos, bucket: store } = bucket(cwd);
   const before = store.items.length;
   store.items = store.items.filter((entry) => entry.id !== todoId);
   if (store.items.length === before) throw new Error(`Todo not found: ${todoId}`);
-  saveState(state);
+  saveTodos(todos);
   return true;
 }
 
 export function clearCompletedTodos(cwd) {
-  const { state, bucket: store } = bucket(cwd);
+  const { todos, bucket: store } = bucket(cwd);
   const before = store.items.length;
   store.items = store.items.filter((entry) => entry.status !== "completed" && entry.status !== "cancelled");
   const removed = before - store.items.length;
-  saveState(state);
+  saveTodos(todos);
   return removed;
 }
 

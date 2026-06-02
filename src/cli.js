@@ -7,6 +7,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
+import { AgentStepLimitError } from "./agent-errors.js";
 import { LlmClient } from "./llm.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
@@ -30,6 +31,18 @@ const COMMANDS = [
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
   "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "keys"
 ];
+
+async function runAgentSafe(options) {
+  try {
+    return await runAgent(options);
+  } catch (error) {
+    if (error instanceof AgentStepLimitError) {
+      console.error(error.message);
+      return undefined;
+    }
+    throw error;
+  }
+}
 
 export async function main(argv) {
   const [cmd, ...args] = argv;
@@ -913,7 +926,11 @@ async function run(args) {
   const onEvent = flags.progress
     ? createAgentProgress({ maxSteps, style: "cli", onLine: (line) => console.error(line) })
     : null;
-  const output = await runAgent({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context) });
+  const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context) });
+  if (output === undefined) {
+    process.exitCode = 1;
+    return;
+  }
   console.log(output);
 }
 
@@ -959,7 +976,7 @@ async function directMode(mode, args) {
   }
   const prompt = positionalArgs(args, ["save"]).join(" ") || await interactivePrompt({ ...cfg, mode });
   const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
-  const result = await runAgent({
+  const result = await runAgentSafe({
     cfg,
     cwd: process.cwd(),
     prompt,
@@ -969,6 +986,10 @@ async function directMode(mode, args) {
     onEvent: flags.progress ? progressPrinter(maxSteps) : null,
     includeContext: Boolean(flags.context)
   });
+  if (result === undefined) {
+    process.exitCode = 1;
+    return;
+  }
   if (flags.save) {
     fs.writeFileSync(flags.save, planArtifact({ mode, prompt, result }), "utf8");
     console.log(`Saved ${mode} artifact to ${flags.save}.`);
@@ -995,12 +1016,12 @@ async function goal(args) {
     const goalId = `goal_${Date.now()}`;
     state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
     saveState(state);
-    const output = await runAgent({ cfg, cwd: process.cwd(), prompt: text, mode: "goal" });
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal" });
     const done = loadState();
-    done.goals[goalId].status = "done";
+    done.goals[goalId].status = output !== undefined ? "done" : "stalled";
     done.goals[goalId].finishedAt = new Date().toISOString();
     saveState(done);
-    console.log(output);
+    if (output !== undefined) console.log(output);
     return;
   }
   if (action === "resume") {
@@ -1012,12 +1033,12 @@ async function goal(args) {
     selected.resumedAt = new Date().toISOString();
     saveState(state);
     const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
-    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, mode: "goal" });
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal" });
     const done = loadState();
-    done.goals[goalId].status = "done";
+    done.goals[goalId].status = output !== undefined ? "done" : "stalled";
     done.goals[goalId].finishedAt = new Date().toISOString();
     saveState(done);
-    console.log(output);
+    if (output !== undefined) console.log(output);
     return;
   }
   if (action === "status") {
@@ -1141,7 +1162,11 @@ async function subagent(args) {
     const selected = cfg.subagents?.[name];
     if (!selected) throw new Error(`No subagent named ${name}.`);
     const prompt = args.slice(2).join(" ") || await interactivePrompt(cfg);
-    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, subagent: selected });
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, subagent: selected });
+    if (output === undefined) {
+      process.exitCode = 1;
+      return;
+    }
     console.log(output);
     return;
   }
@@ -1338,7 +1363,7 @@ async function handleChatCommand(line, state) {
 async function handleChatLine(line, state) {
   if (line.startsWith("/")) return handleChatCommand(line, state);
   const maxSteps = resolveAgentMaxSteps(state.cfg);
-  const result = await runAgent({
+  const result = await runAgentSafe({
     cfg: state.cfg,
     cwd: process.cwd(),
     prompt: line,
@@ -1347,5 +1372,5 @@ async function handleChatLine(line, state) {
     includeContext: state.getContext(),
     onEvent: state.getProgress() ? progressPrinter(maxSteps) : null
   });
-  console.log(result);
+  if (result !== undefined) console.log(result);
 }

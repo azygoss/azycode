@@ -86,11 +86,14 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       state.toolRuns = state.toolRuns.slice(-500);
     }
     saveState(state);
+    pendingToolRuns.length = 0;
+    pendingSession = null;
   }
 
   emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
 
-  for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
+  try {
+    for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
     const activeMode = modeRuntime.getMode();
     emit({ type: "model_start", step, maxSteps: stepLimit, model: activeModel, mode: activeMode });
     const completion = await client.chat({
@@ -154,10 +157,35 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       });
     }
 
+    const hadTodo = calls.some((call) => call.function?.name === "todo");
     const nextMode = modeRuntime.consumeModeChange();
-    if (nextMode) {
+    if (nextMode || hadTodo) {
       messages[0] = { role: "system", content: buildSystemContent() };
-      emit({ type: "mode_change", step, mode: nextMode });
+      if (nextMode) emit({ type: "mode_change", step, mode: nextMode });
+    }
+  }
+
+  if (messages[messages.length - 1]?.role === "tool") {
+    const finalStep = stepLimit + 1;
+    emit({ type: "model_start", step: finalStep, maxSteps: stepLimit, model: activeModel, mode: modeRuntime.getMode() });
+    const completion = await client.chat({
+      messages,
+      tools,
+      model: activeModel,
+      reasoning: subagent?.reasoning || cfg.reasoning
+    });
+    const message = assistantMessageFromCompletion(completion);
+    if (message) {
+      messages.push(message);
+      const finalCalls = message.tool_calls || [];
+      emit({ type: "model_end", step: finalStep, maxSteps: stepLimit, toolCalls: finalCalls.length, tools: finalCalls.map((call) => call.function?.name).filter(Boolean) });
+      if (!finalCalls.length) {
+        emit({ type: "final", step: finalStep, maxSteps: stepLimit });
+        recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
+        flushState();
+        const content = message.content || "";
+        return returnSession ? { content, sessionId, messages } : content;
+      }
     }
   }
 
@@ -166,6 +194,12 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
   flushState();
   throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
+  } finally {
+    if (!pendingSession) {
+      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "error" });
+    }
+    flushState();
+  }
 }
 
 function lastAssistantContent(messages) {
