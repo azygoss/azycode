@@ -73,47 +73,48 @@ export function formatAgentStepLine(event, { maxSteps = null, style = "tui" } = 
   const limit = event.maxSteps ?? maxSteps;
   const prefix = stepLabel(event.step, limit);
   const summary = event.summary ? ` ${event.summary}` : "";
+  const sid = event.sessionId ? `[${event.sessionId}] ` : "";
   if (event.type === "agent_run_start") {
     const limit = event.maxSteps ? `max ${event.maxSteps} steps` : "unlimited steps";
     return style === "cli"
-      ? `[${event.sessionId}] run start · ${limit} · mode ${event.mode}`
+      ? `${sid}run start · ${limit} · mode ${event.mode}`
       : `▸ run start · ${limit} · mode ${event.mode}`;
   }
   if (event.type === "model_start") {
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: model (${event.mode || "?"}) ${event.model || ""}`
+      ? `${sid}${prefix}: model (${event.mode || "?"}) ${event.model || ""}`
       : `  ${prefix}  model  ${event.mode || "?"}  ${event.model || ""}`;
   }
   if (event.type === "model_end") {
     const tools = event.tools?.length ? `: ${event.tools.join(", ")}` : "";
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: ${event.toolCalls} tool call(s)${tools}`
+      ? `${sid}${prefix}: ${event.toolCalls} tool call(s)${tools}`
       : `  ${prefix}  tools (${event.toolCalls})${tools}`;
   }
   if (event.type === "tool_start") {
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: → ${event.tool}${summary}`
+      ? `${sid}${prefix}: → ${event.tool}${summary}`
       : `  ${prefix}  → ${event.tool}${summary}`;
   }
   if (event.type === "tool_end") {
     const status = event.ok ? "ok" : "failed";
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: ← ${event.tool} ${status} ${event.durationMs}ms`
+      ? `${sid}${prefix}: ← ${event.tool} ${status} ${event.durationMs}ms`
       : `  ${prefix}  ← ${event.tool}  ${status}  ${prettyMs(event.durationMs)}`;
   }
   if (event.type === "mode_change") {
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: mode -> ${event.mode}`
+      ? `${sid}${prefix}: mode -> ${event.mode}`
       : `  ${prefix}  mode → ${event.mode}`;
   }
   if (event.type === "final") {
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: final answer`
+      ? `${sid}${prefix}: final answer`
       : `  ${prefix}  final answer`;
   }
   if (event.type === "step_limit") {
     return style === "cli"
-      ? `[${event.sessionId}] ${prefix}: step limit reached`
+      ? `${sid}${prefix}: step limit reached`
       : `  ${prefix}  step limit reached`;
   }
   return formatAgentEvent(event, { style });
@@ -129,15 +130,16 @@ export function formatAgentRunReport(events, { maxSteps = null } = {}) {
 export function formatAgentEvent(event, { style = "tui" } = {}) {
   if (!event?.type) return "";
   const summary = event.summary ? ` ${event.summary}` : "";
+  const sid = event.sessionId ? `[${event.sessionId}] ` : "";
   if (style === "cli") {
-    if (event.type === "agent_run_start") return `[${event.sessionId}] run start`;
-    if (event.type === "step_limit") return `[${event.sessionId}] step limit`;
-    if (event.type === "mode_change") return `[${event.sessionId}] step ${event.step}: mode -> ${event.mode}`;
-    if (event.type === "model_start") return `[${event.sessionId}] step ${event.step}: model ${event.model || "(active)"}`;
-    if (event.type === "model_end") return `[${event.sessionId}] step ${event.step}: ${event.toolCalls} tool call(s)`;
-    if (event.type === "tool_start") return `[${event.sessionId}] step ${event.step}: tool ${event.tool}${summary}`;
-    if (event.type === "tool_end") return `[${event.sessionId}] step ${event.step}: tool ${event.tool} ${event.ok ? "ok" : "failed"} ${event.durationMs}ms`;
-    if (event.type === "final") return `[${event.sessionId}] final`;
+    if (event.type === "agent_run_start") return `${sid}run start`;
+    if (event.type === "step_limit") return `${sid}step limit`;
+    if (event.type === "mode_change") return `${sid}step ${event.step}: mode -> ${event.mode}`;
+    if (event.type === "model_start") return `${sid}step ${event.step}: model ${event.model || "(active)"}`;
+    if (event.type === "model_end") return `${sid}step ${event.step}: ${event.toolCalls} tool call(s)`;
+    if (event.type === "tool_start") return `${sid}step ${event.step}: tool ${event.tool}${summary}`;
+    if (event.type === "tool_end") return `${sid}step ${event.step}: tool ${event.tool} ${event.ok ? "ok" : "failed"} ${event.durationMs}ms`;
+    if (event.type === "final") return `${sid}final`;
     return "";
   }
   if (event.type === "agent_run_start") return "run start";
