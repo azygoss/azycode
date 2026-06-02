@@ -10,6 +10,7 @@ import { summarizeToolArgs } from "./harness.js";
 import { createModeRuntime } from "./agent-runtime.js";
 import { formatActiveTodos } from "./todos.js";
 import { getSkillText } from "./skills.js";
+import { debug, warn, error as logError } from "./logger.js";
 
 export function systemForMode(mode) {
   const base = [
@@ -126,6 +127,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       } catch (error) {
         ok = false;
         content = `Tool ${name} failed: ${error.message}`;
+        warn(`Tool ${name} failed at step ${step}: ${error.message}`);
       }
       const durationMs = Date.now() - startedAt;
       emit({ type: "tool_end", step, maxSteps: stepLimit, tool: name, ok, durationMs });
@@ -149,7 +151,10 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       reasoning: subagent?.reasoning || cfg.reasoning
     });
     const message = assistantMessageFromCompletion(completion);
-    if (!message) throw new Error("Provider returned no assistant message.");
+    if (!message) {
+      logError(`Provider returned no assistant message at step ${step}`);
+      throw new Error("Provider returned no assistant message.");
+    }
     messages.push(message);
     const calls = message.tool_calls || [];
     emit({
@@ -162,6 +167,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     return { message, calls };
   }
 
+  debug(`Agent run start: mode=${modeRuntime.getMode()} model=${activeModel} steps=${stepLimit ?? "unlimited"}`);
   emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
 
   try {
@@ -203,6 +209,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     }
 
     const partialContent = lastAssistantContent(messages);
+    warn(`Agent step limit reached: ${stepLimit} steps without a final answer`);
     emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
     recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
     flushState();
