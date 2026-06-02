@@ -10,6 +10,7 @@ import { LlmClient } from "./llm.js";
 import { applyPermissionProfile, azyHome, configPath, formatAgentStepLimit, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { AgentStepLimitError } from "./agent-errors.js";
 import { formatLocalReview, localReview } from "./local-review.js";
+import { listSkills } from "./skills.js";
 import { gitGuard } from "./guard.js";
 import {
   accent,
@@ -85,6 +86,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     includeContext: false,
     progress: true,
     conversation: [],
+    skills: [],
     subagent: null
   };
   printWelcome(state);
@@ -342,6 +344,7 @@ async function askAgent(prompt, state, rl = null) {
       returnSession: true,
       confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
       subagent: state.subagent,
+      skills: state.skills,
       onModeChange: ({ mode, persist }) => {
         if (state.subagent) return;
         state.mode = mode;
@@ -504,6 +507,32 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "review") {
     printReview(state);
+    return;
+  }
+  if (command === "skill") {
+    const action = args[0];
+    const name = args[1];
+    if (action === "add" && name) {
+      if (!state.cfg.skills?.[name]) {
+        console.log(`${errorText(icon("cross"))} No skill named ${name}`);
+        return;
+      }
+      state.skills = [...state.skills, name];
+      console.log(`${successText(icon("check"))} ${muted("skill")} +${name} · active: ${state.skills.join(", ") || "(none)"}`);
+    } else if (action === "remove" && name) {
+      state.skills = state.skills.filter((s) => s !== name);
+      console.log(`${successText(icon("check"))} ${muted("skill")} -${name} · active: ${state.skills.join(", ") || "(none)"}`);
+    } else if (action === "list") {
+      const items = listSkills(state.cfg);
+      const active = new Set(state.skills);
+      if (!items.length) console.log(muted("No skills configured."));
+      else items.forEach((s) => console.log(`${active.has(s.name) ? successText("●") : muted("○")} ${s.name}${s.description ? ` · ${muted(s.description)}` : ""}`));
+    } else if (action === "clear") {
+      state.skills = [];
+      console.log(`${successText(icon("check"))} ${muted("skills cleared")}`);
+    } else {
+      console.log(`${warnText(icon("warn"))} Usage: /skill add <name> | /skill remove <name> | /skill list | /skill clear`);
+    }
     return;
   }
   if (command === "dashboard") {

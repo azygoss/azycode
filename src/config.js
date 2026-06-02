@@ -66,6 +66,7 @@ export function defaultConfig() {
     reasoning: "medium",
     providers: {},
     subagents: defaultSubagents(),
+    skills: {},
     permissionProfile: "normal",
     gitGuard: {
       enabled: false,
@@ -153,6 +154,7 @@ export function loadConfig() {
   const cfg = { ...defaults, ...saved };
   cfg.providers ||= {};
   cfg.subagents = { ...defaults.subagents, ...(saved.subagents || {}) };
+  cfg.skills = { ...defaults.skills, ...(saved.skills || {}) };
   cfg.gitGuard = { ...defaults.gitGuard, ...(saved.gitGuard || {}) };
   cfg.toolPolicy = { ...defaults.toolPolicy, ...(saved.toolPolicy || {}) };
   applyPermissionProfile(cfg);

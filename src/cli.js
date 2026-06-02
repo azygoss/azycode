@@ -14,6 +14,7 @@ import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.j
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
+import { addSkill, listSkills, removeSkill, formatSkillsList } from "./skills.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
@@ -29,7 +30,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
-  "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "keys"
+  "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "skills", "keys"
 ];
 
 async function runAgentSafe(options) {
@@ -78,6 +79,7 @@ export async function main(argv) {
     case "goal": return goal(args);
     case "mission": return mission(args);
     case "subagent": return subagent(args);
+    case "skills": return skills(args);
     case "keys": return keys(args);
     default:
       if (cmd.startsWith("-")) return help();
@@ -106,7 +108,9 @@ function help(args = []) {
       "azycode goal start \"goal\"",
       "azycode mission run ./mission.yml",
       "azycode subagent add <name>",
-      "azycode subagent run <name> \"task\""
+      "azycode skills add <name>",
+      "azycode subagent run <name> \"task\"",
+      "azycode skills list"
     ]},
     { title: "Inspect and configure", items: [
       "azycode providers",
@@ -171,6 +175,16 @@ function commandHelp(topic) {
         "azycode subagent run <name> \"task\""
       ],
       notes: ["Built-ins: planner, reviewer, implementer."]
+    },
+    skills: {
+      summary: "Manage reusable skill prompts.",
+      usage: [
+        "azycode skills list",
+        "azycode skills add <name>",
+        "azycode skills show <name>",
+        "azycode skills remove <name>"
+      ],
+      notes: ["Apply skills with --skill <name> on run, plan, review, goal, chat."]
     },
     config: {
       summary: "Inspect and change local Azycode configuration.",
@@ -924,10 +938,11 @@ async function run(args) {
   const flags = parseFlags(args);
   const prompt = positionalArgs(args).join(" ") || await interactivePrompt(cfg);
   const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
+  const skills = parseSkills(args);
   const onEvent = flags.progress
     ? createAgentProgress({ maxSteps, style: "cli", onLine: (line) => console.error(line) })
     : null;
-  const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context) });
+  const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context), skills });
   if (output === undefined) {
     process.exitCode = 1;
     return;
@@ -942,8 +957,9 @@ async function chat(args) {
   let includeContext = Boolean(flags.context);
   let progress = Boolean(flags.progress);
   console.log(`azycode chat mode=${mode} reasoning=${cfg.reasoning} context=${includeContext} progress=${progress}`);
-  console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /exit");
-  const chatState = { cfg, setMode: (next) => { mode = next; }, getMode: () => mode, setContext: (next) => { includeContext = next; }, getContext: () => includeContext, setProgress: (next) => { progress = next; }, getProgress: () => progress };
+  console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /skill, /exit");
+  const skills = parseSkills(args);
+  const chatState = { cfg, setMode: (next) => { mode = next; }, getMode: () => mode, setContext: (next) => { includeContext = next; }, getContext: () => includeContext, setProgress: (next) => { progress = next; }, getProgress: () => progress, skills, addSkill: (name) => { if (!cfg.skills?.[name]) { console.error(`No skill named ${name}`); return; } chatState.skills = [...chatState.skills, name]; }, removeSkill: (name) => { chatState.skills = chatState.skills.filter((s) => s !== name); }, getSkills: () => chatState.skills };
   if (!process.stdin.isTTY) {
     const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
     for (const raw of lines) {
@@ -977,6 +993,7 @@ async function directMode(mode, args) {
   }
   const prompt = positionalArgs(args, ["save"]).join(" ") || await interactivePrompt({ ...cfg, mode });
   const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
+  const skills = parseSkills(args);
   const result = await runAgentSafe({
     cfg,
     cwd: process.cwd(),
@@ -985,6 +1002,7 @@ async function directMode(mode, args) {
     maxSteps,
     returnSession: Boolean(flags.save),
     onEvent: flags.progress ? progressPrinter(maxSteps) : null,
+    skills,
     includeContext: Boolean(flags.context)
   });
   if (result === undefined) {
@@ -1017,7 +1035,8 @@ async function goal(args) {
     const goalId = `goal_${Date.now()}`;
     state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
     saveState(state);
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal" });
+    const skills = parseSkills(args);
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills });
     const done = loadState();
     done.goals[goalId].status = output !== undefined ? "done" : "stalled";
     done.goals[goalId].finishedAt = new Date().toISOString();
@@ -1034,7 +1053,8 @@ async function goal(args) {
     selected.resumedAt = new Date().toISOString();
     saveState(state);
     const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal" });
+    const skills = parseSkills(args);
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills });
     const done = loadState();
     done.goals[goalId].status = output !== undefined ? "done" : "stalled";
     done.goals[goalId].finishedAt = new Date().toISOString();
@@ -1163,7 +1183,8 @@ async function subagent(args) {
     const selected = cfg.subagents?.[name];
     if (!selected) throw new Error(`No subagent named ${name}.`);
     const prompt = args.slice(2).join(" ") || await interactivePrompt(cfg);
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, subagent: selected });
+    const skills = parseSkills(args);
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, subagent: selected, skills });
     if (output === undefined) {
       process.exitCode = 1;
       return;
@@ -1172,6 +1193,50 @@ async function subagent(args) {
     return;
   }
   throw new Error("Usage: azycode subagent list|add|remove|run");
+}
+
+async function skills(args) {
+  const action = args[0] || "list";
+  if (action === "list") {
+    ui.title("Skills");
+    const items = listSkills(loadConfig());
+    if (!items.length) {
+      console.log(muted("No skills configured. Add one with: azycode skills add <name>"));
+      return;
+    }
+    ui.table(items.map((skill) => ({
+      name: skill.name,
+      description: skill.description || ""
+    })), [
+      { key: "name", label: "name" },
+      { key: "description", label: "description" }
+    ]);
+    return;
+  }
+  if (action === "add") {
+    const flags = parseFlags(args.slice(2));
+    const name = args[1] || await ask("Name");
+    const description = flags.description || await ask("Description", "");
+    const text = flags.text || await ask("Skill text", "");
+    addSkill({ name, description, text });
+    console.log(`Skill ${name} added.`);
+    return;
+  }
+  if (action === "remove") {
+    removeSkill(args[1]);
+    console.log(`Skill ${args[1]} removed.`);
+    return;
+  }
+  if (action === "show") {
+    const cfg = loadConfig();
+    const skill = cfg.skills?.[args[1]];
+    if (!skill) throw new Error(`No skill named ${args[1]}.`);
+    console.log(`${bold(skill.name || args[1])}${skill.description ? ` · ${muted(skill.description)}` : ""}`);
+    console.log("");
+    console.log(skill.text || muted("(empty)"));
+    return;
+  }
+  throw new Error("Usage: azycode skills list|add|remove|show");
 }
 
 async function keys(args) {
@@ -1232,6 +1297,17 @@ function parseFlags(args) {
     }
   }
   return flags;
+}
+
+function parseSkills(args) {
+  const skills = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--skill" && args[i + 1] && !args[i + 1].startsWith("--")) {
+      skills.push(args[i + 1]);
+      i += 1;
+    }
+  }
+  return skills;
 }
 
 function parseBoolean(value) {
@@ -1354,8 +1430,27 @@ async function handleChatCommand(line, state) {
     console.log(formatGuard(gitGuard(process.cwd(), state.cfg)));
     return;
   }
+  if (command === "skill") {
+    const action = rest[0];
+    const name = rest[1];
+    if (action === "add" && name) {
+      state.addSkill(name);
+      console.log(`skill +${name} · active: ${state.getSkills().join(", ") || "(none)"}`);
+    } else if (action === "remove" && name) {
+      state.removeSkill(name);
+      console.log(`skill -${name} · active: ${state.getSkills().join(", ") || "(none)"}`);
+    } else if (action === "list") {
+      const items = listSkills(state.cfg);
+      const active = new Set(state.getSkills());
+      if (!items.length) console.log("No skills configured.");
+      else items.forEach((s) => console.log(`${active.has(s.name) ? "●" : "○"} ${s.name}${s.description ? ` · ${s.description}` : ""}`));
+    } else {
+      console.log("Usage: /skill add <name> | /skill remove <name> | /skill list");
+    }
+    return;
+  }
   if (command === "help") {
-    console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /exit");
+    console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /skill, /exit");
     return;
   }
   console.log(`Unknown slash command: /${command}`);
@@ -1371,7 +1466,8 @@ async function handleChatLine(line, state) {
     mode: state.getMode(),
     maxSteps,
     includeContext: state.getContext(),
-    onEvent: state.getProgress() ? progressPrinter(maxSteps) : null
+    onEvent: state.getProgress() ? progressPrinter(maxSteps) : null,
+    skills: state.getSkills()
   });
   if (result !== undefined) console.log(result);
 }

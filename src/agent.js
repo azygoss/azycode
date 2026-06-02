@@ -9,6 +9,7 @@ import { contextPack, formatContextPack } from "./context.js";
 import { summarizeToolArgs } from "./harness.js";
 import { createModeRuntime } from "./agent-runtime.js";
 import { formatActiveTodos } from "./todos.js";
+import { getSkillText } from "./skills.js";
 
 export function systemForMode(mode) {
   const base = [
@@ -30,7 +31,7 @@ export function systemForMode(mode) {
   return `${base}\n${modes[mode] || modes.plan}`;
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null }) {
+export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null, skills = [] }) {
   const stepLimit = resolveAgentMaxSteps(cfg, maxSteps);
   const client = new LlmClient(cfg);
   const activeModel = subagent?.model || client.provider.model;
@@ -53,6 +54,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     stepLimit
       ? `Run budget: at most ${stepLimit} model steps. Track work with todo and finish with a final answer before the limit.`
       : "No step cap in this run: continue with todo tracking until the task is complete, then return a final answer instead of looping on tools.",
+    getSkillText(cfg, skills),
     projectRules,
     relevantMemory,
     activeTodos,
