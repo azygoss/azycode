@@ -41,13 +41,18 @@ async function fetchWithTimeout(url, init, timeoutMs) {
   }
 }
 
+function jitterDelay(baseMs, attempt) {
+  const exponential = baseMs * (2 ** attempt);
+  return exponential + Math.random() * baseMs;
+}
+
 async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = MAX_RETRIES } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       const response = await fetchWithTimeout(url, init, timeoutMs);
       if (!response.ok && isRetryableStatus(response.status) && attempt < maxRetries) {
-        const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        const delay = Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
         warn(`LLM request HTTP ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
         await sleep(delay);
         continue;
@@ -56,7 +61,7 @@ async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRe
     } catch (error) {
       lastError = error;
       if (isRetryableError(error) && attempt < maxRetries) {
-        const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        const delay = Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
         warn(`LLM request error (${error.name || error.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
         await sleep(delay);
         continue;
