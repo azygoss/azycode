@@ -201,7 +201,7 @@ export function loadConfig() {
   const cPath = configPath();
   const mtime = fileMtime(cPath);
   if (_configCache && _configMtime === mtime) {
-    return structuredClone ? structuredClone(_configCache) : JSON.parse(JSON.stringify(_configCache));
+    return typeof structuredClone === "function" ? structuredClone(_configCache) : JSON.parse(JSON.stringify(_configCache));
   }
   const defaults = defaultConfig();
   const saved = readJson(cPath, {});
@@ -215,7 +215,7 @@ export function loadConfig() {
   applyPermissionProfile(cfg);
   _configCache = cfg;
   _configMtime = mtime;
-  return structuredClone ? structuredClone(cfg) : JSON.parse(JSON.stringify(cfg));
+  return typeof structuredClone === "function" ? structuredClone(cfg) : JSON.parse(JSON.stringify(cfg));
 }
 
 export function saveConfig(cfg) {
@@ -232,7 +232,7 @@ export function loadState() {
   const sPath = statePath();
   const mtime = fileMtime(sPath);
   if (_stateCache && _stateMtime === mtime) {
-    return structuredClone ? structuredClone(_stateCache) : JSON.parse(JSON.stringify(_stateCache));
+    return typeof structuredClone === "function" ? structuredClone(_stateCache) : JSON.parse(JSON.stringify(_stateCache));
   }
   const state = readJson(sPath, { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] });
   state.sessions ||= {};
@@ -241,7 +241,7 @@ export function loadState() {
   state.toolRuns ||= [];
   _stateCache = state;
   _stateMtime = mtime;
-  return structuredClone ? structuredClone(state) : JSON.parse(JSON.stringify(state));
+  return typeof structuredClone === "function" ? structuredClone(state) : JSON.parse(JSON.stringify(state));
 }
 
 export function saveState(state) {
@@ -257,12 +257,12 @@ export function loadTodos() {
   const tPath = todosPath();
   const mtime = fileMtime(tPath);
   if (_todosCache && _todosMtime === mtime) {
-    return structuredClone ? structuredClone(_todosCache) : JSON.parse(JSON.stringify(_todosCache));
+    return typeof structuredClone === "function" ? structuredClone(_todosCache) : JSON.parse(JSON.stringify(_todosCache));
   }
   const todos = readJson(tPath, {});
   _todosCache = todos;
   _todosMtime = mtime;
-  return structuredClone ? structuredClone(todos) : JSON.parse(JSON.stringify(todos));
+  return typeof structuredClone === "function" ? structuredClone(todos) : JSON.parse(JSON.stringify(todos));
 }
 
 export function saveTodos(todos) {

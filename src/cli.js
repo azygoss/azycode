@@ -48,6 +48,10 @@ async function runAgentSafe(options) {
 
 export async function main(argv) {
   const [cmd, ...args] = argv;
+  if (cmd === "--version" || cmd === "-v") {
+    console.log(VERSION);
+    return;
+  }
   if (!cmd) return launchTui({ cwd: process.cwd() });
   switch (cmd) {
     case "help": return help(args);
