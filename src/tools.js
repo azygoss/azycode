@@ -20,7 +20,7 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
     }, async ({ dir = ".", depth = 2 }) => {
       const base = safePath(root, dir);
       const out = [];
-      walk(base, Number(depth) || 2, out, base);
+      walk(base, Math.max(0, Number(depth) || 2), out, base);
       return out.join("\n");
     }),
     tool("read_file", "Read a UTF-8 text file.", {
@@ -34,7 +34,8 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
       },
       required: ["file"]
     }, async ({ file, startLine, endLine, maxBytes = 120000, showLineNumbers = false }) => {
-      const text = fs.readFileSync(safePath(root, file), "utf8").slice(0, Number(maxBytes) || 120000);
+      const limit = Math.max(1, Number(maxBytes) || 120000);
+      const text = fs.readFileSync(safePath(root, file), "utf8").slice(0, limit);
       return sliceLines(text, { startLine, endLine, showLineNumbers });
     }),
     tool("read_many_files", "Read multiple UTF-8 text files in one call.", {
@@ -46,9 +47,10 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
       required: ["files"]
     }, async ({ files, maxBytesPerFile = 120000 }) => {
       const selected = Array.isArray(files) ? files.slice(0, 20) : [];
+      const limit = Math.max(1, Number(maxBytesPerFile) || 120000);
       return selected.map((file) => {
         const target = safePath(root, file);
-        const text = fs.readFileSync(target, "utf8").slice(0, Number(maxBytesPerFile) || 120000);
+        const text = fs.readFileSync(target, "utf8").slice(0, limit);
         return `--- ${file} ---\n${text}`;
       }).join("\n\n");
     }),
@@ -240,7 +242,7 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
       assertGuard(root, policySource(), "shell");
       const { stdout, stderr } = await execFileAsync(process.env.SHELL || "sh", ["-lc", command], {
         cwd: root,
-        timeout: Number(timeoutMs) || 60000,
+        timeout: Math.max(1, Number(timeoutMs) || 60000),
         maxBuffer: 1024 * 1024 * 8
       });
       return [stdout, stderr].filter(Boolean).join("\n") || "(no output)";

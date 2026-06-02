@@ -1,4 +1,5 @@
 import { chatPathFor, providerConfig, resolveProtocol } from "./providers.js";
+import { debug, warn } from "./logger.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -47,6 +48,7 @@ async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRe
       const response = await fetchWithTimeout(url, init, timeoutMs);
       if (!response.ok && isRetryableStatus(response.status) && attempt < maxRetries) {
         const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        warn(`LLM request HTTP ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
         await sleep(delay);
         continue;
       }
@@ -55,6 +57,7 @@ async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRe
       lastError = error;
       if (isRetryableError(error) && attempt < maxRetries) {
         const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        warn(`LLM request error (${error.name || error.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
         await sleep(delay);
         continue;
       }
