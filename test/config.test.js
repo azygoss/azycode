@@ -70,3 +70,27 @@ test("permission profiles rewrite effective tool policy", async () => {
   assert.equal(cfg.toolPolicy.write_file, "deny");
   assert.equal(cfg.toolPolicy.shell, "deny");
 });
+
+test("validateConfig normalizes invalid mode and reasoning", async () => {
+  const mod = await import(`../src/config.js?v=${Date.now()}`);
+  const cfg = mod.defaultConfig();
+  cfg.mode = "invalid-mode";
+  cfg.reasoning = "extreme";
+  cfg.permissionProfile = "unknown";
+  cfg.toolPolicy = { shell: "block", unknown_tool: "auto" };
+  mod.validateConfig(cfg);
+  assert.equal(cfg.mode, "plan");
+  assert.equal(cfg.reasoning, "medium");
+  assert.equal(cfg.permissionProfile, "normal");
+  assert.equal(cfg.toolPolicy.shell, "ask");
+  assert.equal(cfg.toolPolicy.unknown_tool, undefined);
+});
+
+test("config caching returns consistent values across calls", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azycode-"));
+  process.env.AZYCODE_HOME = dir;
+  const mod = await import(`../src/config.js?c=${Date.now()}`);
+  const first = mod.loadConfig();
+  const second = mod.loadConfig();
+  assert.deepStrictEqual(first, second);
+});

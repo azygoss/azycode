@@ -32,7 +32,7 @@ export function localReview(cwd = process.cwd()) {
   if (added.some((line) => /\.innerHTML\s*=/.test(line))) {
     findings.push(finding("medium", "Possible XSS via innerHTML.", "Prefer textContent or sanitized insertion over direct innerHTML assignment."));
   }
-  if (added.some((line) => /child_process\.exec\s*\(/.test(line))) {
+  if (added.some((line) => /child_process\.exec\s*\(|require\s*\(\s*['"]child_process['"]\s*\)[\s\S]{0,100}?\bexec\s*\(/.test(line))) {
     findings.push(finding("medium", "Unsafe shell execution.", "child_process.exec() interpolates a shell; prefer execFile() or execFileSync()."));
   }
   if (added.some((line) => /\b(?:TODO|FIXME|HACK|XXX)\b/.test(line))) {

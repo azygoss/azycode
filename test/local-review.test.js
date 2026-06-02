@@ -16,3 +16,39 @@ test("localReview flags runtime changes without tests", () => {
   assert(review.findings.some((finding) => finding.title.includes("Runtime code changed")));
   assert.match(formatLocalReview(review), /Local Review/);
 });
+
+test("localReview detects eval and new Function in diff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "bad.js"), "eval(userInput)\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("code injection")));
+});
+
+test("localReview detects innerHTML assignment in diff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "xss.js"), "el.innerHTML = html\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("innerHTML")));
+});
+
+test("localReview detects child_process.exec in diff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "exec.js"), "const cp = require('child_process'); cp.exec(cmd)\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("Unsafe shell")));
+});
+
+test("localReview detects TODO and FIXME markers in diff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "todo.js"), "// TODO: fix this\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("Code markers")));
+});
