@@ -45,10 +45,13 @@ test("tool policy command updates config", () => {
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.toolPolicy.shell, "deny");
   const tools = run(["tools"], { AZYCODE_HOME: home });
-  assert.match(tools, /Tool Policy/);
+  assert.match(tools, /Tool Catalog/);
   assert.match(tools, /read_many_files\s+auto/);
   assert.match(tools, /delete_path\s+ask/);
   assert.match(tools, /shell\s+deny/);
+  const inspected = run(["tools", "inspect", "read_many_files"], { AZYCODE_HOME: home });
+  assert.match(inspected, /Tool read_many_files/);
+  assert.match(inspected, /parameters\s+files, maxBytesPerFile/);
 });
 
 test("health reports no configured providers", () => {
@@ -337,10 +340,11 @@ test("tui can list and switch configured providers", async () => {
 
 test("tui can inspect and update tool policy", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
-  const stdout = await runWithInput([], "/policy\n/tool shell auto\n/policy\n/exit\n", { AZYCODE_HOME: home });
-  assert.match(stdout, /Tool policy[\s\S]*shell\s+ask/);
+  const stdout = await runWithInput([], "/policy\n/tool read_many_files\n/tool shell auto\n/policy\n/exit\n", { AZYCODE_HOME: home });
+  assert.match(stdout, /Tool catalog[\s\S]*shell\s+ask/);
+  assert.match(stdout, /Tool: read_many_files[\s\S]*params\s+files, maxBytesPerFile/);
   assert.match(stdout, /tool: shell -> auto/);
-  assert.match(stdout, /Tool policy[\s\S]*shell\s+auto/);
+  assert.match(stdout, /Tool catalog[\s\S]*shell\s+auto/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.toolPolicy.shell, "auto");
 });

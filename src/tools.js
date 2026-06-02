@@ -221,6 +221,21 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
   }));
 }
 
+export function toolCatalog({ cwd = process.cwd(), cfg }) {
+  const policy = cfg.toolPolicy || {};
+  return createTools({ cwd, cfg: { ...cfg, alwaysApprove: true }, confirmTool: async () => true })
+    .map((entry) => {
+      const fn = entry.schema.function;
+      return {
+        name: entry.name,
+        policy: policy[entry.name] || "ask",
+        description: fn.description,
+        parameters: Object.keys(fn.parameters?.properties || {}),
+        required: fn.parameters?.required || []
+      };
+    });
+}
+
 function assertGuard(root, cfg, toolName) {
   if (!["make_dir", "write_file", "edit_file", "copy_path", "move_path", "delete_path", "apply_patch", "shell"].includes(toolName)) return;
   const result = gitGuard(root, cfg);

@@ -17,6 +17,7 @@ import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
+import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
 import { launchTui } from "./tui.js";
 
@@ -481,12 +482,28 @@ function toolsCmd(args = []) {
     ]);
     return;
   }
-  const policy = cfg.toolPolicy || {};
-  const names = Object.keys(policy).sort();
-  ui.title("Tool Policy");
-  ui.table(names.map((name) => ({ tool: name, policy: policy[name] || "ask" })), [
+  const catalog = toolCatalog({ cwd: process.cwd(), cfg });
+  if (args[0] === "inspect") {
+    const selected = catalog.find((tool) => tool.name === args[1]);
+    if (!selected) throw new Error("Usage: azycode tools inspect <tool>");
+    ui.title(`Tool ${selected.name}`);
+    ui.kv("policy", selected.policy);
+    ui.kv("description", selected.description);
+    ui.kv("parameters", selected.parameters.join(", ") || "(none)");
+    ui.kv("required", selected.required.join(", ") || "(none)");
+    return;
+  }
+  ui.title("Tool Catalog");
+  ui.table(catalog.map((tool) => ({
+    tool: tool.name,
+    policy: tool.policy,
+    params: tool.parameters.join(", "),
+    description: tool.description
+  })), [
     { key: "tool", label: "tool" },
-    { key: "policy", label: "policy" }
+    { key: "policy", label: "policy" },
+    { key: "params", label: "params" },
+    { key: "description", label: "description" }
   ]);
 }
 

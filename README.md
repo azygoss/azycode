@@ -105,6 +105,8 @@ Shell completion can be installed with the output of `azycode completion <bash|z
 
 Built-in tools cover common repository work: `list_files`, `read_file`, `read_many_files`, `file_info`, `search`, `git_status`, `git_log`, `git_show`, `git_diff`, `make_dir`, `write_file`, `edit_file`, `copy_path`, `move_path`, `delete_path`, `apply_patch`, and `shell`. Read-only tools default to auto approval; write-like tools default to ask and remain protected by git guard.
 
+Use `azycode tools` or `/policy` to inspect the full tool catalog. Use `azycode tools inspect <tool>` or `/tool <tool>` to see parameters and required fields.
+
 Non-interactive login is supported for scripts:
 
 ```sh

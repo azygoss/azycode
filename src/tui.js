@@ -16,6 +16,7 @@ import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.j
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { contextPack, formatContextPack } from "./context.js";
+import { toolCatalog } from "./tools.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -780,11 +781,9 @@ function printDoctor(state) {
 }
 
 function printToolPolicy(state) {
-  const policy = state.cfg.toolPolicy || {};
-  const rows = Object.entries(policy)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, mode]) => `${name.padEnd(14)} ${mode}`);
-  printRows("Tool policy", rows);
+  const rows = toolCatalog({ cwd: state.cwd, cfg: state.cfg })
+    .map((tool) => `${tool.name.padEnd(16)} ${tool.policy.padEnd(4)} ${tool.description}`);
+  printRows("Tool catalog", rows);
 }
 
 function printPolicySummary(state) {
@@ -796,6 +795,10 @@ function printPolicySummary(state) {
 function handleToolPolicy(args, state) {
   const [tool, mode] = args;
   const policy = state.cfg.toolPolicy || {};
+  if (tool && !mode) {
+    printToolDetail(state, tool);
+    return;
+  }
   if (!tool || !mode) {
     console.log("Usage: /tool <name> <auto|ask|deny>");
     printRows("Known tools", Object.keys(policy).sort());
@@ -812,6 +815,20 @@ function handleToolPolicy(args, state) {
   state.cfg.toolPolicy[tool] = mode;
   saveConfig(state.cfg);
   console.log(`tool: ${tool} -> ${mode}`);
+}
+
+function printToolDetail(state, name) {
+  const selected = toolCatalog({ cwd: state.cwd, cfg: state.cfg }).find((tool) => tool.name === name);
+  if (!selected) {
+    console.log(`tool: unknown '${name}'. Use /policy.`);
+    return;
+  }
+  printRows(`Tool: ${selected.name}`, [
+    `policy      ${selected.policy}`,
+    `params      ${selected.parameters.join(", ") || "(none)"}`,
+    `required    ${selected.required.join(", ") || "(none)"}`,
+    `description ${selected.description}`
+  ]);
 }
 
 function printModels(state) {
