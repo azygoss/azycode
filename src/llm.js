@@ -16,12 +16,14 @@ function requestTimeoutMs() {
 
 function isRetryableError(error) {
   if (error.name === "AbortError" || error.name === "TimeoutError") return true;
-  if (error.message?.includes("fetch failed") || error.message?.includes("network") || error.message?.includes("ECONNREFUSED")) return true;
+  if (error.message?.includes("fetch failed") || error.message?.includes("network")) return true;
+  if (error.code && ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND"].includes(error.code)) return true;
+  if (error.message?.includes("ECONNREFUSED") || error.message?.includes("ECONNRESET") || error.message?.includes("ETIMEDOUT") || error.message?.includes("ENOTFOUND")) return true;
   return false;
 }
 
 function isRetryableStatus(status) {
-  if (status === 429) return true;
+  if (status === 408 || status === 429) return true;
   if (status >= 500 && status < 600) return true;
   return false;
 }
