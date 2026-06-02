@@ -53,6 +53,12 @@ azycode report
 | Async context pack to reduce blocking IO | `src/context.js`: `fs.promises.readFile` in `contextPack` |
 | Hardened error boundaries in CLI entrypoint | `bin/azycode.js`: `uncaughtException` and `unhandledRejection` handlers |
 | Package metadata enriched | `package.json`: keywords, repository, bugs, homepage |
+| Memory caching with mtime invalidation | `src/memory.js`: `_memoryCache` and `_memoryMtime` |
+| Grep fallback for search when ripgrep is missing | `src/tools.js`: `grep -rn` fallback when `rg` is not found |
+| Conversation limit configurable via config | `src/tui.js`: `maxConversationMessages` read from config |
+| Cleaner event formatting (omits empty sessionId) | `src/harness.js`: event formatting omits empty brackets |
+| Provider diagnostics include model list and note | `src/providers.js`: `providerDiagnostics` returns `models` and `note` |
+| README usage examples section | `README.md`: practical examples for goals, missions, review, context |
 
 ## Known Provider Limits
 
