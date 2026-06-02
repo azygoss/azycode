@@ -1,5 +1,69 @@
 import { chatPathFor, providerConfig, resolveProtocol } from "./providers.js";
 
+const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_BASE_MS = 1_000;
+
+function requestTimeoutMs() {
+  const env = process.env.AZYCODE_REQUEST_TIMEOUT_MS;
+  if (env) {
+    const parsed = Number(env);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
+function isRetryableError(error) {
+  if (error.name === "AbortError" || error.name === "TimeoutError") return true;
+  if (error.message?.includes("fetch failed") || error.message?.includes("network") || error.message?.includes("ECONNREFUSED")) return true;
+  return false;
+}
+
+function isRetryableStatus(status) {
+  if (status === 429) return true;
+  if (status >= 500 && status < 600) return true;
+  return false;
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("TimeoutError")), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = MAX_RETRIES } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, init, timeoutMs);
+      if (!response.ok && isRetryableStatus(response.status) && attempt < maxRetries) {
+        const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        await sleep(delay);
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (isRetryableError(error) && attempt < maxRetries) {
+        const delay = RETRY_DELAY_BASE_MS * (2 ** attempt);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError || new Error(`Request failed after ${maxRetries + 1} attempts`);
+}
+
 export class LlmClient {
   constructor(cfg, providerName = cfg.activeProvider) {
     this.provider = providerConfig(cfg, providerName);
@@ -65,7 +129,7 @@ export class LlmClient {
 
   async request(path, init) {
     const url = `${this.provider.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       ...init,
       headers: {
         ...(this.provider.headers || {}),
