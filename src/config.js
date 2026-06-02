@@ -4,8 +4,19 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 export const DEFAULT_MODE = "plan";
+export const DEFAULT_AGENT_MAX_STEPS = 24;
 export const MODES = ["plan", "always-approve", "goal", "review"];
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high"];
+
+export function resolveAgentMaxSteps(cfg, override) {
+  if (override !== undefined && override !== null && override !== "") {
+    const parsed = Number(override);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  const fromCfg = Number(cfg?.agentMaxSteps);
+  if (Number.isFinite(fromCfg) && fromCfg > 0) return Math.floor(fromCfg);
+  return DEFAULT_AGENT_MAX_STEPS;
+}
 
 export function azyHome() {
   return process.env.AZYCODE_HOME || path.join(os.homedir(), ".azycode");
@@ -29,6 +40,7 @@ export function defaultConfig() {
     activeProvider: null,
     activeModel: null,
     mode: DEFAULT_MODE,
+    agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
     alwaysApprove: false,
     reasoning: "medium",
     providers: {},

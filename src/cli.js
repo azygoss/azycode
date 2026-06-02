@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
-import { loadConfig, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
+import { loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { LlmClient } from "./llm.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
@@ -21,7 +21,7 @@ import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
 import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
 import { launchTui } from "./tui.js";
-import { formatAgentEvent, runtimeSnapshot } from "./harness.js";
+import { createAgentProgress, formatAgentEvent, formatAgentStepLine, runtimeSnapshot } from "./harness.js";
 
 const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -909,7 +909,11 @@ async function run(args) {
   const cfg = loadConfig();
   const flags = parseFlags(args);
   const prompt = positionalArgs(args).join(" ") || await interactivePrompt(cfg);
-  const output = await runAgent({ cfg, cwd: process.cwd(), prompt, onEvent: flags.progress ? progressPrinter() : null, includeContext: Boolean(flags.context) });
+  const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
+  const onEvent = flags.progress
+    ? createAgentProgress({ maxSteps, style: "cli", onLine: (line) => console.error(line) })
+    : null;
+  const output = await runAgent({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context) });
   console.log(output);
 }
 
@@ -954,13 +958,15 @@ async function directMode(mode, args) {
     return;
   }
   const prompt = positionalArgs(args, ["save"]).join(" ") || await interactivePrompt({ ...cfg, mode });
+  const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
   const result = await runAgent({
     cfg,
     cwd: process.cwd(),
     prompt,
     mode,
+    maxSteps,
     returnSession: Boolean(flags.save),
-    onEvent: flags.progress ? progressPrinter() : null,
+    onEvent: flags.progress ? progressPrinter(maxSteps) : null,
     includeContext: Boolean(flags.context)
   });
   if (flags.save) {
@@ -1208,11 +1214,12 @@ function parseBoolean(value) {
   throw new Error("Boolean value must be true or false.");
 }
 
-function progressPrinter() {
-  return (event) => {
-    const line = formatAgentEvent(event, { style: "cli" });
-    if (line) console.error(line);
-  };
+function progressPrinter(maxSteps) {
+  return createAgentProgress({
+    maxSteps,
+    style: "cli",
+    onLine: (line) => console.error(line)
+  });
 }
 
 function formatTranscript(session) {
@@ -1330,13 +1337,15 @@ async function handleChatCommand(line, state) {
 
 async function handleChatLine(line, state) {
   if (line.startsWith("/")) return handleChatCommand(line, state);
+  const maxSteps = resolveAgentMaxSteps(state.cfg);
   const result = await runAgent({
     cfg: state.cfg,
     cwd: process.cwd(),
     prompt: line,
     mode: state.getMode(),
+    maxSteps,
     includeContext: state.getContext(),
-    onEvent: state.getProgress() ? progressPrinter() : null
+    onEvent: state.getProgress() ? progressPrinter(maxSteps) : null
   });
   console.log(result);
 }

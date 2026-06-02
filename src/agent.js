@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { LlmClient, assistantMessageFromCompletion } from "./llm.js";
 import { createTools } from "./tools.js";
-import { id, loadState, saveState } from "./config.js";
+import { id, loadState, resolveAgentMaxSteps, saveState } from "./config.js";
+import { AgentStepLimitError } from "./agent-errors.js";
 import { searchMemory } from "./memory.js";
 import { contextPack, formatContextPack } from "./context.js";
 import { summarizeToolArgs } from "./harness.js";
@@ -29,7 +30,8 @@ export function systemForMode(mode) {
   return `${base}\n${modes[mode] || modes.plan}`;
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps = 12, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null }) {
+export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null }) {
+  const stepLimit = resolveAgentMaxSteps(cfg, maxSteps);
   const client = new LlmClient(cfg);
   const activeModel = subagent?.model || client.provider.model;
   const modeRuntime = createModeRuntime(mode, { cfg, onModeChange });
@@ -41,6 +43,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const buildSystemContent = () => [
     subagent?.system || systemForMode(modeRuntime.getMode()),
+    `Run budget: at most ${stepLimit} model steps. Track work with todo. Converge to a final user-facing answer before the limit instead of endless tool calls.`,
     loadProjectRules(cwd),
     loadRelevantMemory(prompt),
     formatActiveTodos(cwd),
@@ -59,9 +62,11 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     if (onEvent) onEvent(enriched);
   };
 
-  for (let step = 0; step < maxSteps; step += 1) {
+  emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
+
+  for (let step = 0; step < stepLimit; step += 1) {
     const activeMode = modeRuntime.getMode();
-    emit({ type: "model_start", step: step + 1, model: activeModel, mode: activeMode });
+    emit({ type: "model_start", step: step + 1, maxSteps: stepLimit, model: activeModel, mode: activeMode });
     const completion = await client.chat({
       messages,
       tools,
@@ -71,11 +76,16 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     const message = assistantMessageFromCompletion(completion);
     if (!message) throw new Error("Provider returned no assistant message.");
     messages.push(message);
-    emit({ type: "model_end", step: step + 1, toolCalls: (message.tool_calls || []).length });
-
     const calls = message.tool_calls || [];
+    emit({
+      type: "model_end",
+      step: step + 1,
+      maxSteps: stepLimit,
+      toolCalls: calls.length,
+      tools: calls.map((call) => call.function?.name).filter(Boolean)
+    });
     if (!calls.length) {
-      emit({ type: "final", step: step + 1 });
+      emit({ type: "final", step: step + 1, maxSteps: stepLimit });
       recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
       const content = message.content || "";
       return returnSession ? { content, sessionId, messages } : content;
@@ -96,7 +106,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       }
       const args = parsed.value;
       const selected = toolMap[name];
-      emit({ type: "tool_start", step: step + 1, tool: name, summary: summarizeToolArgs(name, args) });
+      emit({ type: "tool_start", step: step + 1, maxSteps: stepLimit, tool: name, summary: summarizeToolArgs(name, args) });
       const startedAt = Date.now();
       let content;
       let ok = true;
@@ -107,7 +117,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
         content = `Tool ${name} failed: ${error.message}`;
       }
       const durationMs = Date.now() - startedAt;
-      emit({ type: "tool_end", step: step + 1, tool: name, ok, durationMs });
+      emit({ type: "tool_end", step: step + 1, maxSteps: stepLimit, tool: name, ok, durationMs });
       recordToolRun({ sessionId, step: step + 1, name, ok, durationMs, args, content });
       messages.push({
         role: "tool",
@@ -124,8 +134,20 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     }
   }
 
-  recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
-  throw new Error(`Agent stopped after ${maxSteps} steps without a final answer.`);
+  const partialContent = lastAssistantContent(messages);
+  emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
+  recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
+  throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
+}
+
+function lastAssistantContent(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && String(message.content || "").trim()) {
+      return String(message.content).trim();
+    }
+  }
+  return "";
 }
 
 function parseToolArgs(rawArgs) {

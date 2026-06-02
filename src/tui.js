@@ -7,7 +7,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, azyHome, configPath, loadConfig, loadState, maskSecret, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, configPath, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { AgentStepLimitError } from "./agent-errors.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
 import {
@@ -304,12 +305,23 @@ async function askAgent(prompt, state, rl = null) {
     blank();
     return;
   }
-  const spinner = state.progress ? startSpinner({ label: `thinking  ${truncate(prompt, 36)}`, stream: output, isTTY: output.isTTY }) : null;
+  const maxSteps = resolveAgentMaxSteps(state.cfg);
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Agent run")}  ${muted(`· max ${maxSteps} steps`)}  ${muted(`· ${state.mode}`)}`);
+  console.log(rule(PANEL_WIDTH, { char: "·", color: "subtle" }));
+
+  const spinner = state.progress ? startSpinner({ label: `step 0/${maxSteps}`, stream: output, isTTY: output.isTTY }) : null;
   const onEvent = state.progress
     ? createAgentProgress({
       spinner,
-      log: !spinner,
-      onLine: (text) => console.log(muted(`  ${icon("chevronRight")} ${text}`))
+      maxSteps,
+      onLine: (line, event) => {
+        if (event?.type === "agent_run_start" || event?.type === "model_start") {
+          console.log(infoText(line.trim()));
+        } else {
+          console.log(muted(line));
+        }
+      }
     })
     : null;
   try {
@@ -318,6 +330,7 @@ async function askAgent(prompt, state, rl = null) {
       cwd: state.cwd,
       prompt,
       mode: state.mode,
+      maxSteps,
       includeContext: state.includeContext,
       onEvent,
       conversation: state.conversation,
@@ -338,7 +351,17 @@ async function askAgent(prompt, state, rl = null) {
     blank();
   } catch (error) {
     if (spinner) stopSpinner({ finalStyle: "error", finalLabel: `error  ${truncate(prompt, 36)}` });
-    console.log(errorText(`${icon("cross")}  ${error.message}`));
+    blank();
+    console.log(errorText(`${icon("cross")}  ${bold("Agent stopped")}`));
+    if (error instanceof AgentStepLimitError) {
+      console.log(warnText("  Step limit reached before a final answer."));
+      if (error.partialContent) {
+        console.log(`  ${muted("Last model text:")}`);
+        console.log(renderAssistantContent(error.partialContent));
+      }
+    } else {
+      console.log(errorText(`  ${error.message}`));
+    }
     blank();
   }
 }

@@ -49,6 +49,13 @@ test("loadConfig merges new default tool policies into old config files", async 
   assert(cfg.subagents.custom);
 });
 
+test("resolveAgentMaxSteps prefers override then config default", async () => {
+  const mod = await import(`../src/config.js?s=${Date.now()}`);
+  assert.equal(mod.resolveAgentMaxSteps({}, 40), 40);
+  assert.equal(mod.resolveAgentMaxSteps({ agentMaxSteps: 30 }), 30);
+  assert.equal(mod.resolveAgentMaxSteps({}), mod.DEFAULT_AGENT_MAX_STEPS);
+});
+
 test("permission profiles rewrite effective tool policy", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azycode-"));
   process.env.AZYCODE_HOME = dir;

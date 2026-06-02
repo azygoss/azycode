@@ -61,6 +61,69 @@ export function summarizeToolArgs(tool, args = {}) {
   return "";
 }
 
+function stepLabel(step, maxSteps) {
+  if (!step) return "";
+  if (maxSteps) return `Step ${step}/${maxSteps}`;
+  return `Step ${step}`;
+}
+
+export function formatAgentStepLine(event, { maxSteps = null, style = "tui" } = {}) {
+  if (!event?.type) return "";
+  const limit = event.maxSteps ?? maxSteps;
+  const prefix = stepLabel(event.step, limit);
+  const summary = event.summary ? ` ${event.summary}` : "";
+  if (event.type === "agent_run_start") {
+    return style === "cli"
+      ? `[${event.sessionId}] run start · max ${event.maxSteps} steps · mode ${event.mode}`
+      : `▸ run start · max ${event.maxSteps} steps · mode ${event.mode}`;
+  }
+  if (event.type === "model_start") {
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: model (${event.mode || "?"}) ${event.model || ""}`
+      : `  ${prefix}  model  ${event.mode || "?"}  ${event.model || ""}`;
+  }
+  if (event.type === "model_end") {
+    const tools = event.tools?.length ? `: ${event.tools.join(", ")}` : "";
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: ${event.toolCalls} tool call(s)${tools}`
+      : `  ${prefix}  tools (${event.toolCalls})${tools}`;
+  }
+  if (event.type === "tool_start") {
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: → ${event.tool}${summary}`
+      : `  ${prefix}  → ${event.tool}${summary}`;
+  }
+  if (event.type === "tool_end") {
+    const status = event.ok ? "ok" : "failed";
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: ← ${event.tool} ${status} ${event.durationMs}ms`
+      : `  ${prefix}  ← ${event.tool}  ${status}  ${prettyMs(event.durationMs)}`;
+  }
+  if (event.type === "mode_change") {
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: mode -> ${event.mode}`
+      : `  ${prefix}  mode → ${event.mode}`;
+  }
+  if (event.type === "final") {
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: final answer`
+      : `  ${prefix}  final answer`;
+  }
+  if (event.type === "step_limit") {
+    return style === "cli"
+      ? `[${event.sessionId}] ${prefix}: step limit reached`
+      : `  ${prefix}  step limit reached`;
+  }
+  return formatAgentEvent(event, { style });
+}
+
+export function formatAgentRunReport(events, { maxSteps = null } = {}) {
+  return (events || [])
+    .map((event) => formatAgentStepLine(event, { maxSteps }))
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function formatAgentEvent(event, { style = "tui" } = {}) {
   if (!event?.type) return "";
   const summary = event.summary ? ` ${event.summary}` : "";
@@ -81,16 +144,16 @@ export function formatAgentEvent(event, { style = "tui" } = {}) {
   return "";
 }
 
-export function createAgentProgress({ spinner = null, log = true, style = "tui", onLine = null } = {}) {
+export function createAgentProgress({ spinner = null, maxSteps = null, style = "tui", onLine = null } = {}) {
+  const write = onLine || ((line) => console.log(line));
   return (event) => {
-    const text = formatAgentEvent(event, { style });
-    if (!text) return;
+    const line = formatAgentStepLine(event, { maxSteps, style });
+    if (!line) return;
+    if (spinner?.tty) spinner.stream.write(`\r${" ".repeat(80)}\r`);
+    write(line, event);
     if (spinner) {
-      if (event.type === "model_start" || event.type === "tool_start" || event.type === "tool_end" || event.type === "mode_change") {
-        updateSpinnerLabel(text);
-      }
-      return;
+      const short = formatAgentEvent(event, { style });
+      if (short) updateSpinnerLabel(short);
     }
-    if (log && onLine) onLine(text, event);
   };
 }
