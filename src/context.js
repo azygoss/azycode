@@ -70,10 +70,18 @@ function listFiles(root, depth) {
   return out.slice(0, 300);
 }
 
+function isDefaultIgnored(name) {
+  return [".git", "node_modules", "dist", "coverage", ".DS_Store",
+    ".next", ".nuxt", ".svelte-kit", ".astro", ".vinxi",
+    ".cache", ".turbo", ".vercel", ".output",
+    "build", "out", "target", "tmp", "temp",
+    ".idea", ".vscode"].includes(name);
+}
+
 function walk(root, dir, depth, out) {
   if (depth < 0) return;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if ([".git", "node_modules", "dist", "coverage"].includes(entry.name)) continue;
+    if (isDefaultIgnored(entry.name)) continue;
     const full = path.join(dir, entry.name);
     const rel = path.relative(root, full);
     out.push(entry.isDirectory() ? `${rel}/` : rel);
@@ -82,7 +90,14 @@ function walk(root, dir, depth, out) {
 }
 
 function listConfigFiles(root) {
-  const names = ["AGENTS.md", "README.md", ".azycode/rules.md", "package.json", "pyproject.toml", "Cargo.toml"];
+  const names = [
+    "AGENTS.md", "README.md", ".azycode/rules.md",
+    "package.json", "pyproject.toml", "Cargo.toml", "tsconfig.json",
+    "vite.config.ts", "vite.config.js", "webpack.config.js",
+    "jest.config.js", "jest.config.ts", ".eslintrc.json", ".eslintrc.js",
+    ".prettierrc", ".prettierrc.json", "docker-compose.yml", "Dockerfile",
+    "Makefile", "CMakeLists.txt", "go.mod", "requirements.txt"
+  ];
   return names.filter((name) => fs.existsSync(path.join(root, name)));
 }
 
