@@ -4,6 +4,9 @@ import { runAgent } from "./agent.js";
 import { id, loadState, saveState } from "./config.js";
 
 export function loadMission(file) {
+  if (!file.endsWith(".json") && !file.endsWith(".yml") && !file.endsWith(".yaml")) {
+    throw new Error("Mission file must be .json, .yml, or .yaml.");
+  }
   const text = fs.readFileSync(file, "utf8");
   if (file.endsWith(".json")) return JSON.parse(text);
   return parseTinyYaml(text);
@@ -144,7 +147,9 @@ function orderSteps(steps) {
 function parseTinyYaml(text) {
   const result = {};
   let currentList = null;
-  for (const raw of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
     const line = raw.replace(/\s+#.*$/, "");
     if (!line.trim()) continue;
     const keyValue = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
@@ -160,7 +165,10 @@ function parseTinyYaml(text) {
       continue;
     }
     const item = line.match(/^\s*-\s*(.*)$/);
-    if (item && currentList) {
+    if (item) {
+      if (!currentList) {
+        throw new Error(`Unexpected list item at line ${i + 1}: ${raw.trim()}`);
+      }
       result[currentList].push(unquote(item[1]));
     }
   }

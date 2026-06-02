@@ -8,9 +8,14 @@ export function addSkill({ name, description = "", text = "" }) {
   if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name)) {
     throw new Error("Skill name must start with a letter and contain only letters, numbers, _ or -.");
   }
+  if (name.length > 64) throw new Error("Skill name must be at most 64 characters.");
+  const trimmedDesc = String(description || "").trim();
+  const trimmedText = String(text || "").trim();
+  if (trimmedDesc.length > 200) throw new Error("Skill description must be at most 200 characters.");
+  if (trimmedText.length > 10000) throw new Error("Skill text must be at most 10000 characters.");
   const cfg = loadConfig();
   cfg.skills ||= {};
-  cfg.skills[name] = { description: String(description || "").trim(), text: String(text || "").trim() };
+  cfg.skills[name] = { description: trimmedDesc, text: trimmedText };
   saveConfig(cfg);
   return cfg.skills[name];
 }
