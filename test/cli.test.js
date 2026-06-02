@@ -52,6 +52,8 @@ test("tool policy command updates config", () => {
   const inspected = run(["tools", "inspect", "read_many_files"], { AZYCODE_HOME: home });
   assert.match(inspected, /Tool read_many_files/);
   assert.match(inspected, /parameters\s+files, maxBytesPerFile/);
+  const readFile = run(["tools", "inspect", "read_file"], { AZYCODE_HOME: home });
+  assert.match(readFile, /parameters\s+file, startLine, endLine, maxBytes, showLineNumbers/);
 });
 
 test("health reports no configured providers", () => {

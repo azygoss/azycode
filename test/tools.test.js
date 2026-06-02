@@ -34,6 +34,15 @@ test("tools reject paths that escape workspace", async () => {
   await assert.rejects(() => readFile.run({ file: "../outside" }), /Path escapes workspace/);
 });
 
+test("read_file can return bounded line ranges", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "lines.txt"), "one\ntwo\nthree\nfour\n", "utf8");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const readFile = tools.find((tool) => tool.name === "read_file");
+  assert.equal(await readFile.run({ file: "lines.txt", startLine: 2, endLine: 3 }), "two\nthree");
+  assert.equal(await readFile.run({ file: "lines.txt", startLine: 2, endLine: 2, showLineNumbers: true }), "   2 two");
+});
+
 test("built-in tools inspect read and manage workspace paths", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

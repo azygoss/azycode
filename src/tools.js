@@ -23,9 +23,18 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
     }),
     tool("read_file", "Read a UTF-8 text file.", {
       type: "object",
-      properties: { file: { type: "string" } },
+      properties: {
+        file: { type: "string" },
+        startLine: { type: "number" },
+        endLine: { type: "number" },
+        maxBytes: { type: "number" },
+        showLineNumbers: { type: "boolean" }
+      },
       required: ["file"]
-    }, async ({ file }) => fs.readFileSync(safePath(root, file), "utf8")),
+    }, async ({ file, startLine, endLine, maxBytes = 120000, showLineNumbers = false }) => {
+      const text = fs.readFileSync(safePath(root, file), "utf8").slice(0, Number(maxBytes) || 120000);
+      return sliceLines(text, { startLine, endLine, showLineNumbers });
+    }),
     tool("read_many_files", "Read multiple UTF-8 text files in one call.", {
       type: "object",
       properties: {
@@ -268,6 +277,18 @@ function safePath(root, requested) {
     throw new Error(`Path escapes workspace: ${requested}`);
   }
   return resolved;
+}
+
+function sliceLines(text, { startLine, endLine, showLineNumbers = false } = {}) {
+  if (!startLine && !endLine && !showLineNumbers) return text;
+  const lines = text.split("\n");
+  const start = startLine ? Math.max(1, Number(startLine)) : 1;
+  const end = endLine ? Math.min(lines.length, Number(endLine)) : lines.length;
+  if (start > end) throw new Error(`Invalid line range: ${start}-${end}`);
+  return lines
+    .slice(start - 1, end)
+    .map((line, index) => showLineNumbers ? `${String(start + index).padStart(4)} ${line}` : line)
+    .join("\n");
 }
 
 function walk(dir, depth, out, base) {
