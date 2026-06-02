@@ -88,7 +88,10 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     conversation: [],
     skills: [],
     subagent: null,
-    maxConversationMessages: cfg.maxConversationMessages || MAX_CONVERSATION_MESSAGES
+    maxConversationMessages: cfg.maxConversationMessages || MAX_CONVERSATION_MESSAGES,
+    commandPaletteShown: false,
+    paletteLines: 0,
+    _paletteTimeout: null
   };
   printWelcome(state);
   const promptSession = createPromptSession({
@@ -234,16 +237,36 @@ function handleKeypress(key, state, rl, promptSession) {
     promptSession?.refreshPrompt(rl);
     return;
   }
-  if (key?.sequence !== "/") {
-    if (rl.line !== "/") state.commandPaletteShown = false;
-    return;
-  }
-  setTimeout(() => {
-    if (rl.line !== "/" || state.commandPaletteShown) return;
-    state.commandPaletteShown = true;
-    output.write("\n");
-    printCommandPalette(state);
-    promptSession?.refreshPrompt(rl);
+  clearTimeout(state._paletteTimeout);
+  state._paletteTimeout = setTimeout(() => {
+    const line = rl.line || "";
+    if (line.startsWith("/")) {
+      if (!state.commandPaletteShown) {
+        state.commandPaletteShown = true;
+        state.paletteLines = 0;
+      }
+      if (state.paletteLines > 0) {
+        for (let i = 0; i < state.paletteLines; i++) {
+          output.write("\x1b[1A\x1b[2K");
+        }
+      }
+      output.write("\n");
+      const filter = line.slice(1).trim();
+      const lines = printFilteredCommandPalette(state, filter);
+      state.paletteLines = lines;
+      promptSession?.refreshPrompt(rl);
+    } else {
+      if (state.commandPaletteShown) {
+        state.commandPaletteShown = false;
+        if (state.paletteLines > 0) {
+          for (let i = 0; i < state.paletteLines; i++) {
+            output.write("\x1b[1A\x1b[2K");
+          }
+        }
+        state.paletteLines = 0;
+        promptSession?.refreshPrompt(rl);
+      }
+    }
   }, 0);
 }
 
@@ -533,9 +556,43 @@ async function handleCommand(line, state, rl = null) {
       }
       state.skills = [...state.skills, name];
       console.log(`${successText(icon("check"))} ${muted("skill")} +${name} · active: ${state.skills.join(", ") || "(none)"}`);
+    } else if (action === "add" && !name) {
+      const items = listSkills(state.cfg);
+      if (!items.length) {
+        console.log(muted("No skills configured."));
+        return;
+      }
+      const selected = await selectFromList({
+        title: "Select skill to add",
+        items,
+        rl,
+        format: (item) => `${item.name}${item.description ? ` · ${muted(item.description)}` : ""}`
+      });
+      if (selected) {
+        if (!state.skills.includes(selected.name)) {
+          state.skills = [...state.skills, selected.name];
+        }
+        console.log(`${successText(icon("check"))} ${muted("skill")} +${selected.name} · active: ${state.skills.join(", ") || "(none)"}`);
+      }
     } else if (action === "remove" && name) {
       state.skills = state.skills.filter((s) => s !== name);
       console.log(`${successText(icon("check"))} ${muted("skill")} -${name} · active: ${state.skills.join(", ") || "(none)"}`);
+    } else if (action === "remove" && !name) {
+      if (!state.skills.length) {
+        console.log(muted("No active skills to remove."));
+        return;
+      }
+      const items = listSkills(state.cfg).filter((item) => state.skills.includes(item.name));
+      const selected = await selectFromList({
+        title: "Select skill to remove",
+        items,
+        rl,
+        format: (item) => `${item.name}${item.description ? ` · ${muted(item.description)}` : ""}`
+      });
+      if (selected) {
+        state.skills = state.skills.filter((s) => s !== selected.name);
+        console.log(`${successText(icon("check"))} ${muted("skill")} -${selected.name} · active: ${state.skills.join(", ") || "(none)"}`);
+      }
     } else if (action === "list") {
       const items = listSkills(state.cfg);
       const active = new Set(state.skills);
@@ -545,7 +602,7 @@ async function handleCommand(line, state, rl = null) {
       state.skills = [];
       console.log(`${successText(icon("check"))} ${muted("skills cleared")}`);
     } else {
-      console.log(`${warnText(icon("warn"))} Usage: /skill add <name> | /skill remove <name> | /skill list | /skill clear`);
+      console.log(`${warnText(icon("warn"))} Usage: /skill add [name] | /skill remove [name] | /skill list | /skill clear`);
     }
     return;
   }
@@ -751,7 +808,7 @@ function printHelpGroups() {
   blank();
 }
 
-function printCommandPalette(state) {
+function printFilteredCommandPalette(state, filter = "") {
   const groups = [
     { title: "Status", items: [
       ["/status", "active model, provider, guard"],
@@ -783,19 +840,33 @@ function printCommandPalette(state) {
       ["/exit", "leave azycode"]
     ]}
   ];
-  blank();
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  let lines = 0;
+  blank(); lines += 1;
   for (const group of groups) {
-    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
-    const width = group.items.reduce((max, [command]) => Math.max(max, command.length), 0);
-    for (const [command, summary] of group.items) {
-      console.log(`  ${command.padEnd(width)}  ${muted(summary)}`);
+    const filtered = terms.length
+      ? group.items.filter(([command, summary]) => {
+          const haystack = `${command} ${summary}`.toLowerCase();
+          return terms.every((term) => haystack.includes(term));
+        })
+      : group.items;
+    if (!filtered.length) continue;
+    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`); lines += 1;
+    const width = filtered.reduce((max, [command]) => Math.max(max, command.length), 0);
+    for (const [command, summary] of filtered) {
+      console.log(`  ${command.padEnd(width)}  ${muted(summary)}`); lines += 1;
     }
-    console.log("");
+    console.log(""); lines += 1;
   }
   const provider = state.cfg.activeProvider || "no provider";
   const model = state.cfg.activeModel || "no model";
-  console.log(`  ${muted("active:")} ${provider}/${model}  ${style(state.mode, modeColor(state.mode))}  ${muted("reasoning")} ${state.cfg.reasoning}`);
-  blank();
+  console.log(`  ${muted("active:")} ${provider}/${model}  ${style(state.mode, modeColor(state.mode))}  ${muted("reasoning")} ${state.cfg.reasoning}`); lines += 1;
+  blank(); lines += 1;
+  return lines;
+}
+
+function printCommandPalette(state) {
+  printFilteredCommandPalette(state);
 }
 
 export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAGES) {
