@@ -132,6 +132,8 @@ In the interactive `azycode run` prompt:
 - `Shift+Tab` rotates mode: `plan -> always-approve -> goal -> review`
 - `Tab` rotates reasoning: `minimal -> low -> medium -> high`
 - `Ctrl+D` submits
+- `Ctrl+L` clears the screen
+- `Escape` closes the command palette
 
 ## Provider notes
 
@@ -209,7 +211,17 @@ Missions are reusable step lists. Each step runs through the agent loop with ful
 azycode
 ```
 
-Inside the terminal workspace, press `Shift+Tab` to rotate mode (`plan -> always-approve -> goal -> review`) and `Tab` to rotate reasoning effort.
+Inside the terminal workspace, press `Shift+Tab` to rotate mode (`plan -> always-approve -> goal -> review`) and `Tab` to rotate reasoning effort. Type `/` to open the command palette; it filters live as you type. Press `Escape` to close it.
+
+### Select skills interactively in the TUI
+
+```sh
+azycode
+/skill add
+/skill remove
+```
+
+Running `/skill add` without a name opens a scrollable list of configured skills. Arrow keys or `j`/`k` navigate, `Enter` selects, and `Escape` cancels.
 
 ### Debug a provider issue
 

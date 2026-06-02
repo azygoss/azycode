@@ -59,6 +59,9 @@ azycode report
 | Cleaner event formatting (omits empty sessionId) | `src/harness.js`: event formatting omits empty brackets |
 | Provider diagnostics include model list and note | `src/providers.js`: `providerDiagnostics` returns `models` and `note` |
 | README usage examples section | `README.md`: practical examples for goals, missions, review, context |
+| Live-filtered command palette in TUI | `src/tui.js`: `handleKeypress` updates palette on every keystroke with `printFilteredCommandPalette` |
+| Interactive skill picker with arrow keys | `src/tui.js`: `/skill add` and `/skill remove` use `selectFromList` for arrow-key navigation |
+| Screen clear shortcut (Ctrl+L) in TUI | `src/tui.js`: `handleKeypress` handles `Ctrl+L` to clear screen |
 
 ## Known Provider Limits
 
