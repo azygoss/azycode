@@ -78,7 +78,8 @@ export function formatMissionPlan(mission, cfg) {
   return steps.map((step, index) => {
     const depends = step.dependsOn.length ? ` dependsOn=${step.dependsOn.join(",")}` : "";
     const agent = step.agent ? ` agent=${step.agent}` : "";
-    return `${index + 1}. ${step.id}${agent} mode=${step.mode} maxSteps=${step.maxSteps}${depends}\n   ${step.prompt}`;
+    const limit = step.maxSteps ? ` maxSteps=${step.maxSteps}` : " maxSteps=unlimited";
+    return `${index + 1}. ${step.id}${agent} mode=${step.mode}${limit}${depends}\n   ${step.prompt}`;
   }).join("\n");
 }
 
@@ -89,7 +90,7 @@ function normalizeStep(step, mission, cfg, index = 0) {
       prompt: step,
       agent: null,
       mode: mission.mode || cfg.mode,
-      maxSteps: Number(mission.maxSteps) || 12,
+      maxSteps: resolveMissionMaxSteps(mission.maxSteps),
       continueOnError: Boolean(mission.continueOnError),
       dependsOn: []
     };
@@ -100,10 +101,16 @@ function normalizeStep(step, mission, cfg, index = 0) {
     prompt: step.prompt,
     agent: step.agent || null,
     mode: step.mode || mission.mode || cfg.mode,
-    maxSteps: Number(step.maxSteps || mission.maxSteps) || 12,
+    maxSteps: resolveMissionMaxSteps(step.maxSteps ?? mission.maxSteps),
     continueOnError: Boolean(step.continueOnError ?? mission.continueOnError),
     dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : step.dependsOn ? [step.dependsOn] : []
   };
+}
+
+function resolveMissionMaxSteps(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
 function orderSteps(steps) {

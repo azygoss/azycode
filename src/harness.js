@@ -73,9 +73,10 @@ export function formatAgentStepLine(event, { maxSteps = null, style = "tui" } = 
   const prefix = stepLabel(event.step, limit);
   const summary = event.summary ? ` ${event.summary}` : "";
   if (event.type === "agent_run_start") {
+    const limit = event.maxSteps ? `max ${event.maxSteps} steps` : "unlimited steps";
     return style === "cli"
-      ? `[${event.sessionId}] run start · max ${event.maxSteps} steps · mode ${event.mode}`
-      : `▸ run start · max ${event.maxSteps} steps · mode ${event.mode}`;
+      ? `[${event.sessionId}] run start · ${limit} · mode ${event.mode}`
+      : `▸ run start · ${limit} · mode ${event.mode}`;
   }
   if (event.type === "model_start") {
     return style === "cli"

@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
-import { applyPermissionProfile, azyHome, configPath, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
+import { applyPermissionProfile, azyHome, configPath, formatAgentStepLimit, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { AgentStepLimitError } from "./agent-errors.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
@@ -307,10 +307,10 @@ async function askAgent(prompt, state, rl = null) {
   }
   const maxSteps = resolveAgentMaxSteps(state.cfg);
   blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold("Agent run")}  ${muted(`· max ${maxSteps} steps`)}  ${muted(`· ${state.mode}`)}`);
+  console.log(`${brand(icon("chevronRight"))} ${bold("Agent run")}  ${muted(`· ${formatAgentStepLimit(maxSteps)}`)}  ${muted(`· ${state.mode}`)}`);
   console.log(rule(PANEL_WIDTH, { char: "·", color: "subtle" }));
 
-  const spinner = state.progress ? startSpinner({ label: `step 0/${maxSteps}`, stream: output, isTTY: output.isTTY }) : null;
+  const spinner = state.progress ? startSpinner({ label: maxSteps ? `step 0/${maxSteps}` : "step 0", stream: output, isTTY: output.isTTY }) : null;
   const onEvent = state.progress
     ? createAgentProgress({
       spinner,

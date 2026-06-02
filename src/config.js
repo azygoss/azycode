@@ -4,18 +4,36 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 export const DEFAULT_MODE = "plan";
-export const DEFAULT_AGENT_MAX_STEPS = 24;
 export const MODES = ["plan", "always-approve", "goal", "review"];
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high"];
 
+/** Returns a positive step cap, or null for unlimited agent runs (default). */
 export function resolveAgentMaxSteps(cfg, override) {
-  if (override !== undefined && override !== null && override !== "") {
-    const parsed = Number(override);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  const unlimitedTokens = new Set(["", "unlimited", "none", "off", "false", "0", "null"]);
+  const parse = (value) => {
+    if (value === undefined || value === null) return undefined;
+    const raw = String(value).trim().toLowerCase();
+    if (unlimitedTokens.has(raw)) return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.floor(parsed);
+  };
+
+  const direct = parse(override);
+  if (override !== undefined && override !== null && override !== "") return direct;
+
+  const env = parse(process.env.AZYCODE_AGENT_MAX_STEPS);
+  if (process.env.AZYCODE_AGENT_MAX_STEPS !== undefined) return env;
+
+  if (cfg && Object.prototype.hasOwnProperty.call(cfg, "agentMaxSteps")) {
+    return parse(cfg.agentMaxSteps);
   }
-  const fromCfg = Number(cfg?.agentMaxSteps);
-  if (Number.isFinite(fromCfg) && fromCfg > 0) return Math.floor(fromCfg);
-  return DEFAULT_AGENT_MAX_STEPS;
+
+  return null;
+}
+
+export function formatAgentStepLimit(limit) {
+  return limit ? `max ${limit} steps` : "unlimited steps";
 }
 
 export function azyHome() {
@@ -40,7 +58,6 @@ export function defaultConfig() {
     activeProvider: null,
     activeModel: null,
     mode: DEFAULT_MODE,
-    agentMaxSteps: DEFAULT_AGENT_MAX_STEPS,
     alwaysApprove: false,
     reasoning: "medium",
     providers: {},

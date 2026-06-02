@@ -10,7 +10,7 @@ export class AgentStepLimitError extends Error {
       "Steps in this run:",
       report || "  (no steps recorded)",
       "",
-      "Try: simplify the task, use /compact, raise agentMaxSteps in config, or run with more steps."
+      "Try: simplify the task, use /compact, or remove agentMaxSteps from config for unlimited runs."
     ].join("\n");
     super(body);
     this.name = "AgentStepLimitError";

@@ -49,11 +49,15 @@ test("loadConfig merges new default tool policies into old config files", async 
   assert(cfg.subagents.custom);
 });
 
-test("resolveAgentMaxSteps prefers override then config default", async () => {
+test("resolveAgentMaxSteps is unlimited by default and optional when set", async () => {
   const mod = await import(`../src/config.js?s=${Date.now()}`);
+  assert.equal(mod.resolveAgentMaxSteps({}), null);
   assert.equal(mod.resolveAgentMaxSteps({}, 40), 40);
   assert.equal(mod.resolveAgentMaxSteps({ agentMaxSteps: 30 }), 30);
-  assert.equal(mod.resolveAgentMaxSteps({}), mod.DEFAULT_AGENT_MAX_STEPS);
+  assert.equal(mod.resolveAgentMaxSteps({ agentMaxSteps: 0 }), null);
+  assert.equal(mod.resolveAgentMaxSteps({}, "unlimited"), null);
+  assert.equal(mod.formatAgentStepLimit(null), "unlimited steps");
+  assert.equal(mod.formatAgentStepLimit(12), "max 12 steps");
 });
 
 test("permission profiles rewrite effective tool policy", async () => {

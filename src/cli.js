@@ -995,7 +995,7 @@ async function goal(args) {
     const goalId = `goal_${Date.now()}`;
     state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
     saveState(state);
-    const output = await runAgent({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", maxSteps: 20 });
+    const output = await runAgent({ cfg, cwd: process.cwd(), prompt: text, mode: "goal" });
     const done = loadState();
     done.goals[goalId].status = "done";
     done.goals[goalId].finishedAt = new Date().toISOString();
@@ -1012,7 +1012,7 @@ async function goal(args) {
     selected.resumedAt = new Date().toISOString();
     saveState(state);
     const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
-    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, mode: "goal", maxSteps: 20 });
+    const output = await runAgent({ cfg, cwd: process.cwd(), prompt, mode: "goal" });
     const done = loadState();
     done.goals[goalId].status = "done";
     done.goals[goalId].finishedAt = new Date().toISOString();

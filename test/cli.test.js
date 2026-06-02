@@ -561,7 +561,7 @@ test("tui can preview mission files", async () => {
   const mission = path.join(home, "mission.yml");
   fs.writeFileSync(mission, "name: preview\nmode: goal\nsteps:\n  - \"inspect repository\"\n", "utf8");
   const stdout = await runWithInput([], `/mission dry-run ${mission}\n/exit\n`, { AZYCODE_HOME: home });
-  assert.match(stdout, /1\. step-1 mode=goal maxSteps=12/);
+  assert.match(stdout, /1\. step-1 mode=goal maxSteps=unlimited/);
   assert.match(stdout, /inspect repository/);
 });
 
