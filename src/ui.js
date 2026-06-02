@@ -162,7 +162,18 @@ export function truncate(value, width, suffix = "…") {
   const out = [];
   let len = 0;
   const target = Math.max(1, width - visibleLength(suffix));
+  let inEscape = false;
   for (const ch of text) {
+    if (inEscape) {
+      out.push(ch);
+      if (/[a-zA-Z]/.test(ch)) inEscape = false;
+      continue;
+    }
+    if (ch === "\x1b") {
+      inEscape = true;
+      out.push(ch);
+      continue;
+    }
     if (len >= target) break;
     out.push(ch);
     len += 1;
@@ -247,7 +258,8 @@ export function icon(name) {
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export function spinnerFrame(index) {
-  return SPINNER_FRAMES[((index % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) % SPINNER_FRAMES.length];
+  const i = Number.isFinite(index) ? Math.floor(index) : 0;
+  return SPINNER_FRAMES[((i % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) % SPINNER_FRAMES.length];
 }
 
 export function spinnerFrames() {

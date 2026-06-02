@@ -64,6 +64,30 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     if (onEvent) onEvent(enriched);
   };
 
+  const pendingToolRuns = [];
+  let pendingSession = null;
+
+  function recordToolRun(run) {
+    pendingToolRuns.push({ ...run, at: new Date().toISOString(), content: String(run.content).slice(0, 2000) });
+  }
+
+  function recordSession(sessionId, session) {
+    pendingSession = { sessionId, session: { ...session, createdAt: new Date().toISOString() } };
+  }
+
+  function flushState() {
+    if (!pendingToolRuns.length && !pendingSession) return;
+    const state = loadState();
+    if (pendingSession) {
+      state.sessions[pendingSession.sessionId] = pendingSession.session;
+    }
+    if (pendingToolRuns.length) {
+      state.toolRuns.push(...pendingToolRuns);
+      state.toolRuns = state.toolRuns.slice(-500);
+    }
+    saveState(state);
+  }
+
   emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
 
   for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
@@ -89,6 +113,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     if (!calls.length) {
       emit({ type: "final", step, maxSteps: stepLimit });
       recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
+      flushState();
       const content = message.content || "";
       return returnSession ? { content, sessionId, messages } : content;
     }
@@ -136,13 +161,10 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     }
   }
 
-  if (stepLimit === null) {
-    throw new Error("Agent ended without a final answer.");
-  }
-
   const partialContent = lastAssistantContent(messages);
   emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
   recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
+  flushState();
   throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
 }
 
@@ -184,15 +206,4 @@ function loadContextPack(cwd) {
   return formatContextPack(contextPack(cwd, { maxFiles: 30, maxBytes: 60000 }));
 }
 
-function recordSession(sessionId, session) {
-  const state = loadState();
-  state.sessions[sessionId] = { ...session, createdAt: new Date().toISOString() };
-  saveState(state);
-}
 
-function recordToolRun(run) {
-  const state = loadState();
-  state.toolRuns.push({ ...run, at: new Date().toISOString(), content: String(run.content).slice(0, 2000) });
-  state.toolRuns = state.toolRuns.slice(-500);
-  saveState(state);
-}

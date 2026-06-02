@@ -130,6 +130,8 @@ export function formatAgentEvent(event, { style = "tui" } = {}) {
   if (!event?.type) return "";
   const summary = event.summary ? ` ${event.summary}` : "";
   if (style === "cli") {
+    if (event.type === "agent_run_start") return `[${event.sessionId}] run start`;
+    if (event.type === "step_limit") return `[${event.sessionId}] step limit`;
     if (event.type === "mode_change") return `[${event.sessionId}] step ${event.step}: mode -> ${event.mode}`;
     if (event.type === "model_start") return `[${event.sessionId}] step ${event.step}: model ${event.model || "(active)"}`;
     if (event.type === "model_end") return `[${event.sessionId}] step ${event.step}: ${event.toolCalls} tool call(s)`;
@@ -138,6 +140,8 @@ export function formatAgentEvent(event, { style = "tui" } = {}) {
     if (event.type === "final") return `[${event.sessionId}] final`;
     return "";
   }
+  if (event.type === "agent_run_start") return "run start";
+  if (event.type === "step_limit") return "step limit";
   if (event.type === "mode_change") return `mode -> ${event.mode}`;
   if (event.type === "model_start") return `model step ${event.step}`;
   if (event.type === "tool_start") return `tool ${event.tool}${summary}`;
