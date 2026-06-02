@@ -107,6 +107,7 @@ Built-in tools cover common repository work: `list_files`, `read_file`, `read_ma
 
 Use `azycode tools` or `/policy` to inspect the full tool catalog. Use `azycode tools inspect <tool>` or `/tool <tool>` to see parameters and required fields.
 `read_file` supports bounded reads with `startLine`, `endLine`, `maxBytes`, and optional line numbers.
+`search` supports `maxResults` and `contextLines` so large repositories do not flood the model context.
 
 Non-interactive login is supported for scripts:
 

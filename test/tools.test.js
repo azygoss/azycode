@@ -43,6 +43,17 @@ test("read_file can return bounded line ranges", async () => {
   assert.equal(await readFile.run({ file: "lines.txt", startLine: 2, endLine: 2, showLineNumbers: true }), "   2 two");
 });
 
+test("search can limit noisy result sets", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "hits.txt"), "needle one\nneedle two\nneedle three\n", "utf8");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const search = tools.find((tool) => tool.name === "search");
+  const output = await search.run({ query: "needle", maxResults: 2 });
+  assert.match(output, /needle one/);
+  assert.match(output, /truncated/);
+  assert.doesNotMatch(output, /needle three/);
+});
+
 test("built-in tools inspect read and manage workspace paths", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

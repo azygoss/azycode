@@ -67,15 +67,24 @@ export function createTools({ cwd = process.cwd(), cfg, confirmTool = null }) {
     }),
     tool("search", "Search text in files using ripgrep when available.", {
       type: "object",
-      properties: { query: { type: "string" }, dir: { type: "string" } },
+      properties: {
+        query: { type: "string" },
+        dir: { type: "string" },
+        maxResults: { type: "number" },
+        contextLines: { type: "number" }
+      },
       required: ["query"]
-    }, async ({ query, dir = "." }) => {
+    }, async ({ query, dir = ".", maxResults = 200, contextLines = 0 }) => {
       const base = safePath(root, dir);
       try {
-        const { stdout } = await execFileAsync("rg", ["--line-number", "--hidden", "--glob", "!node_modules", query, base], { timeout: 20000 });
-        return stdout || "(no matches)";
+        const args = ["--line-number", "--hidden", "--glob", "!node_modules"];
+        const context = Math.max(0, Math.min(5, Number(contextLines) || 0));
+        if (context) args.push("--context", String(context));
+        args.push(query, base);
+        const { stdout } = await execFileAsync("rg", args, { timeout: 20000, maxBuffer: 1024 * 1024 * 8 });
+        return limitLines(stdout || "(no matches)", Number(maxResults) || 200);
       } catch (error) {
-        if (error.stdout) return error.stdout;
+        if (error.stdout) return limitLines(error.stdout, Number(maxResults) || 200);
         return "(no matches)";
       }
     }),
@@ -289,6 +298,13 @@ function sliceLines(text, { startLine, endLine, showLineNumbers = false } = {}) 
     .slice(start - 1, end)
     .map((line, index) => showLineNumbers ? `${String(start + index).padStart(4)} ${line}` : line)
     .join("\n");
+}
+
+function limitLines(text, maxResults) {
+  const limit = Math.max(1, Math.min(1000, Number(maxResults) || 200));
+  const lines = String(text).split("\n");
+  if (lines.length <= limit) return text;
+  return `${lines.slice(0, limit).join("\n")}\n... truncated ${lines.length - limit} lines`;
 }
 
 function walk(dir, depth, out, base) {
