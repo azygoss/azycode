@@ -19,6 +19,7 @@ import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, gitGuard } from "./guard.js";
 import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
+import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
 import { launchTui } from "./tui.js";
 
 const VERSION = "0.1.0";
@@ -72,55 +73,55 @@ export async function main(argv) {
 function help(args = []) {
   const topic = args[0];
   if (topic) return commandHelp(topic);
-  ui.title(`azycode ${VERSION}`);
-  console.log("A lightweight AI coding harness for local repositories.");
+  console.log("");
+  console.log(`${bold(`azycode ${VERSION}`)}  ${muted("·")}  ${muted("A lightweight AI coding harness for local repositories.")}`);
+  console.log(rule(64, { char: "─", color: "rule" }));
 
-  ui.section("Common workflows");
-  ui.list([
-    "azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>",
-    "azycode dashboard",
-    "azycode status",
-    "azycode plan \"task\"",
-    "azycode run --context --progress \"task\"",
-    "azycode review --local",
-    "azycode chat"
-  ]);
-
-  ui.section("Project automation");
-  ui.list([
-    "azycode goal start \"goal\"",
-    "azycode mission run ./mission.yml",
-    "azycode subagent add <name>",
-    "azycode subagent run <name> \"task\""
-  ]);
-
-  ui.section("Inspect and configure");
-  ui.list([
-    "azycode providers",
-    "azycode model | azycode model <provider/model> | azycode model sync [all]",
-    "azycode models sync [all] | azycode models use <model>",
-    "azycode tools | azycode tools log",
-    "azycode guard status",
-    "azycode context pack",
-    "azycode config set mode <plan|always-approve|goal|review>",
-    "azycode config set reasoning <minimal|low|medium|high>"
-  ]);
-
-  ui.section("Diagnostics");
-  ui.list([
-    "azycode doctor [--json]",
-    "azycode health",
-    "azycode audit",
-    "azycode report [file] [--with-audit]",
-    "azycode completion <bash|zsh|fish>"
-  ]);
-
-  ui.section("Interactive shortcuts");
-  ui.list([
-    "Shift+Tab rotates mode: plan -> always-approve -> goal -> review",
-    "Tab rotates reasoning: minimal -> low -> medium -> high",
-    "Ctrl+D submits the interactive prompt"
-  ]);
+  const groups = [
+    { title: "Common workflows", items: [
+      "azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>",
+      "azycode dashboard",
+      "azycode status",
+      "azycode plan \"task\"",
+      "azycode run --context --progress \"task\"",
+      "azycode review --local",
+      "azycode chat"
+    ]},
+    { title: "Project automation", items: [
+      "azycode goal start \"goal\"",
+      "azycode mission run ./mission.yml",
+      "azycode subagent add <name>",
+      "azycode subagent run <name> \"task\""
+    ]},
+    { title: "Inspect and configure", items: [
+      "azycode providers",
+      "azycode model | azycode model <provider/model> | azycode model sync [all]",
+      "azycode models sync [all] | azycode models use <model>",
+      "azycode tools | azycode tools log",
+      "azycode guard status",
+      "azycode context pack",
+      "azycode config set mode <plan|always-approve|goal|review>",
+      "azycode config set reasoning <minimal|low|medium|high>"
+    ]},
+    { title: "Diagnostics", items: [
+      "azycode doctor [--json]",
+      "azycode health",
+      "azycode audit",
+      "azycode report [file] [--with-audit]",
+      "azycode completion <bash|zsh|fish>"
+    ]},
+    { title: "Interactive shortcuts", items: [
+      "Shift+Tab rotates mode: plan -> always-approve -> goal -> review",
+      "Tab rotates reasoning: minimal -> low -> medium -> high",
+      "Ctrl+D submits the interactive prompt"
+    ]}
+  ];
+  for (const group of groups) {
+    console.log("");
+    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
+    for (const item of group.items) console.log(`  ${muted(icon("arrow"))} ${item}`);
+  }
+  console.log("");
 }
 
 function commandHelp(topic) {
@@ -219,7 +220,9 @@ function init() {
 }
 
 function providers() {
-  ui.title("Providers");
+  console.log("");
+  console.log(`${bold("Providers")}`);
+  console.log(rule(64, { char: "─", color: "rule" }));
   const rows = providerNames().map((name) => {
     const p = providerPreset(name);
     return {
@@ -228,20 +231,24 @@ function providers() {
       endpoint: p.baseUrl || "(custom)"
     };
   });
-  ui.table(rows, [
+  for (const line of renderTable(rows, [
     { key: "name", label: "name" },
     { key: "model", label: "default model" },
     { key: "endpoint", label: "endpoint" }
-  ]);
+  ])) console.log(`  ${line}`);
   const notes = providerNames()
     .map((name) => [name, providerPreset(name).note])
     .filter(([, note]) => note);
   if (notes.length) {
-    ui.section("Notes");
-    ui.list(notes.map(([name, note]) => `${name}: ${note}`));
+    console.log("");
+    console.log(`${brand(icon("chevronRight"))} ${bold("Notes")}`);
+    for (const [name, note] of notes) console.log(`  ${muted(name + ":")}  ${note}`);
   }
-  ui.section("Model selection");
-  ui.list(["Use `azycode model` to see providers and models in one view.", "Use `azycode model <provider/model>` to switch both together."]);
+  console.log("");
+  console.log(`${brand(icon("chevronRight"))} ${bold("Model selection")}`);
+  console.log(`  ${muted(icon("arrow"))} Use ` + code("`azycode model`") + ` to see providers and models in one view.`);
+  console.log(`  ${muted(icon("arrow"))} Use ` + code("`azycode model <provider/model>`") + ` to switch both together.`);
+  console.log("");
 }
 
 function dashboard() {
@@ -253,17 +260,23 @@ function dashboard() {
   const askTools = Object.values(policy).filter((value) => value === "ask").length;
   const deniedTools = Object.values(policy).filter((value) => value === "deny").length;
 
-  ui.title("Azycode Dashboard");
-  ui.kv("mode", cfg.mode);
-  ui.kv("reasoning", cfg.reasoning);
-  ui.kv("provider", cfg.activeProvider || "(none)");
-  ui.kv("model", cfg.activeModel || "(none)");
-  ui.kv("always approve", ui.badge(cfg.alwaysApprove || cfg.mode === "always-approve"));
-  ui.kv("git guard", ui.badge(guardState.ok ? "ok" : "blocked"));
-  if (!guardState.ok) ui.kv("guard reason", guardState.reason);
+  console.log("");
+  console.log(`${bold("Azycode Dashboard")}  ${muted("·")}  ${muted("local overview")}`);
+  console.log(rule(64, { char: "─", color: "rule" }));
+  const overview = [
+    ["mode", cfg.mode],
+    ["reasoning", cfg.reasoning],
+    ["provider", cfg.activeProvider || "(none)"],
+    ["model", cfg.activeModel || "(none)"],
+    ["always approve", badge(cfg.alwaysApprove || cfg.mode === "always-approve")],
+    ["git guard", `${statusDot(guardState.ok ? "ok" : "blocked")} ${badge(guardState.ok ? "ok" : "blocked")}`]
+  ];
+  for (const row of keyValueList(overview)) console.log(`  ${row}`);
+  if (!guardState.ok) console.log(`  ${muted("guard reason")}  ${warnText(guardState.reason)}`);
 
-  ui.section("State");
-  ui.table([
+  console.log("");
+  console.log(`${brand(icon("chevronRight"))} ${bold("State")}`);
+  for (const line of renderTable([
     { item: "sessions", count: Object.keys(state.sessions || {}).length },
     { item: "goals", count: Object.keys(state.goals || {}).length },
     { item: "missions", count: Object.keys(state.missions || {}).length },
@@ -271,17 +284,19 @@ function dashboard() {
   ], [
     { key: "item", label: "item" },
     { key: "count", label: "count" }
-  ]);
+  ])) console.log(`  ${line}`);
 
-  ui.section("Tool policy");
-  ui.table([
-    { policy: "auto", count: autoTools },
-    { policy: "ask", count: askTools },
-    { policy: "deny", count: deniedTools }
+  console.log("");
+  console.log(`${brand(icon("chevronRight"))} ${bold("Tool policy")}`);
+  for (const line of renderTable([
+    { policy: "auto", count: autoTools, color: "success" },
+    { policy: "ask", count: askTools, color: "warn" },
+    { policy: "deny", count: deniedTools, color: "error" }
   ], [
     { key: "policy", label: "policy" },
     { key: "count", label: "count" }
-  ]);
+  ])) console.log(`  ${line}`);
+  console.log("");
 }
 
 function doctor(args = []) {
@@ -515,12 +530,17 @@ function guard(args) {
 
 async function status() {
   const cfg = loadConfig();
-  ui.title("Status");
-  ui.kv("mode", cfg.mode);
-  ui.kv("reasoning", cfg.reasoning);
-  ui.kv("always approve", ui.badge(cfg.alwaysApprove || cfg.mode === "always-approve"));
-  ui.kv("active provider", cfg.activeProvider || "(none)");
-  ui.kv("active model", cfg.activeModel || "(none)");
+  console.log("");
+  console.log(`${bold("Status")}`);
+  console.log(rule(64, { char: "─", color: "rule" }));
+  const overview = [
+    ["mode", cfg.mode],
+    ["reasoning", cfg.reasoning],
+    ["always approve", badge(cfg.alwaysApprove || cfg.mode === "always-approve")],
+    ["active provider", cfg.activeProvider || "(none)"],
+    ["active model", cfg.activeModel || "(none)"]
+  ];
+  for (const row of keyValueList(overview)) console.log(`  ${row}`);
   const providerRows = Object.entries(cfg.providers || {}).map(([name, p]) => {
     const preset = providerPreset(name);
     return {
@@ -532,30 +552,36 @@ async function status() {
     };
   });
   if (providerRows.length) {
-    ui.section("Configured providers");
-    ui.table(providerRows, [
+    console.log("");
+    console.log(`${brand(icon("chevronRight"))} ${bold("Configured providers")}`);
+    for (const line of renderTable(providerRows, [
       { key: "name", label: "name" },
       { key: "model", label: "model" },
       { key: "models", label: "models" },
       { key: "key", label: "key" },
       { key: "quota", label: "quota" }
-    ]);
+    ])) console.log(`  ${line}`);
   }
-  ui.section("Model selection");
-  ui.list(["Use `azycode model` to view and select provider/model together."]);
+  console.log("");
+  console.log(`${brand(icon("chevronRight"))} ${bold("Model selection")}`);
+  console.log(`  ${muted(icon("arrow"))} Use ` + code("`azycode model`") + ` to view and select provider/model together.`);
   if (cfg.activeProvider) {
-    ui.section("Remote");
+    console.log("");
+    console.log(`${brand(icon("chevronRight"))} ${bold("Remote")}`);
     try {
       const client = new LlmClient(cfg);
       const models = await client.listModels();
       const count = Array.isArray(models) ? models.length : Object.keys(models || {}).length;
-      ui.kv("status", `${ui.badge("ok")} (${count} models visible)`);
+      const remote = [["status", `${statusDot("ok")} ${successText("ok")} ${faint(`(${count} models visible)`)}`]];
       const preset = providerPreset(cfg.activeProvider);
-      ui.kv("limits", preset.quota || "provider-specific quota endpoints are not standardized.");
+      remote.push(["limits", preset.quota || "provider-specific quota endpoints are not standardized."]);
+      for (const row of keyValueList(remote)) console.log(`  ${row}`);
     } catch (error) {
-      ui.kv("status", `${ui.badge("failed")} ${error.message}`);
+      const remote = [["status", `${statusDot("error")} ${errorText("failed")} ${faint(error.message)}`]];
+      for (const row of keyValueList(remote)) console.log(`  ${row}`);
     }
   }
+  console.log("");
 }
 
 async function models(args = []) {

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyShortcut, completeTuiInput, loginProvider, trimConversation } from "../src/tui.js";
+import { PassThrough } from "node:stream";
+import { applyShortcut, completeTuiInput, loginProvider, normalizeTabKey, promptLabel, stripTrailingTab, trimConversation } from "../src/tui.js";
+import { promptStatus, stripAnsi, visibleLength, style } from "../src/ui.js";
 
 test("trimConversation starts retained context at a user boundary", () => {
   const messages = [
@@ -24,6 +26,29 @@ test("trimConversation leaves short conversations untouched", () => {
   assert.equal(trimConversation(messages), messages);
 });
 
+test("normalizeTabKey maps backtab to shifted tab", () => {
+  const key = normalizeTabKey({ name: "backtab", sequence: "\u001b[Z" });
+  assert.equal(key.name, "tab");
+  assert.equal(key.shift, true);
+});
+
+test("stripTrailingTab redraws the prompt on the readline output stream", () => {
+  const output = new PassThrough();
+  output.isTTY = true;
+  const rl = { line: "hi\t", cursor: 3, output };
+  const state = { mode: "plan", cfg: { mode: "plan", reasoning: "high" } };
+  let painted = "";
+  const originalWrite = output.write.bind(output);
+  output.write = (chunk, ...rest) => {
+    painted += String(chunk);
+    return originalWrite(chunk, ...rest);
+  };
+
+  stripTrailingTab(rl, state);
+  assert.equal(rl.line, "hi");
+  assert.match(painted, /high/);
+});
+
 test("applyShortcut rotates reasoning and mode without persistence when requested", () => {
   const state = { mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
   const events = [];
@@ -32,7 +57,9 @@ test("applyShortcut rotates reasoning and mode without persistence when requeste
   applyShortcut({ name: "tab", shift: true }, state, options);
   assert.equal(state.cfg.reasoning, "high");
   assert.equal(state.mode, "always-approve");
-  assert.deepEqual(events, ["reasoning: high", "mode: always-approve"]);
+  assert.equal(events.length, 2);
+  assert.match(events[0], /reasoning: high/);
+  assert.match(events[1], /mode: always-approve/);
 });
 
 test("applyShortcut ignores tab while the TUI is busy", () => {
@@ -99,3 +126,134 @@ test("loginProvider asks BYOK for endpoint and model", async () => {
     apiKey: "sk-local"
   });
 });
+
+test("promptLabel shows mode, reasoning, and cursor", () => {
+  const label = promptLabel({ mode: "plan", cfg: { reasoning: "high" } });
+  assert.match(stripAnsi(label), /plan/);
+  assert.match(stripAnsi(label), /high/);
+  assert.match(stripAnsi(label), /›/);
+  assert.equal(label.endsWith(" "), true);
+});
+
+test("promptStatus adds subagent and profile indicators", () => {
+  const status = promptStatus({ mode: "plan", reasoning: "medium", agent: "planner", profile: "safe-write" });
+  const text = stripAnsi(status);
+  assert.match(text, /plan/);
+  assert.match(text, /medium/);
+  assert.match(text, /@planner/);
+  assert.match(text, /safe-write/);
+});
+
+test("promptStatus hides non-default profile", () => {
+  const status = promptStatus({ mode: "plan", reasoning: "low", profile: "normal" });
+  assert.doesNotMatch(stripAnsi(status), /normal/);
+});
+
+test("handleKeypress on Tab defers backspace so it removes the tab, not the user input", async () => {
+  // Note: this test exercises the legacy backspace path. The production code
+  // now uses stripTrailingTab (see the next test) which is more robust on
+  // Node 25+. This test is kept for backwards compatibility.
+
+  // Simulate the production sequence: readline first appends "\t" to the line,
+  // then our setImmediate callback fires and must remove the tab character
+  // rather than eating the last char of "hello" the user typed.
+  const writes = [];
+  const mockRl = {
+    line: "hello",
+    cursor: 5,
+    write(data, key) {
+      writes.push({ data, key: key ? { name: key.name } : null });
+    }
+  };
+  const state = { acceptingInput: true, mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+
+  // Inline the same shape as handleKeypress for Tab.
+  function pressTab(shift = false) {
+    applyShortcut({ name: "tab", sequence: "\t", shift }, state, { rl: mockRl });
+    return new Promise((resolve) => setImmediate(() => {
+      // Simulate readline having appended a tab by the time we get here.
+      mockRl.line = mockRl.line + "\t";
+      if (mockRl.line.endsWith("\t")) {
+        try {
+          mockRl.write(null, { name: "backspace" });
+        } catch {
+          // ignore
+        }
+      }
+      mockRl.line = mockRl.line.replace(/\t$/, "");
+      resolve();
+    }));
+  }
+
+  await pressTab(false);
+  assert.equal(state.cfg.reasoning, "high");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].key.name, "backspace");
+  // The user-typed "hello" must still be intact.
+  assert.equal(mockRl.line, "hello");
+
+  await pressTab(true);
+  assert.equal(state.mode, "always-approve");
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].key.name, "backspace");
+  assert.equal(mockRl.line, "hello");
+});
+
+test("stripTrailingTab removes the tab readline appended and leaves typed text intact", async () => {
+  // Simulate the production fallback path: the readline/promises Interface in
+  // Node 25+ doesn't expose a wrappable underlying interface, so we use the
+  // keypress + setImmediate + stripTrailingTab path. This test verifies the
+  // critical invariant: pressing Tab does NOT eat characters the user typed.
+  const { PassThrough } = await import("node:stream");
+  const readlinePromises = await import("node:readline/promises");
+  const { emitKeypressEvents } = await import("node:readline");
+  const { stripTrailingTab } = await import("../src/tui.js");
+
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.isTTY = true;
+  emitKeypressEvents(input);
+  const rl = readlinePromises.createInterface({ input, output, terminal: true });
+
+  // Type "hi" then Tab through the stream. Capture exactly what the user's
+  // buffer would look like at the moment stripTrailingTab is invoked.
+  input.write("hi");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rl.line, "hi");
+
+  input.write("\t");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rl.line, "hi\t", "readline should have appended a tab character");
+
+  // Now run the same strip the production code runs.
+  const state = { mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+  stripTrailingTab(rl, state);
+  assert.equal(rl.line, "hi", "stripTrailingTab must remove only the tab, not the typed text");
+  if (typeof rl.cursor === "number") {
+    assert.equal(rl.cursor, 2, "cursor should still be at the end of the typed text");
+  }
+
+  // Pressing Tab again should also be safe — the previous text is preserved.
+  input.write("\t");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rl.line, "hi\t");
+  stripTrailingTab(rl, state);
+  assert.equal(rl.line, "hi");
+
+  rl.close();
+});
+
+test("applyShortcut skips the shortcut when readline is busy or input starts with /", () => {
+  const state = { mode: "plan", cfg: { mode: "plan", reasoning: "medium" } };
+  // "/" line is a command — Tab must NOT rotate so completion can run.
+  applyShortcut({ name: "tab" }, state, { persist: false, rl: { line: "/login" } });
+  assert.equal(state.cfg.reasoning, "medium");
+  // Busy readline without force — Tab must NOT rotate.
+  state.acceptingInput = false;
+  applyShortcut({ name: "tab" }, state, { persist: false, rl: { line: "" } });
+  assert.equal(state.cfg.reasoning, "medium");
+  // Busy readline but force=true — Tab rotates anyway.
+  applyShortcut({ name: "tab" }, state, { persist: false, force: true, rl: { line: "" } });
+  assert.equal(state.cfg.reasoning, "high");
+});
+

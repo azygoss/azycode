@@ -10,7 +10,48 @@ import { LlmClient } from "./llm.js";
 import { applyPermissionProfile, azyHome, configPath, loadConfig, loadState, maskSecret, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { gitGuard } from "./guard.js";
-import { style } from "./ui.js";
+import {
+  accent,
+  badge,
+  blank,
+  bold,
+  box,
+  brand,
+  code,
+  dim,
+  error as errorText,
+  faint,
+  header as renderHeader,
+  icon,
+  info as infoText,
+  keyValueList,
+  kv,
+  list,
+  muted,
+  paint,
+  padEnd,
+  panel,
+  pill,
+  prettyMs,
+  promptStatus,
+  renderTable,
+  rule,
+  section as sectionText,
+  spinnerFrame,
+  startSpinner,
+  statusDot,
+  stopSpinner,
+  stripAnsi,
+  style,
+  subtle,
+  success as successText,
+  tag,
+  title as titleText,
+  truncate,
+  tree,
+  visibleLength,
+  warn as warnText
+} from "./ui.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
@@ -27,6 +68,9 @@ const TUI_COMMANDS = [
   "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "review", "new", "compact", "clear", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
+
+const AGENT_BORDER = "rounded";
+const PANEL_WIDTH = (output.columns && output.columns >= 60 ? Math.min(output.columns - 4, 96) : 80);
 
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
@@ -58,6 +102,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
 
   const rl = readlinePromises.createInterface({ input, output, completer: (line) => completeTuiInput(line, state) });
   emitKeypressEvents(input, rl);
+
   const onKeypress = (_, key) => handleKeypress(key, state, rl);
   input.on("keypress", onKeypress);
   try {
@@ -83,58 +128,87 @@ function printWelcome(state) {
   const repo = path.basename(state.cwd);
   const provider = state.cfg.activeProvider || "no provider";
   const model = state.cfg.activeModel || "no model";
-  const width = Math.max(56, Math.min(output.columns || 88, 96));
-  const rule = "─".repeat(width);
-  console.log(style("azycode", "bold"));
-  console.log(style(rule, "cyan"));
-  console.log(formatHeaderRow("workspace", repo, width));
-  console.log(formatHeaderRow("model", `${provider}/${model}`, width));
-  console.log(formatHeaderRow("session", `${state.mode}  •  reasoning ${state.cfg.reasoning}  •  profile ${state.cfg.permissionProfile || "normal"}`, width));
-  console.log(formatHeaderRow("shortcuts", "type a task  /help commands  Tab reasoning  Shift+Tab mode", width));
-  console.log(style(rule, "cyan"));
-  console.log("");
+  const guard = gitGuard(state.cwd, state.cfg);
+  const guardLabel = guard.ok ? "ok" : "blocked";
+  const guardStyle = guard.ok ? "success" : "error";
+  blank();
+
+  // Pick a banner width that comfortably fits the longest line of content while
+  // staying within typical TTY widths.
+  const W = 96;
+  const header = `${bold("azycode")}  ${muted("v0.1")}  ${muted("·")}  ${muted("interactive coding harness")}`;
+  console.log(padEnd(header, W));
+  console.log(rule(W, { label: "ready", labelColor: "info" }));
+
+  const segments = [
+    ["workspace", repo],
+    ["model", `${provider}/${model}`],
+    ["session", `${state.mode} · reasoning ${state.cfg.reasoning} · profile ${state.cfg.permissionProfile || "normal"}`],
+    ["guard", `${statusDot(guardLabel)} ${style(guardLabel, guardStyle)}`]
+  ];
+  for (const [label, value] of segments) {
+    // padEnd from ui.js accounts for ANSI escape codes, so labels align cleanly.
+    console.log(`  ${padEnd(muted(label), 16)}${value}`);
+  }
+
+  console.log(rule(W, { char: "·", color: "subtle" }));
+
+  const shortcuts = [
+    `${muted("type a task")}  ${muted("·")}  ${muted("/help commands")}  ${muted("·")}  ${muted("Tab reasoning")}  ${muted("·")}  ${muted("Shift+Tab mode")}`,
+    `${muted("shortcuts:")}  ${subtle("/login")} ${muted("connect")}  ${subtle("/status")} ${muted("inspect")}  ${subtle("/model")} ${muted("switch")}`
+  ];
+  for (const line of shortcuts) {
+    console.log(`  ${padEnd(line, W - 2)}`);
+  }
+  blank();
 }
 
-function formatHeaderRow(label, value, width) {
-  const labelText = label.padEnd(10);
-  const available = Math.max(12, width - labelText.length - 1);
-  return `${style(labelText, "dim")} ${clipText(value, available)}`;
+export function promptLabel(state, { styled = true } = {}) {
+  // Prompt focuses on mode/reasoning/agent — guard status lives in the welcome
+  // banner and /status so the prompt stays compact and scannable.
+  const status = promptStatus({
+    mode: state.mode,
+    reasoning: state.cfg.reasoning,
+    agent: state.subagent?.name,
+    profile: state.cfg.permissionProfile
+  });
+  const cursor = styled ? style(icon("chevron"), "brand") : "›";
+  if (!styled) return `${status}  ${cursor} `;
+  return `${status}  ${cursor} `;
 }
 
-function clipText(value, max) {
-  const text = String(value ?? "");
-  if (text.length <= max) return text;
-  if (max <= 1) return "…";
-  return `${text.slice(0, max - 1)}…`;
-}
-
-function promptLabel(state, { styled = true } = {}) {
-  const agent = state.subagent ? ` | @${state.subagent.name}` : "";
-  const label = `[${state.mode} | ${state.cfg.reasoning}${agent}]`;
-  if (!styled) return `${label} > `;
-  return `${style(label, "dim")} ${style(">", "cyan")} `;
+export function normalizeTabKey(key) {
+  if (!key) return key;
+  if (key.name === "backtab") return { ...key, name: "tab", shift: true };
+  return key;
 }
 
 export function applyShortcut(key, state, options = {}) {
+  key = normalizeTabKey(key);
   if (key?.name !== "tab") return;
   if (state.acceptingInput === false && options.force !== true) return;
   if (options.rl?.line?.startsWith("/")) return;
   const persist = options.persist !== false;
-  const notify = options.notify || ((message) => redrawPrompt(options.rl, state, message));
+  const notify = options.notify || (() => refreshPrompt(options.rl, state));
   if (key.shift) {
     state.mode = rotateMode(state.mode);
     state.cfg.mode = state.mode;
     if (persist) saveConfig(state.cfg);
-    notify(`mode: ${state.mode}`);
+    notify(`${icon("chevron")} mode: ${state.mode}`);
   } else {
     state.cfg.reasoning = rotateReasoning(state.cfg.reasoning);
     if (persist) saveConfig(state.cfg);
-    notify(`reasoning: ${state.cfg.reasoning}`);
+    notify(`${icon("chevron")} reasoning: ${state.cfg.reasoning}`);
   }
 }
 
 function handleKeypress(key, state, rl) {
-  applyShortcut(key, state, { rl });
+  key = normalizeTabKey(key);
+  if (key?.name === "tab") {
+    applyShortcut(key, state, { rl });
+    stripTrailingTab(rl, state);
+    return;
+  }
   if (key?.sequence !== "/") {
     if (rl.line !== "/") state.commandPaletteShown = false;
     return;
@@ -148,17 +222,100 @@ function handleKeypress(key, state, rl) {
   }, 0);
 }
 
-function redrawPrompt(rl, state, message) {
-  if (!rl || !output.isTTY) {
-    if (message) console.log(message);
+// Remove the trailing tab character that readline appended when the user
+// pressed Tab. We cannot rely on rl.write(null, { name: "backspace" }) in
+// every Node.js build (it is async in some, and races the keypress pipeline
+// in others), so we set rl.line and rl.cursor directly and ask readline to
+// re-render. This keeps the user's typed text untouched and the cursor in
+// the right place.
+export function stripTrailingTab(rl, state) {
+  if (!rl || typeof rl.line !== "string") return;
+  if (rl.line.endsWith("\t")) {
+    const next = rl.line.slice(0, -1);
+    try {
+      rl.line = next;
+    } catch {
+      return;
+    }
+    if (typeof rl.cursor === "number" && rl.cursor > 0) rl.cursor -= 1;
+  }
+  refreshPrompt(rl, state);
+}
+
+function redrawPrompt(rl, state) {
+  refreshPrompt(rl, state);
+}
+
+function tuiStream(rl) {
+  return rl?.output ?? output;
+}
+
+function isTuiStream(rl) {
+  return Boolean(tuiStream(rl)?.isTTY);
+}
+
+function syncReadlinePrompt(rl, state) {
+  const prompt = promptLabel(state, { styled: false });
+  if (typeof rl?._prompt === "string") rl._prompt = prompt;
+  for (const sym of Object.getOwnPropertySymbols(rl || {})) {
+    if (String(sym).includes("_prompt")) {
+      try { rl[sym] = prompt; } catch { /* ignore */ }
+    }
+  }
+  return prompt;
+}
+
+function refreshPrompt(rl, state) {
+  if (!rl) return;
+  syncReadlinePrompt(rl, state);
+  if (!isTuiStream(rl)) return;
+  const target = findUnderlyingInterface(rl);
+  if (typeof target?._refreshLine === "function") {
+    target._refreshLine();
     return;
   }
-  const line = rl.line || "";
-  const cursor = rl.cursor ?? line.length;
+  paintPromptLine(rl, state);
+}
+
+// readline/promises.Interface wraps the standard readline.Interface and stores
+// it under a private Symbol. The wrapper does not expose _ttyWrite / _refreshLine
+// directly, so we look for the first symbol-keyed property that does. Without
+// this, attempting to override Tab handling or refresh the prompt would either
+// be a no-op or throw "Cannot read properties of undefined (reading 'bind')".
+export function findUnderlyingInterface(rl) {
+  if (!rl) return null;
+  if (typeof rl._ttyWrite === "function") return rl;
+  for (const sym of Object.getOwnPropertySymbols(rl)) {
+    let val;
+    try { val = rl[sym]; } catch { continue; }
+    if (val && typeof val._ttyWrite === "function") return val;
+  }
+  return null;
+}
+
+function paintPromptLine(rl, state) {
+  const stream = tuiStream(rl);
+  if (!stream?.isTTY) return;
+  const line = rl?.line || "";
+  const cursor = rl?.cursor ?? line.length;
+  const prompt = syncReadlinePrompt(rl, state);
+  clearLine(stream, 0);
+  cursorTo(stream, 0);
+  stream.write(prompt);
+  stream.write(line);
+  cursorTo(stream, visibleLength(prompt) + cursor);
+}
+
+function paintInlineOverlay(rl, state, message) {
+  const line = rl?.line || "";
+  const cursor = rl?.cursor ?? line.length;
+  const label = `${muted(message)}`;
   clearLine(output, 0);
   cursorTo(output, 0);
-  output.write(`${promptLabel(state)}${line}`);
-  cursorTo(output, promptLabel(state, { styled: false }).length + cursor);
+  output.write(label);
+  output.write("  ");
+  output.write(line);
+  cursorTo(output, visibleLength(label) + 2 + cursor);
 }
 
 export function completeTuiInput(line, state) {
@@ -205,11 +362,11 @@ function tuiArgCandidates(command, fixedArgs, state) {
 
 async function askAgent(prompt, state, rl = null) {
   if (!state.cfg.activeProvider) {
-    console.log(style("No provider configured. Run `azycode login <provider>` in another terminal, then restart.", "yellow"));
-    console.log("");
+    console.log(warnText(`${icon("warn")}  No provider configured. Run `) + code("azycode login <provider>") + warnText(" in another terminal, then restart."));
+    blank();
     return;
   }
-  console.log(style("working...", "dim"));
+  const spinner = state.progress ? startSpinner({ label: `thinking  ${truncate(prompt, 36)}`, stream: output, isTTY: output.isTTY }) : null;
   try {
     const result = await runAgent({
       cfg: state.cfg,
@@ -224,25 +381,37 @@ async function askAgent(prompt, state, rl = null) {
       subagent: state.subagent
     });
     state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"));
-    console.log("");
-    console.log(style("assistant", "cyan"));
-    console.log(result.content);
-    console.log("");
+    if (spinner) stopSpinner({ finalLabel: `done  ${truncate(prompt, 36)}` });
+    blank();
+    console.log(`${brand(icon("spike"))} ${bold(brand("assistant"))}`);
+    console.log(renderAssistantContent(result.content));
+    blank();
   } catch (error) {
-    console.log(style(`error: ${error.message}`, "red"));
-    console.log("");
+    if (spinner) stopSpinner({ finalStyle: "error", finalLabel: `error  ${truncate(prompt, 36)}` });
+    console.log(errorText(`${icon("cross")}  ${error.message}`));
+    blank();
   }
 }
 
+function renderAssistantContent(content) {
+  const text = String(content ?? "").trim();
+  if (!text) return muted("(no response)");
+  const lines = text.split(/\n/);
+  return lines.map((line) => `  ${line}`).join("\n");
+}
+
 async function confirmInTui(rl, question) {
-  const answer = (await rl.question(`${question} [y/n] (n): `)).trim().toLowerCase();
+  const answer = (await rl.question(`${warnText(icon("warn") + "  " + question)} ${muted("[y/n]")} (n): `)).trim().toLowerCase();
   return answer === "y" || answer === "yes" || answer === "evet" || answer === "e";
 }
 
 function progressLine(event) {
-  if (event.type === "model_start") console.log(style(`  model step ${event.step}`, "dim"));
-  else if (event.type === "tool_start") console.log(style(`  tool  ${event.tool}`, "dim"));
-  else if (event.type === "tool_end") console.log(style(`  done  ${event.tool} (${event.durationMs}ms)`, event.ok ? "green" : "red"));
+  if (event.type === "model_start") console.log(muted(`  ${icon("chevronRight")} model step ${event.step}`));
+  else if (event.type === "tool_start") console.log(muted(`  ${icon("arrow")} tool  ${event.tool}`));
+  else if (event.type === "tool_end") {
+    const symbol = event.ok ? successText(icon("check")) : errorText(icon("cross"));
+    console.log(`  ${symbol} ${muted(event.tool)} ${faint(prettyMs(event.durationMs))}`);
+  }
 }
 
 async function handleCommand(line, state, rl = null) {
@@ -263,33 +432,33 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "new") {
     state.conversation = [];
-    console.log("conversation: cleared");
+    console.log(`${successText(icon("check"))} ${muted("conversation: cleared")}`);
     return;
   }
   if (command === "compact") {
     const before = state.conversation.length;
     state.conversation = trimConversation(state.conversation, 20);
-    console.log(`conversation: ${before} -> ${state.conversation.length} messages`);
+    console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages`);
     return;
   }
   if (command === "mode") {
     const next = normalizeMode(args[0]);
-    if (!MODES.includes(next)) console.log(`mode: ${MODES.join(", ")}`);
+    if (!MODES.includes(next)) console.log(`${warnText(icon("warn"))} mode: ${MODES.join(", ")}`);
     else {
       state.mode = next;
       state.cfg.mode = next;
       saveConfig(state.cfg);
-      console.log(`mode: ${next}`);
+      console.log(`${successText(icon("check"))} ${muted("mode:")} ${style(next, modeColor(next))}`);
     }
     return;
   }
   if (command === "reasoning") {
     const next = args[0];
-    if (!REASONING_LEVELS.includes(next)) console.log(`reasoning: ${REASONING_LEVELS.join(", ")}`);
+    if (!REASONING_LEVELS.includes(next)) console.log(`${warnText(icon("warn"))} reasoning: ${REASONING_LEVELS.join(", ")}`);
     else {
       state.cfg.reasoning = next;
       saveConfig(state.cfg);
-      console.log(`reasoning: ${next}`);
+      console.log(`${successText(icon("check"))} ${muted("reasoning:")} ${infoText(next)}`);
     }
     return;
   }
@@ -318,13 +487,13 @@ async function handleCommand(line, state, rl = null) {
     if (!name) {
       await chooseConfiguredProvider(state, rl);
     } else if (!state.cfg.providers?.[name]) {
-      console.log(`Provider '${name}' is not configured. Run: azycode login ${name}`);
+      console.log(`${warnText(icon("warn"))} Provider '${name}' is not configured. Run: azycode login ${name}`);
     } else {
       state.cfg.providers[name] = withProviderModels(state.cfg, name, state.cfg.providers[name]);
       state.cfg.activeProvider = name;
       state.cfg.activeModel = state.cfg.providers[name].model;
       saveConfig(state.cfg);
-      console.log(`provider: ${name}/${state.cfg.activeModel}`);
+      console.log(`${successText(icon("check"))} ${muted("provider:")} ${state.cfg.activeProvider}/${state.cfg.activeModel}`);
     }
     return;
   }
@@ -338,28 +507,29 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "profile") {
     const next = args[0];
-    if (!PROFILES.includes(next)) console.log(`profile: ${PROFILES.join(", ")}`);
+    if (!PROFILES.includes(next)) console.log(`${warnText(icon("warn"))} profile: ${PROFILES.join(", ")}`);
     else {
       state.cfg.permissionProfile = next;
       applyPermissionProfile(state.cfg);
       saveConfig(state.cfg);
-      console.log(`profile: ${next}`);
+      console.log(`${successText(icon("check"))} ${muted("profile:")} ${accent(next)}`);
       printPolicySummary(state);
     }
     return;
   }
   if (command === "context") {
     if (args[0] === "show") {
-      console.log(formatContextPack(contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 })));
+      const pack = contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 });
+      console.log(`${muted(icon("chevron"))} ${formatContextPack(pack)}`);
       return;
     }
     state.includeContext = !state.includeContext;
-    console.log(`context: ${state.includeContext}`);
+    console.log(`${muted(icon("chevron"))} context: ${state.includeContext ? successText("on") : muted("off")}`);
     return;
   }
   if (command === "progress") {
     state.progress = !state.progress;
-    console.log(`progress: ${state.progress}`);
+    console.log(`${muted(icon("chevron"))} progress: ${state.progress ? successText("on") : muted("off")}`);
     return;
   }
   if (command === "review") {
@@ -421,15 +591,15 @@ async function handleCommand(line, state, rl = null) {
   if (command === "agent") {
     const name = args[0];
     if (!name) {
-      console.log(`agent: ${state.subagent?.name || "off"}`);
+      console.log(`${muted(icon("chevron"))} agent: ${state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")}`);
     } else if (name === "off") {
       state.subagent = null;
-      console.log("agent: off");
+      console.log(`${muted(icon("chevron"))} agent: off`);
     } else if (!state.cfg.subagents?.[name]) {
-      console.log(`No subagent '${name}'. Use /agents.`);
+      console.log(`${warnText(icon("warn"))} No subagent '${name}'. Use /agents.`);
     } else {
       state.subagent = { name, ...state.cfg.subagents[name] };
-      console.log(`agent: @${name}`);
+      console.log(`${successText(icon("check"))} ${muted("agent:")} ${brand(`@${name}`)}`);
     }
     return;
   }
@@ -449,7 +619,15 @@ async function handleCommand(line, state, rl = null) {
     printDoctor(state);
     return;
   }
-  console.log(`Unknown command: /${command}. Use /help.`);
+  console.log(`${warnText(icon("warn"))} Unknown command: /${command}. Use /help.`);
+}
+
+function modeColor(mode) {
+  if (mode === "plan") return "info";
+  if (mode === "always-approve") return "warn";
+  if (mode === "goal") return "brand";
+  if (mode === "review") return "accent";
+  return "muted";
 }
 
 function printHelp(topic = null) {
@@ -484,87 +662,123 @@ function printHelp(topic = null) {
     };
     const rows = topics[topic];
     if (!rows) {
-      console.log(`help: topics ${Object.keys(topics).join(", ")}`);
+      console.log(`${warnText(icon("warn"))} help: topics ${Object.keys(topics).join(", ")}`);
       return;
     }
-    printRows(`Help: ${topic}`, rows);
+    blank();
+    console.log(`${brand(icon("chevronRight"))} ${bold(`Help: ${topic}`)}`);
+    for (const row of rows) console.log(`  ${infoText(row)}`);
+    blank();
     return;
   }
-  console.log("");
-  console.log(style("Commands", "cyan"));
-  console.log("  /status                 show active model and git guard");
-  console.log("  /health                 check configured provider connectivity");
-  console.log("  /doctor                 show local binary and config paths");
-  console.log("  /mode <name>            plan, always-approve, goal, review");
-  console.log("  /reasoning <level>      minimal, low, medium, high");
-  console.log("  /model [provider/model] show, sync, or switch provider/model");
-  console.log("  /models [sync|sync all] list or sync provider model ids");
-  console.log("  /providers              show available and configured providers");
-  console.log("  /provider <name>        switch to a configured provider");
-  console.log("  /credentials            show masked provider key sources");
-  console.log("  /keys                   show keyboard shortcuts");
-  console.log("  /profile <name>         normal, read-only, safe-write, full-auto");
-  console.log("  /context                toggle bounded repository context");
-  console.log("  /context show           preview bounded repository context");
-  console.log("  /progress               toggle inline model/tool activity");
-  console.log("  /review                 inspect local git changes");
-  console.log("  /dashboard              show local session and automation counts");
-  console.log("  /workspace              show cwd, config, git, and guard state");
-  console.log("  /sessions               show recent agent sessions");
-  console.log("  /session <id> [json]    show a saved session transcript");
-  console.log("  /tools                  show recent tool activity");
-  console.log("  /policy                 show current tool approval policy");
-  console.log("  /tool <name> <mode>     set a tool to auto, ask, or deny");
-  console.log("  /goals                  show saved goals");
-  console.log("  /goal <action>          create, status, or stop a goal");
-  console.log("  /missions               show saved missions");
-  console.log("  /mission <action>       dry-run or run a mission file");
-  console.log("  /memory [add|remove]    manage persistent notes");
-  console.log("  /agents                 show available subagents");
-  console.log("  /agent <name|off>       select a subagent for this conversation");
-  console.log("  /new                    start a fresh conversation");
-  console.log("  /compact                keep only recent conversation context");
-  console.log("  /login                  choose a provider and enter its API key");
-  console.log("  /clear                  clear the terminal");
-  console.log("  /exit                   leave azycode");
-  console.log("");
+  printHelpGroups();
+}
+
+function printHelpGroups() {
+  const groups = [
+    { title: "Status", items: [
+      ["/status", "active model, provider, guard"],
+      ["/health", "provider connectivity"],
+      ["/doctor", "local binary and config paths"],
+      ["/dashboard", "local overview"],
+      ["/workspace", "cwd, config, git, guard"]
+    ]},
+    { title: "Providers", items: [
+      ["/login", "connect a provider"],
+      ["/provider", "switch configured provider"],
+      ["/model", "all models grouped by provider"],
+      ["/providers", "show provider presets"],
+      ["/credentials", "masked provider key sources"]
+    ]},
+    { title: "Run", items: [
+      ["/mode", "plan, always-approve, goal, review"],
+      ["/reasoning", "minimal, low, medium, high"],
+      ["/profile", "permission profile"],
+      ["/context", "toggle repository context"],
+      ["/progress", "toggle inline activity"]
+    ]},
+    { title: "Review", items: [
+      ["/review", "local git review"],
+      ["/policy", "tool approvals"],
+      ["/tool", "set tool approval mode"],
+      ["/agents", "show subagents"],
+      ["/agent", "select subagent"]
+    ]},
+    { title: "State", items: [
+      ["/sessions", "recent agent sessions"],
+      ["/session", "show session transcript"],
+      ["/tools", "recent tool activity"],
+      ["/goals", "saved goals"],
+      ["/missions", "saved missions"]
+    ]},
+    { title: "Other", items: [
+      ["/mission", "dry-run, run, report"],
+      ["/memory", "manage notes"],
+      ["/keys", "keyboard shortcuts"],
+      ["/new", "start a fresh conversation"],
+      ["/compact", "trim context"],
+      ["/clear", "redraw the screen"],
+      ["/exit", "leave azycode"]
+    ]}
+  ];
+  blank();
+  for (const group of groups) {
+    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
+    const width = group.items.reduce((max, [name]) => Math.max(max, name.length), 0);
+    for (const [name, summary] of group.items) {
+      console.log(`  ${name.padEnd(width)}  ${muted(summary)}`);
+    }
+    console.log("");
+  }
+  console.log(`  ${muted(icon("sparkle"))} hint: type ${infoText("/")} alone to open the command palette.`);
+  blank();
 }
 
 function printCommandPalette(state) {
-  const rows = [
-    ["/status", "active model, provider, guard"],
-    ["/health", "provider connectivity"],
-    ["/doctor", "local binary and config paths"],
-    ["/login", "connect a provider"],
-    ["/provider", "switch configured provider"],
-    ["/model", "all models grouped by provider"],
-    ["/providers", "show provider presets"],
-    ["/credentials", "masked provider key sources"],
-    ["/keys", "keyboard shortcuts"],
-    ["/mode", "set plan, always-approve, goal, review"],
-    ["/reasoning", "set minimal, low, medium, high"],
-    ["/policy", "show tool approvals"],
-    ["/tool", "set tool approval mode"],
-    ["/agents", "show subagents"],
-    ["/agent", "select subagent"],
-    ["/missions", "show missions"],
-    ["/memory", "manage notes"],
-    ["/review", "local review"],
-    ["/dashboard", "local overview"],
-    ["/workspace", "cwd, config, git, guard"],
-    ["/session", "show session transcript"],
-    ["/clear", "redraw screen"],
-    ["/exit", "leave azycode"]
+  const groups = [
+    { title: "Status", items: [
+      ["/status", "active model, provider, guard"],
+      ["/health", "provider connectivity"],
+      ["/doctor", "local binary and config paths"],
+      ["/login", "connect a provider"],
+      ["/provider", "switch configured provider"],
+      ["/model", "all models grouped by provider"],
+      ["/providers", "show provider presets"],
+      ["/credentials", "masked provider key sources"],
+      ["/keys", "keyboard shortcuts"]
+    ]},
+    { title: "Run", items: [
+      ["/mode", "set plan, always-approve, goal, review"],
+      ["/reasoning", "set minimal, low, medium, high"],
+      ["/policy", "show tool approvals"],
+      ["/tool", "set tool approval mode"],
+      ["/agents", "show subagents"],
+      ["/agent", "select subagent"],
+      ["/missions", "show missions"],
+      ["/memory", "manage notes"],
+      ["/review", "local review"]
+    ]},
+    { title: "State", items: [
+      ["/dashboard", "local overview"],
+      ["/workspace", "cwd, config, git, guard"],
+      ["/session", "show session transcript"],
+      ["/clear", "redraw screen"],
+      ["/exit", "leave azycode"]
+    ]}
   ];
-  console.log("");
-  console.log(style("Commands", "cyan"));
-  const width = rows.reduce((max, [command]) => Math.max(max, command.length), 0);
-  for (const [command, summary] of rows) {
-    console.log(`  ${style(command.padEnd(width), "bold")}  ${summary}`);
+  blank();
+  for (const group of groups) {
+    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
+    const width = group.items.reduce((max, [command]) => Math.max(max, command.length), 0);
+    for (const [command, summary] of group.items) {
+      console.log(`  ${command.padEnd(width)}  ${muted(summary)}`);
+    }
+    console.log("");
   }
-  console.log("");
-  console.log(style(`active: ${state.cfg.activeProvider || "no provider"}/${state.cfg.activeModel || "no model"}  ${state.mode}  reasoning ${state.cfg.reasoning}`, "dim"));
-  console.log("");
+  const provider = state.cfg.activeProvider || "no provider";
+  const model = state.cfg.activeModel || "no model";
+  console.log(`  ${muted("active:")} ${provider}/${model}  ${style(state.mode, modeColor(state.mode))}  ${muted("reasoning")} ${state.cfg.reasoning}`);
+  blank();
 }
 
 export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAGES) {
@@ -577,48 +791,52 @@ export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAG
 function printDashboard(state) {
   const saved = loadState();
   const guard = gitGuard(state.cwd, state.cfg);
-  console.log("");
-  console.log(style("Dashboard", "cyan"));
-  printKeyValues([
-    ["workspace", path.basename(state.cwd)],
-    ["provider", state.cfg.activeProvider || "none"],
-    ["model", state.cfg.activeModel || "none"],
-    ["mode", state.mode],
-    ["reasoning", state.cfg.reasoning],
-    ["profile", state.cfg.permissionProfile || "normal"],
-    ["agent", state.subagent?.name || "off"],
-    ["context", state.includeContext ? "on" : "off"],
-    ["git guard", guard.ok ? `ok${guard.dirty ? " (dirty)" : ""}` : "blocked"]
-  ]);
-  console.log("");
-  printKeyValues([
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Dashboard")}`);
+  const leftRows = [
+    [`${muted("workspace")}  ${path.basename(state.cwd)}`],
+    [`${muted("model")}  ${state.cfg.activeProvider || muted("none")}/${state.cfg.activeModel || muted("none")}`],
+    [`${muted("mode")}  ${style(state.mode, modeColor(state.mode))}`],
+    [`${muted("reasoning")}  ${infoText(state.cfg.reasoning)}`],
+    [`${muted("profile")}  ${state.cfg.permissionProfile ? accent(state.cfg.permissionProfile) : muted("normal")}`],
+    [`${muted("agent")}  ${state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")}`],
+    [`${muted("context")}  ${state.includeContext ? successText("on") : muted("off")}`],
+    [`${muted("git guard")}  ${statusDot(guard.ok ? "ok" : "blocked")} ${guard.ok ? successText("ok") : errorText("blocked")}${guard.dirty ? ` ${faint("(dirty)")}` : ""}`]
+  ];
+  for (const [row] of leftRows) console.log(`  ${row}`);
+  blank();
+  const counts = [
     ["sessions", Object.keys(saved.sessions || {}).length],
     ["goals", Object.keys(saved.goals || {}).length],
     ["missions", Object.keys(saved.missions || {}).length],
     ["tool runs", (saved.toolRuns || []).length],
     ["messages", state.conversation.length]
-  ]);
-  console.log("");
+  ];
+  for (const [label, value] of counts) {
+    console.log(`  ${muted(label.padEnd(11))} ${bold(String(value))}`);
+  }
+  blank();
 }
 
 function printWorkspace(state) {
   const guard = gitGuard(state.cwd, state.cfg);
   const git = gitSummary(state.cwd);
-  console.log("");
-  console.log(style("Workspace", "cyan"));
-  printKeyValues([
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Workspace")}`);
+  const rows = [
     ["cwd", state.cwd],
     ["config", configPath()],
     ["home", azyHome()],
     ["branch", git.branch],
     ["dirty", git.dirty],
-    ["guard", guard.ok ? "ok" : "blocked"],
-    ["provider", state.cfg.activeProvider || "none"],
-    ["model", state.cfg.activeModel || "none"],
-    ["profile", state.cfg.permissionProfile || "normal"]
-  ]);
-  if (!guard.ok) console.log(style(`guard: ${guard.reason}`, "yellow"));
-  console.log("");
+    ["guard", guard.ok ? successText("ok") : errorText("blocked")],
+    ["provider", state.cfg.activeProvider || muted("none")],
+    ["model", state.cfg.activeModel || muted("none")],
+    ["profile", state.cfg.permissionProfile || muted("normal")]
+  ];
+  for (const row of keyValueList(rows)) console.log(`  ${row}`);
+  if (!guard.ok) console.log(`  ${warnText(icon("warn"))} ${warnText(guard.reason)}`);
+  blank();
 }
 
 function printReview(state) {
@@ -626,7 +844,7 @@ function printReview(state) {
   console.log(formatLocalReview(review));
   const actionable = review.findings.filter((item) => item.severity !== "info");
   if (!actionable.length) {
-    console.log(style(`review: clean (${review.files.length} files, +${review.stats.added} -${review.stats.removed})`, "green"));
+    console.log(`${successText(icon("check"))} ${muted(`review: clean (${review.files.length} files, +${review.stats.added} -${review.stats.removed})`)}`);
   }
 }
 
@@ -641,84 +859,80 @@ function gitSummary(cwd) {
 }
 
 function printStatus(state) {
-  console.log("");
-  console.log(style("Status", "cyan"));
-  printKeyValues([
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Status")}`);
+  const overview = [
     ["workspace", path.basename(state.cwd)],
     ["provider", state.cfg.activeProvider || "no provider"],
     ["model", state.cfg.activeModel || "no model"],
-    ["mode", state.mode],
-    ["reasoning", state.cfg.reasoning],
-    ["profile", state.cfg.permissionProfile || "normal"],
-    ["agent", state.subagent?.name || "off"],
-    ["context", state.includeContext ? "on" : "off"],
-    ["progress", state.progress ? "on" : "off"]
-  ]);
+    ["mode", style(state.mode, modeColor(state.mode))],
+    ["reasoning", infoText(state.cfg.reasoning)],
+    ["profile", state.cfg.permissionProfile ? accent(state.cfg.permissionProfile) : muted("normal")],
+    ["agent", state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")],
+    ["context", state.includeContext ? successText("on") : muted("off")],
+    ["progress", state.progress ? successText("on") : muted("off")]
+  ];
+  for (const row of keyValueList(overview)) console.log(`  ${row}`);
 
   if (state.cfg.activeProvider) {
     try {
       const provider = providerDiagnostics(state.cfg);
-      console.log("");
-      console.log(style("Provider", "cyan"));
-      printKeyValues([
-        ["endpoint", provider.baseUrl || "(custom)"],
+      blank();
+      console.log(`${brand(icon("chevronRight"))} ${bold("Provider")}`);
+      const rows = [
+        ["endpoint", provider.baseUrl || muted("(custom)")],
         ["protocol", provider.protocol],
         ["chat path", provider.chatPath],
-        ["api key", provider.hasApiKey ? `configured (${provider.apiKeySource})` : `missing (${provider.apiKeySource})`]
-      ]);
+        ["api key", provider.hasApiKey ? successText(`configured (${muted(provider.apiKeySource)})`) : warnText(`missing (${provider.apiKeySource})`)]
+      ];
+      for (const row of keyValueList(rows)) console.log(`  ${row}`);
     } catch (error) {
-      console.log(style(`provider: ${error.message}`, "yellow"));
+      console.log(`  ${warnText(icon("warn"))} ${warnText(error.message)}`);
     }
   }
 
   const guard = gitGuard(state.cwd, state.cfg);
-  console.log("");
-  console.log(style("Guard", "cyan"));
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Guard")}`);
   if (guard.ok) {
-    printKeyValues([
-      ["status", "ok"],
-      ["branch", guard.branch || "(none)"],
-      ["dirty", guard.dirty ? "yes" : "no"]
-    ]);
-    for (const warning of guard.warnings || []) console.log(`  ${style("warning", "yellow")} ${warning}`);
+    const rows = [
+      ["status", successText("ok")],
+      ["branch", guard.branch || muted("(none)")],
+      ["dirty", guard.dirty ? warnText("yes") : successText("no")]
+    ];
+    for (const row of keyValueList(rows)) console.log(`  ${row}`);
+    for (const warning of guard.warnings || []) console.log(`  ${warnText(icon("warn"))} ${warning}`);
   } else {
-    printKeyValues([["status", "blocked"], ["reason", guard.reason]]);
+    for (const row of keyValueList([["status", errorText("blocked")], ["reason", guard.reason]])) console.log(`  ${row}`);
   }
-  console.log("");
-}
-
-function printKeyValues(rows) {
-  const width = rows.reduce((max, [key]) => Math.max(max, String(key).length), 0);
-  for (const [key, value] of rows) {
-    console.log(`  ${style(String(key).padEnd(width), "dim")}  ${value ?? ""}`);
-  }
+  blank();
 }
 
 function printSessions() {
   const sessions = Object.entries(loadState().sessions || {}).slice(-10).reverse();
-  printRows("Sessions", sessions.map(([id, item]) => `${id}  ${item.mode || ""}  ${String(item.prompt || "").slice(0, 70)}`));
+  printRows("Sessions", sessions.map(([id, item]) => `${muted(id)}  ${item.mode || ""}  ${truncate(item.prompt || "", 60)}`));
 }
 
 function printSession(args) {
   const [id, format] = args;
   const sessions = loadState().sessions || {};
   if (!id) {
-    console.log("Usage: /session <id> [json]");
+    console.log(`${warnText(icon("warn"))} Usage: /session <id> [json]`);
     return;
   }
   const session = sessions[id];
   if (!session) {
-    console.log(`session: no session ${id}`);
+    console.log(`${warnText(icon("warn"))} session: no session ${id}`);
     return;
   }
-  console.log("");
-  console.log(style(`Session ${id}`, "cyan"));
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold(`Session ${id}`)}`);
   if (format === "json") {
     console.log(JSON.stringify(session, null, 2));
   } else {
     console.log(formatSessionTranscript(session));
   }
-  console.log("");
+  blank();
 }
 
 function formatSessionTranscript(session) {
@@ -726,70 +940,78 @@ function formatSessionTranscript(session) {
   for (const message of session.messages || []) {
     if (message.role === "system") continue;
     if (message.role === "assistant") {
-      lines.push(`${style("assistant", "cyan")}: ${message.content || ""}`);
+      lines.push(`${brand(icon("chevronRight"))} ${brand("assistant")}: ${message.content || ""}`);
       for (const call of message.tool_calls || []) {
-        lines.push(`${style("tool call", "dim")}: ${call.function?.name} ${call.function?.arguments || "{}"}`);
+        lines.push(`  ${muted(icon("arrow"))} ${muted(call.function?.name)} ${muted(call.function?.arguments || "{}")}`);
       }
     } else if (message.role === "tool") {
-      lines.push(`${style(`tool ${message.name || ""}`.trim(), "dim")}: ${String(message.content || "").slice(0, 2000)}`);
+      lines.push(`  ${muted(icon("bullet"))} ${muted(`tool ${message.name || ""}`.trim())}: ${String(message.content || "").slice(0, 2000)}`);
     } else {
-      lines.push(`${style(message.role || "message", "dim")}: ${message.content || ""}`);
+      lines.push(`${muted(message.role || "message")}: ${message.content || ""}`);
     }
   }
-  return lines.join("\n") || "(empty transcript)";
+  return lines.join("\n") || muted("(empty transcript)");
 }
 
 function printToolRuns() {
   const runs = (loadState().toolRuns || []).slice(-10).reverse();
-  printRows("Tool runs", runs.map((run) => `${run.name}  ${run.ok ? "ok" : "failed"}  ${run.durationMs}ms  ${run.sessionId}`));
+  printRows("Tool runs", runs.map((run) => `${muted(run.name)}  ${run.ok ? successText("ok") : errorText("failed")}  ${faint(prettyMs(run.durationMs))}  ${muted(run.sessionId)}`));
 }
 
 async function printHealth(state) {
   const names = Object.keys(state.cfg.providers || {});
-  console.log("");
-  console.log(style("Health", "cyan"));
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Health")}`);
   if (!names.length) {
-    console.log("  No providers configured. Use /login.");
-    console.log("");
+    console.log(`  ${muted(icon("circle"))} No providers configured. Use /login.`);
+    blank();
     return;
   }
   for (const name of names) {
     try {
       const result = await new LlmClient(state.cfg, name).listModels();
       const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
-      const active = state.cfg.activeProvider === name ? "*" : " ";
-      console.log(`  ${active} ${name.padEnd(12)} ok (${count} models)`);
+      const active = state.cfg.activeProvider === name ? style(icon("bullet"), "success") : muted(icon("circle"));
+      console.log(`  ${active} ${name.padEnd(12)} ${successText("ok")} ${faint(`(${count} models)`)}`);
     } catch (error) {
-      console.log(`  ! ${name.padEnd(12)} failed (${error.message})`);
+      console.log(`  ${errorText(icon("cross"))} ${name.padEnd(12)} ${errorText("failed")} ${faint(`(${error.message})`)}`);
     }
   }
-  console.log("");
+  blank();
 }
 
 function printDoctor(state) {
-  console.log("");
-  console.log(style("Doctor", "cyan"));
-  printKeyValues([
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Doctor")}`);
+  const rows = [
     ["project", state.cwd],
     ["install root", INSTALL_ROOT],
     ["node", process.version],
     ["config home", azyHome()],
-    ["active provider", state.cfg.activeProvider || "(none)"],
-    ["active model", state.cfg.activeModel || "(none)"]
-  ]);
-  console.log("");
+    ["active provider", state.cfg.activeProvider || muted("(none)")],
+    ["active model", state.cfg.activeModel || muted("(none)")]
+  ];
+  for (const row of keyValueList(rows)) console.log(`  ${row}`);
+  blank();
 }
 
 function printToolPolicy(state) {
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Tool catalog")}`);
   const rows = toolCatalog({ cwd: state.cwd, cfg: state.cfg })
-    .map((tool) => `${tool.name.padEnd(16)} ${tool.policy.padEnd(4)} ${tool.description}`);
-  printRows("Tool catalog", rows);
+    .map((tool) => ({ name: tool.name, policy: tool.policy, description: tool.description }));
+  for (const line of renderTable(rows, [
+    { key: "name", label: "tool" },
+    { key: "policy", label: "policy" },
+    { key: "description", label: "description" }
+  ])) console.log(`  ${line}`);
+  blank();
 }
 
 function printPolicySummary(state) {
   const values = Object.values(state.cfg.toolPolicy || {});
   const count = (mode) => values.filter((value) => value === mode).length;
-  console.log(`policy: auto ${count("auto")}  ask ${count("ask")}  deny ${count("deny")}`);
+  console.log(`  ${muted("policy:")} ${successText(`auto ${count("auto")}`)}  ${warnText(`ask ${count("ask")}`)}  ${errorText(`deny ${count("deny")}`)}`);
 }
 
 function handleToolPolicy(args, state) {
@@ -800,55 +1022,60 @@ function handleToolPolicy(args, state) {
     return;
   }
   if (!tool || !mode) {
-    console.log("Usage: /tool <name> <auto|ask|deny>");
+    console.log(`${warnText(icon("warn"))} Usage: /tool <name> <auto|ask|deny>`);
     printRows("Known tools", Object.keys(policy).sort());
     return;
   }
   if (!Object.prototype.hasOwnProperty.call(policy, tool)) {
-    console.log(`tool: unknown '${tool}'. Use /policy.`);
+    console.log(`${warnText(icon("warn"))} tool: unknown '${tool}'. Use /policy.`);
     return;
   }
   if (!TOOL_POLICY_MODES.includes(mode)) {
-    console.log(`tool mode: ${TOOL_POLICY_MODES.join(", ")}`);
+    console.log(`${warnText(icon("warn"))} tool mode: ${TOOL_POLICY_MODES.join(", ")}`);
     return;
   }
   state.cfg.toolPolicy[tool] = mode;
   saveConfig(state.cfg);
-  console.log(`tool: ${tool} -> ${mode}`);
+  console.log(`${successText(icon("check"))} ${muted("tool:")} ${tool} ${muted("→")} ${style(mode, mode === "auto" ? "success" : mode === "ask" ? "warn" : "error")}`);
 }
 
 function printToolDetail(state, name) {
   const selected = toolCatalog({ cwd: state.cwd, cfg: state.cfg }).find((tool) => tool.name === name);
   if (!selected) {
-    console.log(`tool: unknown '${name}'. Use /policy.`);
+    console.log(`${warnText(icon("warn"))} tool: unknown '${name}'. Use /policy.`);
     return;
   }
-  printRows(`Tool: ${selected.name}`, [
-    `policy      ${selected.policy}`,
-    `params      ${selected.parameters.join(", ") || "(none)"}`,
-    `required    ${selected.required.join(", ") || "(none)"}`,
-    `description ${selected.description}`
-  ]);
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold(`Tool: ${selected.name}`)}`);
+  const policy = style(selected.policy, selected.policy === "auto" ? "success" : selected.policy === "ask" ? "warn" : "error");
+  const rows = [
+    ["policy", policy],
+    ["params", selected.parameters.join(", ") || muted("(none)")],
+    ["required", selected.required.join(", ") || muted("(none)")],
+    ["description", selected.description]
+  ];
+  for (const row of keyValueList(rows)) console.log(`  ${row}`);
+  blank();
 }
 
 function printModels(state) {
   const entries = modelSelectionEntries(state);
   if (!entries.length) {
-    console.log("model: no providers available");
+    console.log(`${warnText(icon("warn"))} model: no providers available`);
     return;
   }
-  const rows = [];
+  const sections = [];
   for (const name of orderedProviderNames(state.cfg)) {
     const providerEntries = entries.filter((entry) => entry.provider === name);
     if (!providerEntries.length) continue;
     const configured = Boolean(state.cfg.providers?.[name]);
-    rows.push(`${configured ? "" : " "} ${name}${configured ? "" : " (not configured)"}`);
+    sections.push(`${name}${configured ? "" : ` ${muted("(not configured)")}`}`);
     for (const entry of providerEntries) {
-      const active = state.cfg.activeProvider === entry.provider && state.cfg.activeModel === entry.model ? "*" : " ";
-      rows.push(`  ${active} ${entry.model}`);
+      const active = state.cfg.activeProvider === entry.provider && state.cfg.activeModel === entry.model ? style(icon("bullet"), "success") : muted(icon("circle"));
+      sections.push(`  ${active} ${entry.model}`);
     }
   }
-  printRows("Models", rows);
+  printRows("Models", sections);
 }
 
 async function chooseModel(state, rl) {
@@ -858,7 +1085,7 @@ async function chooseModel(state, rl) {
     return;
   }
   if (!entries.length) {
-    console.log("model: no configured providers. Use /login.");
+    console.log(`${warnText(icon("warn"))} model: no configured providers. Use /login.`);
     return;
   }
   const selected = await selectFromList({
@@ -890,15 +1117,15 @@ function selectModel(state, requested) {
       models: [...providerModelList(state.cfg, selected.provider), selected.model]
     });
     saveConfig(state.cfg);
-    console.log(`model: ${selected.provider}/${selected.model}`);
+    console.log(`${successText(icon("check"))} ${muted("model:")} ${selected.provider}/${infoText(selected.model)}`);
     return;
   }
   if (modelMatches.length > 1) {
-    console.log(`model: '${requested}' exists in multiple providers. Use provider/model.`);
+    console.log(`${warnText(icon("warn"))} model: '${requested}' exists in multiple providers. Use provider/model.`);
     return;
   }
   if (!state.cfg.activeProvider || !state.cfg.providers[state.cfg.activeProvider]) {
-    console.log("model: no configured provider. Use /login.");
+    console.log(`${warnText(icon("warn"))} model: no configured provider. Use /login.`);
     return;
   }
   state.cfg.activeModel = requested;
@@ -908,7 +1135,7 @@ function selectModel(state, requested) {
     models: [...providerModelList(state.cfg, state.cfg.activeProvider), requested]
   });
   saveConfig(state.cfg);
-  console.log(`model: ${state.cfg.activeProvider}/${requested}`);
+  console.log(`${successText(icon("check"))} ${muted("model:")} ${state.cfg.activeProvider}/${infoText(requested)}`);
 }
 
 function modelSelectionEntries(state) {
@@ -943,38 +1170,38 @@ async function handleModels(args, state) {
   if (args[1] === "all") {
     const names = Object.keys(state.cfg.providers || {});
     if (!names.length) {
-      console.log("models: no configured providers");
+      console.log(`${warnText(icon("warn"))} models: no configured providers`);
       return;
     }
-    console.log(style("syncing all providers...", "dim"));
+    console.log(`  ${muted(icon("arrow"))} syncing all providers...`);
     const results = await syncConfiguredProviderModels(state.cfg, names);
     saveConfig(state.cfg);
     for (const result of results) {
       if (result.ok) {
-        console.log(`models: ${result.provider} synced ${result.remoteCount} remote (${result.totalCount} total)`);
+        console.log(`${successText(icon("check"))} ${muted("models:")} ${result.provider} ${faint("synced")} ${result.remoteCount} ${faint("remote (")}${result.totalCount}${faint(" total)")}`);
       } else {
-        console.log(style(`models: ${result.provider} failed: ${result.error}`, "red"));
+        console.log(`${errorText(icon("cross"))} ${muted("models:")} ${result.provider} ${faint("failed:")} ${error.message ?? result.error}`);
       }
     }
     return;
   }
   if (!state.cfg.activeProvider) {
-    console.log("models: no active provider");
+    console.log(`${warnText(icon("warn"))} models: no active provider`);
     return;
   }
   try {
-    console.log(style("syncing models...", "dim"));
+    console.log(`  ${muted(icon("arrow"))} syncing models...`);
     const result = await syncProviderModels(state.cfg, state.cfg.activeProvider);
     saveConfig(state.cfg);
-    console.log(`models: synced ${result.remoteCount} remote models`);
+    console.log(`${successText(icon("check"))} ${muted("models:")} ${faint("synced")} ${result.remoteCount} ${faint("remote models")}`);
   } catch (error) {
-    console.log(style(`models: ${error.message}`, "red"));
+    console.log(`${errorText(icon("cross"))} ${muted("models:")} ${error.message}`);
   }
 }
 
 function printGoals() {
   const goals = Object.entries(loadState().goals || {}).slice(-10).reverse();
-  printRows("Goals", goals.map(([id, item]) => `${id}  ${item.status || ""}  ${item.text || ""}`));
+  printRows("Goals", goals.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.text || "", 60)}`));
 }
 
 function handleGoal(args) {
@@ -983,19 +1210,19 @@ function handleGoal(args) {
   if (action === "create") {
     const text = [idOrText, ...rest].filter(Boolean).join(" ").trim();
     if (!text) {
-      console.log("Usage: /goal create <goal text>");
+      console.log(`${warnText(icon("warn"))} Usage: /goal create <goal text>`);
       return;
     }
     const id = `goal_${Date.now()}`;
     saved.goals[id] = { text, status: "created", createdAt: new Date().toISOString(), sessions: [] };
     saveState(saved);
-    console.log(`goal: ${id} created`);
+    console.log(`${successText(icon("check"))} ${muted("goal:")} ${id} ${faint("created")}`);
     return;
   }
   if (action === "status") {
     if (idOrText) {
       const goal = saved.goals?.[idOrText];
-      if (!goal) console.log(`goal: no goal ${idOrText}`);
+      if (!goal) console.log(`${warnText(icon("warn"))} goal: no goal ${idOrText}`);
       else printRows(`Goal ${idOrText}`, [`status  ${goal.status || ""}`, `text    ${goal.text || ""}`, `started ${goal.startedAt || ""}`, `done    ${goal.finishedAt || ""}`]);
       return;
     }
@@ -1005,44 +1232,44 @@ function handleGoal(args) {
   if (action === "stop") {
     const id = idOrText;
     if (!id) {
-      console.log("Usage: /goal stop <id>");
+      console.log(`${warnText(icon("warn"))} Usage: /goal stop <id>`);
       return;
     }
     if (!saved.goals?.[id]) {
-      console.log(`goal: no goal ${id}`);
+      console.log(`${warnText(icon("warn"))} goal: no goal ${id}`);
       return;
     }
     saved.goals[id].status = "stopped";
     saved.goals[id].finishedAt = new Date().toISOString();
     saveState(saved);
-    console.log(`goal: ${id} stopped`);
+    console.log(`${successText(icon("check"))} ${muted("goal:")} ${id} ${faint("stopped")}`);
     return;
   }
-  console.log("Usage: /goal <create|status|stop>");
+  console.log(`${warnText(icon("warn"))} Usage: /goal <create|status|stop>`);
 }
 
 function printMissions() {
   const missions = Object.entries(loadState().missions || {}).slice(-10).reverse();
-  printRows("Missions", missions.map(([id, item]) => `${id}  ${item.status || ""}  ${item.name || ""}`));
+  printRows("Missions", missions.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.name || "", 60)}`));
 }
 
 function handleMemory(args) {
   const action = args[0] || "list";
   if (action === "add") {
     const text = args.slice(1).join(" ").trim();
-    if (!text) console.log("Usage: /memory add <note>");
-    else console.log(`memory: added ${addMemory(text).id}`);
+    if (!text) console.log(`${warnText(icon("warn"))} Usage: /memory add <note>`);
+    else console.log(`${successText(icon("check"))} ${muted("memory:")} ${faint("added")} ${addMemory(text).id}`);
     return;
   }
   if (action === "remove") {
     const id = args[1];
-    if (!id) console.log("Usage: /memory remove <id>");
-    else console.log(removeMemory(id) ? "memory: removed" : "memory: not found");
+    if (!id) console.log(`${warnText(icon("warn"))} Usage: /memory remove <id>`);
+    else console.log(removeMemory(id) ? `${successText(icon("check"))} ${muted("memory: removed")}` : `${warnText(icon("warn"))} memory: not found`);
     return;
   }
   const query = args.join(" ");
   const notes = searchMemory(query);
-  printRows("Memory", notes.map((note) => `${note.id}  ${note.text}`));
+  printRows("Memory", notes.map((note) => `${muted(note.id)}  ${note.text}`));
 }
 
 async function handleMission(args, state, rl) {
@@ -1050,26 +1277,27 @@ async function handleMission(args, state, rl) {
   if (action === "report" || action === "status") {
     const id = file;
     if (!id) {
-      console.log(`Usage: /mission ${action} <id>`);
+      console.log(`${warnText(icon("warn"))} Usage: /mission ${action} <id>`);
       return;
     }
     const mission = loadState().missions?.[id];
     if (!mission) {
-      console.log(`mission: no mission ${id}`);
+      console.log(`${warnText(icon("warn"))} mission: no mission ${id}`);
       return;
     }
     console.log(formatMissionReport(id, mission));
     return;
   }
   if (!["dry-run", "run"].includes(action) || !file) {
-    console.log("Usage: /mission <dry-run|run|report|status> <file|id>");
+    console.log(`${warnText(icon("warn"))} Usage: /mission <dry-run|run|report|status> <file|id>`);
     return;
   }
   if (action === "dry-run") {
+    console.log(`${brand(icon("chevronRight"))} ${bold("Mission plan")}`);
     console.log(formatMissionPlan(loadMission(file), state.cfg));
     return;
   }
-  console.log(`mission: running ${file}`);
+  console.log(`  ${muted(icon("arrow"))} mission: running ${faint(file)}`);
   const result = await runMission({
     cfg: state.cfg,
     cwd: state.cwd,
@@ -1077,14 +1305,14 @@ async function handleMission(args, state, rl) {
     confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
     onEvent: state.progress ? progressLine : null
   });
-  console.log(`mission: ${result.missionId} completed`);
-  for (const step of result.outputs) console.log(`\nstep ${step.index}\n${step.output}`);
+  console.log(`${successText(icon("check"))} ${muted("mission:")} ${result.missionId} ${faint("completed")}`);
+  for (const step of result.outputs) console.log(`\n${brand(icon("chevronRight"))} ${bold(`step ${step.index}`)}\n${step.output}`);
 }
 
 function formatMissionReport(id, mission) {
   const lines = [
     "",
-    style(`Mission ${id}`, "cyan"),
+    `${brand(icon("chevronRight"))} ${bold(`Mission ${id}`)}`,
     `name: ${mission.name || ""}`,
     `status: ${mission.status || ""}`,
     `startedAt: ${mission.startedAt || ""}`,
@@ -1100,21 +1328,30 @@ function formatMissionReport(id, mission) {
 
 function printAgents(state) {
   const agents = Object.entries(state.cfg.subagents || {});
-  printRows("Subagents", agents.map(([name, item]) => `${name}  ${item.reasoning || "medium"}  ${item.model || "(active model)"}  ${item.description || ""}`));
+  printRows("Subagents", agents.map(([name, item]) => `${muted(name)}  ${item.reasoning || "medium"}  ${item.model || muted("(active model)")}  ${truncate(item.description || "", 60)}`));
 }
 
 function printProviders(state) {
   const rows = providerNames().map((name) => {
     const preset = providerPreset(name);
     const configured = Boolean(state.cfg.providers?.[name]);
-    const active = state.cfg.activeProvider === name ? "*" : " ";
+    const active = state.cfg.activeProvider === name ? style(icon("bullet"), "success") : muted(icon("circle"));
     const model = state.cfg.providers?.[name]?.model || preset.defaultModel || "";
     const modelCount = configured ? providerModelList(state.cfg, name).length : (preset.models || []).length;
-    return `${active} ${name.padEnd(12)} ${configured ? "configured" : "not configured"}  ${String(modelCount).padStart(2)} models  ${model}`;
+    const configLabel = configured ? successText("configured") : muted("not configured");
+    return { active, name, configLabel, modelCount, model };
   });
-  printRows("Providers", rows);
-  console.log(style("Use /model to choose provider and model together.", "dim"));
-  console.log("");
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Providers")}`);
+  for (const line of renderTable(rows, [
+    { key: "active", label: "" },
+    { key: "name", label: "name" },
+    { key: "configLabel", label: "status" },
+    { key: "modelCount", label: "models" },
+    { key: "model", label: "default" }
+  ])) console.log(`  ${line}`);
+  console.log(`  ${muted(icon("sparkle"))} Use /model to choose provider and model together.`);
+  blank();
 }
 
 function printCredentials(state) {
@@ -1126,27 +1363,42 @@ function printCredentials(state) {
   const rows = names.map((name) => {
     const saved = state.cfg.providers[name] || {};
     const diag = providerDiagnostics(state.cfg, name);
-    const active = state.cfg.activeProvider === name ? "*" : " ";
+    const active = state.cfg.activeProvider === name ? style(icon("bullet"), "success") : muted(icon("circle"));
     const source = saved.apiKey ? `config:${maskSecret(saved.apiKey)}` : `env:${diag.apiKeySource}`;
     const keyStatus = diag.hasApiKey ? source : "missing";
-    return `${active} ${name.padEnd(12)} ${keyStatus.padEnd(22)} ${diag.model}`;
+    return { active, name, keyStatus, model: diag.model };
   });
-  printRows("Credentials", rows);
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Credentials")}`);
+  for (const line of renderTable(rows, [
+    { key: "active", label: "" },
+    { key: "name", label: "name" },
+    { key: "keyStatus", label: "key" },
+    { key: "model", label: "model" }
+  ])) console.log(`  ${line}`);
+  blank();
 }
 
 function printKeys() {
-  printRows("Keyboard", [
-    "Tab        rotate reasoning effort",
-    "Shift+Tab  rotate mode",
-    "Ctrl+C     cancel/exit",
-    "Ctrl+D     submit multiline prompt in command mode"
-  ]);
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Keyboard")}`);
+  const rows = [
+    { key: "Tab", summary: "rotate reasoning effort" },
+    { key: "Shift+Tab", summary: "rotate mode" },
+    { key: "Ctrl+C", summary: "cancel/exit" },
+    { key: "Ctrl+D", summary: "submit multiline prompt in command mode" }
+  ];
+  for (const line of renderTable(rows, [
+    { key: "key", label: "key" },
+    { key: "summary", label: "action" }
+  ])) console.log(`  ${line}`);
+  blank();
 }
 
 async function chooseConfiguredProvider(state, rl) {
   const names = Object.keys(state.cfg.providers || {});
   if (!names.length) {
-    console.log("provider: none configured. Use /login.");
+    console.log(`${warnText(icon("warn"))} provider: none configured. Use /login.`);
     return;
   }
   const selected = await selectFromList({
@@ -1163,16 +1415,16 @@ async function chooseConfiguredProvider(state, rl) {
   state.cfg.activeProvider = selected;
   state.cfg.activeModel = state.cfg.providers[selected].model;
   saveConfig(state.cfg);
-  console.log(`provider: ${selected}/${state.cfg.activeModel}`);
+  console.log(`${successText(icon("check"))} ${muted("provider:")} ${selected}/${state.cfg.activeModel}`);
 }
 
 export async function loginProvider(state, rl) {
   if (!rl) {
-    console.log("Interactive login requires a terminal. Run: azycode login <provider>");
+    console.log(`${warnText(icon("warn"))} Interactive login requires a terminal. Run: azycode login <provider>`);
     return;
   }
   const names = providerNames();
-  console.log("");
+  blank();
   const name = input.isTTY
     ? await selectFromList({
       title: "Connect provider",
@@ -1183,13 +1435,13 @@ export async function loginProvider(state, rl) {
     })
     : names[Number((await rl.question("Choose provider: ")).trim()) - 1];
   if (!name) {
-    console.log("login: cancelled");
+    console.log(`${muted(icon("chevron"))} login: cancelled`);
     return;
   }
   const preset = providerPreset(name);
   const apiKey = (await readSecret(`${name} API key: `, rl)).trim();
   if (!apiKey) {
-    console.log("login: API key is required");
+    console.log(`${warnText(icon("warn"))} login: API key is required`);
     return;
   }
   let baseUrl = preset.baseUrl;
@@ -1198,7 +1450,7 @@ export async function loginProvider(state, rl) {
     baseUrl = (await rl.question("Base URL: ")).trim();
     model = (await rl.question("Default model: ")).trim();
     if (!baseUrl || !model) {
-      console.log("login: BYOK requires base URL and model");
+      console.log(`${warnText(icon("warn"))} login: BYOK requires base URL and model`);
       return;
     }
   }
@@ -1206,9 +1458,9 @@ export async function loginProvider(state, rl) {
   state.cfg.activeProvider = name;
   state.cfg.activeModel = model;
   saveConfig(state.cfg);
-  console.log(`connected: ${name}/${model}`);
-  console.log(`endpoint: ${baseUrl || "(custom)"}`);
-  console.log("next: type a task, or use /status to inspect the active setup");
+  console.log(`${successText(icon("check"))} ${muted("connected:")} ${name}/${infoText(model)}`);
+  console.log(`  ${muted("endpoint:")} ${baseUrl || muted("(custom)")}`);
+  console.log(`  ${muted(icon("sparkle"))} next: type a task, or use /status to inspect the active setup`);
 }
 
 async function readSecret(label, rl) {
@@ -1225,8 +1477,8 @@ async function readSecret(label, rl) {
 async function selectFromList({ title, items, active = null, rl, format = (item) => item }) {
   if (!items.length) return null;
   if (!input.isTTY || !rl) {
-    console.log(style(title, "cyan"));
-    for (const [index, item] of items.entries()) console.log(`  ${index + 1}. ${format(item)}`);
+    console.log(`${brand(icon("chevronRight"))} ${bold(title)}`);
+    for (const [index, item] of items.entries()) console.log(`  ${muted(`${index + 1}.`)} ${format(item)}`);
     const raw = (await rl.question("Choose: ")).trim();
     return items[Number(raw) - 1] || (items.includes(raw) ? raw : null);
   }
@@ -1246,11 +1498,13 @@ async function selectFromList({ title, items, active = null, rl, format = (item)
       }
       moveCursor(output, 0, -(renderedLines - 1));
     }
+    const titleLine = `${brand(icon("chevronRight"))} ${bold(title)}`;
+    const hintLine = muted(`  ${icon("arrowUp")}/${icon("arrowDown")} or j/k  ·  Enter select  ·  Esc cancel`);
     const lines = [
-      style(title, "cyan"),
-      style("Use ↑/↓ or j/k, Enter to select, Esc to cancel", "dim"),
+      titleLine,
+      hintLine,
       ...items.map((item, itemIndex) => {
-        const marker = itemIndex === index ? style("›", "cyan") : " ";
+        const marker = itemIndex === index ? style(icon("chevron"), "brand") : muted(icon("circle"));
         return `  ${marker} ${format(item)}`;
       })
     ];
@@ -1288,9 +1542,9 @@ async function selectFromList({ title, items, active = null, rl, format = (item)
 }
 
 function printRows(label, rows) {
-  console.log("");
-  console.log(style(label, "cyan"));
-  if (!rows.length) console.log("  (none)");
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold(label)}`);
+  if (!rows.length) console.log(`  ${muted(icon("circle"))} (none)`);
   else for (const row of rows) console.log(`  ${row}`);
-  console.log("");
+  blank();
 }
