@@ -35,6 +35,25 @@ azycode completion zsh
 azycode report
 ```
 
+## Improvements Since Initial Audit
+
+| Improvement | Evidence |
+| --- | --- |
+| LLM fetch timeout + retry with exponential backoff | `src/llm.js`: `fetchWithTimeout` and `fetchWithRetry`; env `AZYCODE_REQUEST_TIMEOUT_MS` |
+| Config/state/todos in-memory caching with mtime invalidation | `src/config.js`: `_configCache`, `_stateCache`, `_todosCache` |
+| Config validation normalizes invalid values to safe defaults | `src/config.js`: `validateConfig` |
+| Centralized logger with levels and env control | `src/logger.js`: `debug/info/warn/error`; env `AZYCODE_LOG_LEVEL` and `AZYCODE_DEBUG` |
+| CLI `--version` / `-v` flag | `src/cli.js`: `--version` handler |
+| Expanded local-review security heuristics | `src/local-review.js`: eval, innerHTML, child_process.exec, TODO/FIXME detection |
+| Tighter git branch name validation | `src/guard.js`: `validateBranchName` rejects refspec characters |
+| Agent runtime logging for errors and step limits | `src/agent.js`: logger integration in tool failures and step-limit paths |
+| Input validation on tools (positive bounds for numeric params) | `src/tools.js`: `Math.max(1, ...)` on `maxBytes`, `timeoutMs`, `depth` |
+| Input validation on skills/subagents (length limits) | `src/skills.js` and `src/subagents.js`: 64-char name, 200-char description, 10000-char text/system limits |
+| Mission YAML parser line-numbered errors | `src/missions.js`: `parseTinyYaml` throws with line numbers |
+| Async context pack to reduce blocking IO | `src/context.js`: `fs.promises.readFile` in `contextPack` |
+| Hardened error boundaries in CLI entrypoint | `bin/azycode.js`: `uncaughtException` and `unhandledRejection` handlers |
+| Package metadata enriched | `package.json`: keywords, repository, bugs, homepage |
+
 ## Known Provider Limits
 
 ChatGPT web subscriptions are not API credentials. Azycode can use API keys or OpenAI-compatible subscription endpoints when the provider exposes them. Remaining quota is not standardized across OpenAI-compatible APIs, so `status` reports live connectivity and documented quota notes where available, while exact remaining limits may still require the provider dashboard.
