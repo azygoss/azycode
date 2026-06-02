@@ -58,6 +58,8 @@ import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { contextPack, formatContextPack } from "./context.js";
 import { toolCatalog } from "./tools.js";
+import { createAgentProgress, hasActiveProvider, runtimeSnapshot } from "./harness.js";
+import { createPromptSession, normalizeTabKey } from "./terminal-input.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
@@ -84,6 +86,10 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     subagent: null
   };
   printWelcome(state);
+  const promptSession = createPromptSession({
+    output,
+    getPrompt: () => promptLabel(state, { styled: false })
+  });
 
   if (!input.isTTY) {
     const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
@@ -103,7 +109,7 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
   const rl = readlinePromises.createInterface({ input, output, completer: (line) => completeTuiInput(line, state) });
   emitKeypressEvents(input, rl);
 
-  const onKeypress = (_, key) => handleKeypress(key, state, rl);
+  const onKeypress = (_, key) => handleKeypress(key, state, rl, promptSession);
   input.on("keypress", onKeypress);
   try {
     while (true) {
@@ -160,6 +166,9 @@ function printWelcome(state) {
   for (const line of shortcuts) {
     console.log(`  ${padEnd(line, W - 2)}`);
   }
+  if (!hasActiveProvider(state.cfg)) {
+    console.log(`  ${warnText(icon("warn"))} ${muted("No provider connected — type")} ${subtle("/login")} ${muted("to start.")}`);
+  }
   blank();
 }
 
@@ -177,11 +186,7 @@ export function promptLabel(state, { styled = true } = {}) {
   return `${status}  ${cursor} `;
 }
 
-export function normalizeTabKey(key) {
-  if (!key) return key;
-  if (key.name === "backtab") return { ...key, name: "tab", shift: true };
-  return key;
-}
+export { normalizeTabKey } from "./terminal-input.js";
 
 export function applyShortcut(key, state, options = {}) {
   key = normalizeTabKey(key);
@@ -189,7 +194,7 @@ export function applyShortcut(key, state, options = {}) {
   if (state.acceptingInput === false && options.force !== true) return;
   if (options.rl?.line?.startsWith("/")) return;
   const persist = options.persist !== false;
-  const notify = options.notify || (() => refreshPrompt(options.rl, state));
+  const notify = options.notify || (() => options.promptSession?.refreshPrompt(options.rl));
   if (key.shift) {
     state.mode = rotateMode(state.mode);
     state.cfg.mode = state.mode;
@@ -202,13 +207,10 @@ export function applyShortcut(key, state, options = {}) {
   }
 }
 
-function handleKeypress(key, state, rl) {
-  key = normalizeTabKey(key);
-  if (key?.name === "tab") {
-    applyShortcut(key, state, { rl });
-    stripTrailingTab(rl, state);
-    return;
-  }
+function handleKeypress(key, state, rl, promptSession) {
+  if (promptSession?.handleTabKeypress(key, rl, (tabKey) => {
+    applyShortcut(tabKey, state, { rl, promptSession });
+  })) return;
   if (key?.sequence !== "/") {
     if (rl.line !== "/") state.commandPaletteShown = false;
     return;
@@ -218,92 +220,18 @@ function handleKeypress(key, state, rl) {
     state.commandPaletteShown = true;
     output.write("\n");
     printCommandPalette(state);
-    redrawPrompt(rl, state);
+    promptSession?.refreshPrompt(rl);
   }, 0);
 }
 
-// Remove the trailing tab character that readline appended when the user
-// pressed Tab. We cannot rely on rl.write(null, { name: "backspace" }) in
-// every Node.js build (it is async in some, and races the keypress pipeline
-// in others), so we set rl.line and rl.cursor directly and ask readline to
-// re-render. This keeps the user's typed text untouched and the cursor in
-// the right place.
+export { findUnderlyingInterface } from "./terminal-input.js";
+
 export function stripTrailingTab(rl, state) {
-  if (!rl || typeof rl.line !== "string") return;
-  if (rl.line.endsWith("\t")) {
-    const next = rl.line.slice(0, -1);
-    try {
-      rl.line = next;
-    } catch {
-      return;
-    }
-    if (typeof rl.cursor === "number" && rl.cursor > 0) rl.cursor -= 1;
-  }
-  refreshPrompt(rl, state);
-}
-
-function redrawPrompt(rl, state) {
-  refreshPrompt(rl, state);
-}
-
-function tuiStream(rl) {
-  return rl?.output ?? output;
-}
-
-function isTuiStream(rl) {
-  return Boolean(tuiStream(rl)?.isTTY);
-}
-
-function syncReadlinePrompt(rl, state) {
-  const prompt = promptLabel(state, { styled: false });
-  if (typeof rl?._prompt === "string") rl._prompt = prompt;
-  for (const sym of Object.getOwnPropertySymbols(rl || {})) {
-    if (String(sym).includes("_prompt")) {
-      try { rl[sym] = prompt; } catch { /* ignore */ }
-    }
-  }
-  return prompt;
-}
-
-function refreshPrompt(rl, state) {
-  if (!rl) return;
-  syncReadlinePrompt(rl, state);
-  if (!isTuiStream(rl)) return;
-  const target = findUnderlyingInterface(rl);
-  if (typeof target?._refreshLine === "function") {
-    target._refreshLine();
-    return;
-  }
-  paintPromptLine(rl, state);
-}
-
-// readline/promises.Interface wraps the standard readline.Interface and stores
-// it under a private Symbol. The wrapper does not expose _ttyWrite / _refreshLine
-// directly, so we look for the first symbol-keyed property that does. Without
-// this, attempting to override Tab handling or refresh the prompt would either
-// be a no-op or throw "Cannot read properties of undefined (reading 'bind')".
-export function findUnderlyingInterface(rl) {
-  if (!rl) return null;
-  if (typeof rl._ttyWrite === "function") return rl;
-  for (const sym of Object.getOwnPropertySymbols(rl)) {
-    let val;
-    try { val = rl[sym]; } catch { continue; }
-    if (val && typeof val._ttyWrite === "function") return val;
-  }
-  return null;
-}
-
-function paintPromptLine(rl, state) {
-  const stream = tuiStream(rl);
-  if (!stream?.isTTY) return;
-  const line = rl?.line || "";
-  const cursor = rl?.cursor ?? line.length;
-  const prompt = syncReadlinePrompt(rl, state);
-  clearLine(stream, 0);
-  cursorTo(stream, 0);
-  stream.write(prompt);
-  stream.write(line);
-  cursorTo(stream, visibleLength(prompt) + cursor);
+  const session = createPromptSession({
+    output,
+    getPrompt: () => promptLabel(state, { styled: false })
+  });
+  session.stripTrailingTab(rl);
 }
 
 function paintInlineOverlay(rl, state, message) {
@@ -361,12 +289,27 @@ function tuiArgCandidates(command, fixedArgs, state) {
 }
 
 async function askAgent(prompt, state, rl = null) {
-  if (!state.cfg.activeProvider) {
-    console.log(warnText(`${icon("warn")}  No provider configured. Run `) + code("azycode login <provider>") + warnText(" in another terminal, then restart."));
+  if (!hasActiveProvider(state.cfg)) {
+    blank();
+    for (const line of box([
+      `${warnText(icon("warn"))} ${bold("Provider required")}`,
+      "",
+      `${muted("Connect a model provider before running tasks.")}`,
+      `${muted("In this workspace, type")} ${subtle("/login")} ${muted("and follow the prompts.")}`
+    ], { width: PANEL_WIDTH, frame: AGENT_BORDER, title: "setup" })) {
+      console.log(line);
+    }
     blank();
     return;
   }
   const spinner = state.progress ? startSpinner({ label: `thinking  ${truncate(prompt, 36)}`, stream: output, isTTY: output.isTTY }) : null;
+  const onEvent = state.progress
+    ? createAgentProgress({
+      spinner,
+      log: !spinner,
+      onLine: (text) => console.log(muted(`  ${icon("chevronRight")} ${text}`))
+    })
+    : null;
   try {
     const result = await runAgent({
       cfg: state.cfg,
@@ -374,7 +317,7 @@ async function askAgent(prompt, state, rl = null) {
       prompt,
       mode: state.mode,
       includeContext: state.includeContext,
-      onEvent: state.progress ? progressLine : null,
+      onEvent,
       conversation: state.conversation,
       returnSession: true,
       confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
@@ -403,15 +346,6 @@ function renderAssistantContent(content) {
 async function confirmInTui(rl, question) {
   const answer = (await rl.question(`${warnText(icon("warn") + "  " + question)} ${muted("[y/n]")} (n): `)).trim().toLowerCase();
   return answer === "y" || answer === "yes" || answer === "evet" || answer === "e";
-}
-
-function progressLine(event) {
-  if (event.type === "model_start") console.log(muted(`  ${icon("chevronRight")} model step ${event.step}`));
-  else if (event.type === "tool_start") console.log(muted(`  ${icon("arrow")} tool  ${event.tool}`));
-  else if (event.type === "tool_end") {
-    const symbol = event.ok ? successText(icon("check")) : errorText(icon("cross"));
-    console.log(`  ${symbol} ${muted(event.tool)} ${faint(prettyMs(event.durationMs))}`);
-  }
 }
 
 async function handleCommand(line, state, rl = null) {
@@ -1303,7 +1237,9 @@ async function handleMission(args, state, rl) {
     cwd: state.cwd,
     file,
     confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
-    onEvent: state.progress ? progressLine : null
+    onEvent: state.progress
+      ? createAgentProgress({ log: true, onLine: (text) => console.log(muted(`  ${icon("chevronRight")} ${text}`)) })
+      : null
   });
   console.log(`${successText(icon("check"))} ${muted("mission:")} ${result.missionId} ${faint("completed")}`);
   for (const step of result.outputs) console.log(`\n${brand(icon("chevronRight"))} ${bold(`step ${step.index}`)}\n${step.output}`);

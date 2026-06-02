@@ -5,6 +5,7 @@ import { createTools } from "./tools.js";
 import { id, loadState, saveState } from "./config.js";
 import { searchMemory } from "./memory.js";
 import { contextPack, formatContextPack } from "./context.js";
+import { summarizeToolArgs } from "./harness.js";
 
 export function systemForMode(mode) {
   const base = [
@@ -80,7 +81,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       }
       const args = parsed.value;
       const selected = toolMap[name];
-      emit({ type: "tool_start", step: step + 1, tool: name });
+      emit({ type: "tool_start", step: step + 1, tool: name, summary: summarizeToolArgs(name, args) });
       const startedAt = Date.now();
       let content;
       let ok = true;

@@ -21,6 +21,7 @@ import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
 import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
 import { launchTui } from "./tui.js";
+import { formatAgentEvent, runtimeSnapshot } from "./harness.js";
 
 const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -253,34 +254,33 @@ function providers() {
 
 function dashboard() {
   const cfg = loadConfig();
-  const state = loadState();
-  const guardState = gitGuard(process.cwd(), cfg);
-  const policy = cfg.toolPolicy || {};
-  const autoTools = Object.values(policy).filter((value) => value === "auto").length;
-  const askTools = Object.values(policy).filter((value) => value === "ask").length;
-  const deniedTools = Object.values(policy).filter((value) => value === "deny").length;
+  const snap = runtimeSnapshot(cfg, process.cwd());
 
   console.log("");
   console.log(`${bold("Azycode Dashboard")}  ${muted("·")}  ${muted("local overview")}`);
   console.log(rule(64, { char: "─", color: "rule" }));
   const overview = [
-    ["mode", cfg.mode],
-    ["reasoning", cfg.reasoning],
-    ["provider", cfg.activeProvider || "(none)"],
-    ["model", cfg.activeModel || "(none)"],
-    ["always approve", badge(cfg.alwaysApprove || cfg.mode === "always-approve")],
-    ["git guard", `${statusDot(guardState.ok ? "ok" : "blocked")} ${badge(guardState.ok ? "ok" : "blocked")}`]
+    ["mode", snap.mode],
+    ["reasoning", snap.reasoning],
+    ["provider", snap.provider || "(none)"],
+    ["model", snap.model || "(none)"],
+    ["provider ready", badge(snap.providerReady ? "ok" : "missing")],
+    ["always approve", badge(snap.alwaysApprove ? "on" : "off")],
+    ["git guard", `${statusDot(snap.guard.ok ? "ok" : "blocked")} ${badge(snap.guard.ok ? "ok" : "blocked")}`]
   ];
   for (const row of keyValueList(overview)) console.log(`  ${row}`);
-  if (!guardState.ok) console.log(`  ${muted("guard reason")}  ${warnText(guardState.reason)}`);
+  if (!snap.guard.ok) console.log(`  ${muted("guard reason")}  ${warnText(snap.guard.reason)}`);
+  if (!snap.providerReady) {
+    console.log(`  ${warnText("Connect a provider:")} ${code("azycode login <provider>")}`);
+  }
 
   console.log("");
   console.log(`${brand(icon("chevronRight"))} ${bold("State")}`);
   for (const line of renderTable([
-    { item: "sessions", count: Object.keys(state.sessions || {}).length },
-    { item: "goals", count: Object.keys(state.goals || {}).length },
-    { item: "missions", count: Object.keys(state.missions || {}).length },
-    { item: "tool runs", count: (state.toolRuns || []).length }
+    { item: "sessions", count: snap.counts.sessions },
+    { item: "goals", count: snap.counts.goals },
+    { item: "missions", count: snap.counts.missions },
+    { item: "tool runs", count: snap.counts.toolRuns }
   ], [
     { key: "item", label: "item" },
     { key: "count", label: "count" }
@@ -289,9 +289,9 @@ function dashboard() {
   console.log("");
   console.log(`${brand(icon("chevronRight"))} ${bold("Tool policy")}`);
   for (const line of renderTable([
-    { policy: "auto", count: autoTools, color: "success" },
-    { policy: "ask", count: askTools, color: "warn" },
-    { policy: "deny", count: deniedTools, color: "error" }
+    { policy: "auto", count: snap.policy.auto },
+    { policy: "ask", count: snap.policy.ask },
+    { policy: "deny", count: snap.policy.deny }
   ], [
     { key: "policy", label: "policy" },
     { key: "count", label: "count" }
@@ -1210,11 +1210,8 @@ function parseBoolean(value) {
 
 function progressPrinter() {
   return (event) => {
-    if (event.type === "model_start") console.error(`[${event.sessionId}] step ${event.step}: model ${event.model || "(active)"}`);
-    else if (event.type === "model_end") console.error(`[${event.sessionId}] step ${event.step}: ${event.toolCalls} tool call(s)`);
-    else if (event.type === "tool_start") console.error(`[${event.sessionId}] step ${event.step}: tool ${event.tool}`);
-    else if (event.type === "tool_end") console.error(`[${event.sessionId}] step ${event.step}: tool ${event.tool} ${event.ok ? "ok" : "failed"} ${event.durationMs}ms`);
-    else if (event.type === "final") console.error(`[${event.sessionId}] final`);
+    const line = formatAgentEvent(event, { style: "cli" });
+    if (line) console.error(line);
   };
 }
 
