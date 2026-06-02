@@ -39,6 +39,14 @@ async function runAgentSafe(options) {
   } catch (error) {
     if (error instanceof AgentStepLimitError) {
       console.error(error.message);
+    } else if (error.message?.includes("No active provider")) {
+      console.error("No active provider configured. Run 'azycode login <provider>' first.");
+    } else if (error.message?.includes("API key") || error.message?.includes("apiKey")) {
+      console.error(`API key issue: ${error.message}. Check your provider credentials with 'azycode doctor'.`);
+    } else if (error.message?.includes("TimeoutError") || error.message?.includes("timeout")) {
+      console.error(`Request timed out: ${error.message}. Increase AZYCODE_REQUEST_TIMEOUT_MS or check provider status.`);
+    } else if (error.message?.includes("fetch failed") || error.message?.includes("ECONNREFUSED")) {
+      console.error(`Network error: ${error.message}. Check your internet connection and provider endpoint.`);
     } else {
       console.error(`Agent error: ${error.message}`);
     }
