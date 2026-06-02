@@ -64,7 +64,7 @@ export function defaultConfig() {
     subagents: defaultSubagents(),
     permissionProfile: "normal",
     gitGuard: {
-      enabled: true,
+      enabled: false,
       blockBranches: ["main", "master"],
       requireClean: false
     },
@@ -86,6 +86,7 @@ export function defaultConfig() {
       delete_path: "ask",
       apply_patch: "ask",
       git_diff: "auto",
+      git_checkout: "auto",
       todo: "auto",
       set_mode: "auto"
     }

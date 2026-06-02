@@ -54,6 +54,7 @@ export function summarizeToolArgs(tool, args = {}) {
   if (args.path) return String(args.path);
   if (args.file) return String(args.file);
   if (args.command) return String(args.command).slice(0, 72);
+  if (args.branch) return String(args.branch).slice(0, 72);
   if (args.query) return String(args.query).slice(0, 72);
   if (Array.isArray(args.paths) && args.paths.length) return `${args.paths.length} paths`;
   if (args.pattern) return String(args.pattern).slice(0, 72);

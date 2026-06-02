@@ -92,6 +92,25 @@ test("alwaysApprove does not bypass git guard", async () => {
   await assert.rejects(() => deletePath.run({ path: "x.txt" }), /blocked/);
 });
 
+test("git_checkout escapes git guard on protected branch", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "main"], { cwd: dir, stdio: "ignore" });
+  const cfg = {
+    alwaysApprove: true,
+    toolPolicy: {},
+    gitGuard: { enabled: true, blockBranches: ["main"], requireClean: false }
+  };
+  const tools = createTools({ cwd: dir, cfg });
+  const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  const shell = byName.shell;
+  await assert.rejects(() => shell.run({ command: "echo hi" }), /blocked/);
+
+  const out = await byName.git_checkout.run({ branch: "feature/website", create: true });
+  assert.match(out, /feature\/website/);
+  assert.match(await byName.write_file.run({ file: "index.html", content: "<html></html>" }), /index\.html/);
+});
+
 test("ask policy can use a TUI confirmation callback", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   const questions = [];

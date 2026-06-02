@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { confirm } from "./prompt.js";
-import { gitGuard } from "./guard.js";
+import { gitGuard, validateBranchName } from "./guard.js";
 import { runTodoAction } from "./todos.js";
 
 const execFileAsync = promisify(execFile);
@@ -214,6 +214,23 @@ export function createTools({ cwd = process.cwd(), cfg, resolveCfg = null, confi
       const spec = file ? `${rev}:${path.relative(root, safePath(root, file))}` : rev;
       const { stdout } = await execFileAsync("git", ["show", "--stat", "--patch", spec], { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 8 });
       return stdout || "(no output)";
+    }),
+    tool("git_checkout", "Switch or create a git branch. Works on gitGuard-protected branches (unlike shell). Use create:true to run git checkout -b.", {
+      type: "object",
+      properties: {
+        branch: { type: "string" },
+        create: { type: "boolean" }
+      },
+      required: ["branch"]
+    }, async ({ branch, create = false }) => {
+      const name = validateBranchName(branch);
+      const args = create ? ["checkout", "-b", name] : ["checkout", name];
+      const { stdout, stderr } = await execFileAsync("git", args, { cwd: root, timeout: 20000, maxBuffer: 1024 * 1024 * 2 });
+      const guard = gitGuard(root, policySource());
+      const hint = guard.ok
+        ? "Write and shell tools are allowed on this branch."
+        : `Still on a protected branch (${guard.reason}). Pick a non-blocked branch name.`;
+      return [stdout, stderr, hint].filter(Boolean).join("\n").trim() || `checked out ${name}`;
     }),
     tool("shell", "Run a shell command in the workspace. Use for tests and build commands.", {
       type: "object",

@@ -17,7 +17,7 @@ export function systemForMode(mode) {
     "Use bounded tools deliberately: prefer search/list/file_info before broad reads, use read_file line ranges for large files, and use search maxResults/contextLines to keep context small.",
     "Use the todo tool to track multi-step work. Use set_mode when the task phase changes: switch to plan before large or risky changes, then switch back to always-approve or goal to implement.",
     "Do not claim a file changed unless a write/edit/copy/move/delete/apply_patch/shell tool actually changed it.",
-    "Respect tool policy and git guard. If a write-like tool is rejected or blocked, explain the blocker and continue with safe inspection when useful.",
+    "Respect tool policy and git guard when enabled. If writes or shell are blocked on a protected branch, use git_checkout with create:true to switch branches, then continue.",
     "When editing, preserve existing style and avoid unrelated refactors. When reviewing, lead with concrete defects and cite files, commands, or evidence.",
     "Before final output, summarize what changed, what was verified, and any remaining risk or unrun checks."
   ].join("\n");

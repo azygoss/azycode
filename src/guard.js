@@ -34,3 +34,12 @@ function git(args, cwd) {
     return "";
   }
 }
+
+/** Branch names safe for git checkout -b / checkout. */
+export function validateBranchName(name) {
+  const branch = String(name || "").trim();
+  if (!branch || branch.includes("..") || branch.startsWith("-") || /[\s\x00]/.test(branch)) {
+    throw new Error("Invalid branch name.");
+  }
+  return branch;
+}

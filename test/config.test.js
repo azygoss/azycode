@@ -40,6 +40,7 @@ test("loadConfig merges new default tool policies into old config files", async 
   assert.equal(cfg.toolPolicy.shell, "deny");
   assert.equal(cfg.toolPolicy.apply_patch, "ask");
   assert.equal(cfg.toolPolicy.git_diff, "auto");
+  assert.equal(cfg.toolPolicy.git_checkout, "auto");
   assert.equal(cfg.toolPolicy.read_many_files, "auto");
   assert.equal(cfg.toolPolicy.delete_path, "ask");
   assert(cfg.subagents.planner);
