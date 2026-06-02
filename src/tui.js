@@ -221,6 +221,19 @@ function handleKeypress(key, state, rl, promptSession) {
   if (promptSession?.handleTabKeypress(key, rl, (tabKey) => {
     applyShortcut(tabKey, state, { rl, promptSession });
   })) return;
+  if (key?.name === "escape" && state.commandPaletteShown) {
+    state.commandPaletteShown = false;
+    clearLine(output, 0);
+    cursorTo(output, 0);
+    promptSession?.refreshPrompt(rl);
+    return;
+  }
+  if (key?.ctrl && key?.name === "l") {
+    output.write("\x1Bc");
+    printWelcome(state);
+    promptSession?.refreshPrompt(rl);
+    return;
+  }
   if (key?.sequence !== "/") {
     if (rl.line !== "/") state.commandPaletteShown = false;
     return;
