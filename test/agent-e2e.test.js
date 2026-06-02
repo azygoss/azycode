@@ -4,7 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { runAgent } from "../src/agent.js";
+import { runAgent, systemForMode } from "../src/agent.js";
 import { runMission } from "../src/missions.js";
 
 function mockChatServer(handler) {
@@ -61,6 +61,15 @@ function cfgFor(port) {
     }
   };
 }
+
+test("system prompts describe tool discipline and mode behavior", () => {
+  const plan = systemForMode("plan");
+  assert.match(plan, /Use bounded tools deliberately/);
+  assert.match(plan, /Do not modify files/);
+  const review = systemForMode("review");
+  assert.match(review, /strict code reviewer/);
+  assert.match(review, /security risks/);
+});
 
 test("runAgent performs real tool-call write and records a session", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));

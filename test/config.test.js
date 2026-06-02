@@ -43,6 +43,9 @@ test("loadConfig merges new default tool policies into old config files", async 
   assert.equal(cfg.toolPolicy.read_many_files, "auto");
   assert.equal(cfg.toolPolicy.delete_path, "ask");
   assert(cfg.subagents.planner);
+  assert.match(cfg.subagents.planner.system, /Do not modify files/);
+  assert.match(cfg.subagents.reviewer.system, /Lead with actionable findings/);
+  assert.match(cfg.subagents.implementer.system, /bounded read\/search/);
   assert(cfg.subagents.custom);
 });
 
