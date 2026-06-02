@@ -138,6 +138,29 @@ export function defaultSubagents() {
   };
 }
 
+const KNOWN_TOOL_NAMES = new Set([
+  "list_files", "read_file", "read_many_files", "file_info", "search",
+  "make_dir", "write_file", "edit_file", "copy_path", "move_path", "delete_path",
+  "apply_patch", "git_diff", "git_status", "git_log", "git_show", "git_checkout",
+  "shell", "todo", "set_mode"
+]);
+const KNOWN_PROFILES = new Set(["normal", "read-only", "safe-write", "full-auto"]);
+
+let _configCache = null;
+let _configMtime = 0;
+let _stateCache = null;
+let _stateMtime = 0;
+let _todosCache = null;
+let _todosMtime = 0;
+
+function fileMtime(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 export function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -147,18 +170,52 @@ export function readJson(file, fallback) {
   }
 }
 
+export function validateConfig(cfg) {
+  const defaults = defaultConfig();
+  if (!MODES.includes(cfg.mode)) {
+    cfg.mode = defaults.mode;
+  }
+  if (!REASONING_LEVELS.includes(cfg.reasoning)) {
+    cfg.reasoning = defaults.reasoning;
+  }
+  if (!KNOWN_PROFILES.has(cfg.permissionProfile)) {
+    cfg.permissionProfile = defaults.permissionProfile;
+  }
+  const policy = cfg.toolPolicy || {};
+  for (const key of Object.keys(policy)) {
+    if (!KNOWN_TOOL_NAMES.has(key)) {
+      delete policy[key];
+    } else if (!["auto", "ask", "deny"].includes(policy[key])) {
+      policy[key] = "ask";
+    }
+  }
+  cfg.providers ||= {};
+  cfg.subagents ||= {};
+  cfg.skills ||= {};
+  cfg.gitGuard ||= { ...defaults.gitGuard };
+  return cfg;
+}
+
 export function loadConfig() {
   ensureHome();
+  const cPath = configPath();
+  const mtime = fileMtime(cPath);
+  if (_configCache && _configMtime === mtime) {
+    return structuredClone ? structuredClone(_configCache) : JSON.parse(JSON.stringify(_configCache));
+  }
   const defaults = defaultConfig();
-  const saved = readJson(configPath(), {});
+  const saved = readJson(cPath, {});
   const cfg = { ...defaults, ...saved };
   cfg.providers ||= {};
   cfg.subagents = { ...defaults.subagents, ...(saved.subagents || {}) };
   cfg.skills = { ...defaults.skills, ...(saved.skills || {}) };
   cfg.gitGuard = { ...defaults.gitGuard, ...(saved.gitGuard || {}) };
   cfg.toolPolicy = { ...defaults.toolPolicy, ...(saved.toolPolicy || {}) };
+  validateConfig(cfg);
   applyPermissionProfile(cfg);
-  return cfg;
+  _configCache = cfg;
+  _configMtime = mtime;
+  return structuredClone ? structuredClone(cfg) : JSON.parse(JSON.stringify(cfg));
 }
 
 export function saveConfig(cfg) {
@@ -166,16 +223,25 @@ export function saveConfig(cfg) {
   const tmp = `${configPath()}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, configPath());
+  _configCache = null;
+  _configMtime = 0;
 }
 
 export function loadState() {
   ensureHome();
-  const state = readJson(statePath(), { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] });
+  const sPath = statePath();
+  const mtime = fileMtime(sPath);
+  if (_stateCache && _stateMtime === mtime) {
+    return structuredClone ? structuredClone(_stateCache) : JSON.parse(JSON.stringify(_stateCache));
+  }
+  const state = readJson(sPath, { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] });
   state.sessions ||= {};
   state.goals ||= {};
   state.missions ||= {};
   state.toolRuns ||= [];
-  return state;
+  _stateCache = state;
+  _stateMtime = mtime;
+  return structuredClone ? structuredClone(state) : JSON.parse(JSON.stringify(state));
 }
 
 export function saveState(state) {
@@ -183,10 +249,20 @@ export function saveState(state) {
   const tmp = `${statePath()}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, statePath());
+  _stateCache = null;
+  _stateMtime = 0;
 }
 
 export function loadTodos() {
-  return readJson(todosPath(), {});
+  const tPath = todosPath();
+  const mtime = fileMtime(tPath);
+  if (_todosCache && _todosMtime === mtime) {
+    return structuredClone ? structuredClone(_todosCache) : JSON.parse(JSON.stringify(_todosCache));
+  }
+  const todos = readJson(tPath, {});
+  _todosCache = todos;
+  _todosMtime = mtime;
+  return structuredClone ? structuredClone(todos) : JSON.parse(JSON.stringify(todos));
 }
 
 export function saveTodos(todos) {
@@ -194,6 +270,8 @@ export function saveTodos(todos) {
   const tmp = `${todosPath()}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(todos, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, todosPath());
+  _todosCache = null;
+  _todosMtime = 0;
 }
 
 export function maskSecret(value) {
