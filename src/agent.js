@@ -41,15 +41,21 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   };
   const tools = createTools({ cwd, resolveCfg, confirmTool, modeRuntime });
   const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+
+  // Cache expensive static parts of the system message so rebuilds (mode/todo changes) are cheap.
+  const projectRules = loadProjectRules(cwd);
+  const relevantMemory = loadRelevantMemory(prompt);
+  const contextPackStr = includeContext ? loadContextPack(cwd) : "";
+
   const buildSystemContent = () => [
     subagent?.system || systemForMode(modeRuntime.getMode()),
     stepLimit
       ? `Run budget: at most ${stepLimit} model steps. Track work with todo and finish with a final answer before the limit.`
       : "No step cap in this run: continue with todo tracking until the task is complete, then return a final answer instead of looping on tools.",
-    loadProjectRules(cwd),
-    loadRelevantMemory(prompt),
+    projectRules,
+    relevantMemory,
     formatActiveTodos(cwd),
-    includeContext ? loadContextPack(cwd) : ""
+    contextPackStr
   ].filter(Boolean).join("\n\n");
   const messages = [
     { role: "system", content: buildSystemContent() },
@@ -66,6 +72,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
 
   const pendingToolRuns = [];
   let pendingSession = null;
+  let sessionRecorded = false;
 
   function recordToolRun(run) {
     pendingToolRuns.push({ ...run, at: new Date().toISOString(), content: String(run.content).slice(0, 2000) });
@@ -73,6 +80,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
 
   function recordSession(sessionId, session) {
     pendingSession = { sessionId, session: { ...session, createdAt: new Date().toISOString() } };
+    sessionRecorded = true;
   }
 
   function flushState() {
@@ -90,37 +98,7 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     pendingSession = null;
   }
 
-  emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
-
-  try {
-    for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
-    const activeMode = modeRuntime.getMode();
-    emit({ type: "model_start", step, maxSteps: stepLimit, model: activeModel, mode: activeMode });
-    const completion = await client.chat({
-      messages,
-      tools,
-      model: activeModel,
-      reasoning: subagent?.reasoning || cfg.reasoning
-    });
-    const message = assistantMessageFromCompletion(completion);
-    if (!message) throw new Error("Provider returned no assistant message.");
-    messages.push(message);
-    const calls = message.tool_calls || [];
-    emit({
-      type: "model_end",
-      step,
-      maxSteps: stepLimit,
-      toolCalls: calls.length,
-      tools: calls.map((call) => call.function?.name).filter(Boolean)
-    });
-    if (!calls.length) {
-      emit({ type: "final", step, maxSteps: stepLimit });
-      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
-      flushState();
-      const content = message.content || "";
-      return returnSession ? { content, sessionId, messages } : content;
-    }
-
+  async function executeToolCalls(calls, step) {
     for (const call of calls) {
       const name = call.function?.name;
       const rawArgs = call.function?.arguments || "{}";
@@ -156,46 +134,83 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
         content: String(content).slice(0, 120000)
       });
     }
-
-    const hadTodo = calls.some((call) => call.function?.name === "todo");
-    const nextMode = modeRuntime.consumeModeChange();
-    if (nextMode || hadTodo) {
-      messages[0] = { role: "system", content: buildSystemContent() };
-      if (nextMode) emit({ type: "mode_change", step, mode: nextMode });
-    }
   }
 
-  if (messages[messages.length - 1]?.role === "tool") {
-    const finalStep = stepLimit + 1;
-    emit({ type: "model_start", step: finalStep, maxSteps: stepLimit, model: activeModel, mode: modeRuntime.getMode() });
-    const completion = await client.chat({
-      messages,
-      tools,
-      model: activeModel,
-      reasoning: subagent?.reasoning || cfg.reasoning
-    });
-    const message = assistantMessageFromCompletion(completion);
-    if (message) {
+  emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
+
+  try {
+    for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
+      const activeMode = modeRuntime.getMode();
+      emit({ type: "model_start", step, maxSteps: stepLimit, model: activeModel, mode: activeMode });
+      const completion = await client.chat({
+        messages,
+        tools,
+        model: activeModel,
+        reasoning: subagent?.reasoning || cfg.reasoning
+      });
+      const message = assistantMessageFromCompletion(completion);
+      if (!message) throw new Error("Provider returned no assistant message.");
       messages.push(message);
-      const finalCalls = message.tool_calls || [];
-      emit({ type: "model_end", step: finalStep, maxSteps: stepLimit, toolCalls: finalCalls.length, tools: finalCalls.map((call) => call.function?.name).filter(Boolean) });
-      if (!finalCalls.length) {
-        emit({ type: "final", step: finalStep, maxSteps: stepLimit });
+      const calls = message.tool_calls || [];
+      emit({
+        type: "model_end",
+        step,
+        maxSteps: stepLimit,
+        toolCalls: calls.length,
+        tools: calls.map((call) => call.function?.name).filter(Boolean)
+      });
+      if (!calls.length) {
+        emit({ type: "final", step, maxSteps: stepLimit });
         recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
         flushState();
         const content = message.content || "";
         return returnSession ? { content, sessionId, messages } : content;
       }
-    }
-  }
 
-  const partialContent = lastAssistantContent(messages);
-  emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
-  recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
-  flushState();
-  throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
+      await executeToolCalls(calls, step);
+
+      const hadTodo = calls.some((call) => call.function?.name === "todo");
+      const nextMode = modeRuntime.consumeModeChange();
+      if (nextMode || hadTodo) {
+        messages[0] = { role: "system", content: buildSystemContent() };
+        if (nextMode) emit({ type: "mode_change", step, mode: nextMode });
+      }
+    }
+
+    // Bonus turn: if the last model response had tool_calls, give the model one more turn
+    // to see the tool results. If it asks for more tools, execute them, then stop.
+    if (messages[messages.length - 1]?.role === "tool") {
+      const finalStep = stepLimit + 1;
+      emit({ type: "model_start", step: finalStep, maxSteps: stepLimit, model: activeModel, mode: modeRuntime.getMode() });
+      const completion = await client.chat({
+        messages,
+        tools,
+        model: activeModel,
+        reasoning: subagent?.reasoning || cfg.reasoning
+      });
+      const message = assistantMessageFromCompletion(completion);
+      if (message) {
+        messages.push(message);
+        const finalCalls = message.tool_calls || [];
+        emit({ type: "model_end", step: finalStep, maxSteps: stepLimit, toolCalls: finalCalls.length, tools: finalCalls.map((call) => call.function?.name).filter(Boolean) });
+        if (!finalCalls.length) {
+          emit({ type: "final", step: finalStep, maxSteps: stepLimit });
+          recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
+          flushState();
+          const content = message.content || "";
+          return returnSession ? { content, sessionId, messages } : content;
+        }
+        await executeToolCalls(finalCalls, finalStep);
+      }
+    }
+
+    const partialContent = lastAssistantContent(messages);
+    emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
+    recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
+    flushState();
+    throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
   } finally {
-    if (!pendingSession) {
+    if (!sessionRecorded) {
       recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "error" });
     }
     flushState();
@@ -239,5 +254,3 @@ function loadProjectRules(cwd) {
 function loadContextPack(cwd) {
   return formatContextPack(contextPack(cwd, { maxFiles: 30, maxBytes: 60000 }));
 }
-
-

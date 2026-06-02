@@ -119,11 +119,16 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
       const line = (await rl.question(promptLabel(state))).trim();
       state.acceptingInput = false;
       if (!line) continue;
-      if (line.startsWith("/")) {
-        const done = await handleCommand(line, state, rl);
-        if (done === "exit") break;
-      } else {
-        await askAgent(line, state, rl);
+      input.off("keypress", onKeypress);
+      try {
+        if (line.startsWith("/")) {
+          const done = await handleCommand(line, state, rl);
+          if (done === "exit") break;
+        } else {
+          await askAgent(line, state, rl);
+        }
+      } finally {
+        input.on("keypress", onKeypress);
       }
     }
   } finally {

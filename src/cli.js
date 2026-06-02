@@ -38,9 +38,10 @@ async function runAgentSafe(options) {
   } catch (error) {
     if (error instanceof AgentStepLimitError) {
       console.error(error.message);
-      return undefined;
+    } else {
+      console.error(`Agent error: ${error.message}`);
     }
-    throw error;
+    return undefined;
   }
 }
 
