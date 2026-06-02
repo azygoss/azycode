@@ -23,5 +23,14 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "keywords": ["ai", "cli", "coding", "agent", "harness", "llm", "openai", "anthropic", "coding-assistant"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/azygoss/azycode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/azygoss/azycode/issues"
+  },
+  "homepage": "https://github.com/azygoss/azycode#readme",
   "license": "MIT"
 }
