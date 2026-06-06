@@ -79,7 +79,11 @@ azycode mission run examples/standard-cleanup.yml
 
 ### 🏗️ Architecture Overview
 
-Azycode is a dependency-free Node.js core that manages agent loops, LLM routing, and tool execution. It features a custom TUI engine built on native terminal primitives and uses a secure, file-based configuration system. Designed for portability, it isolates environments via the `AZYCODE_HOME` variable, making it perfect for CI/CD and local development.
+Azycode is designed for speed and portability.
+- **Core:** A clean Node.js core handling agent loops, LLM routing, and tool execution.
+- **Providers:** Native support for OpenAI, Kimi, and MiniMax with a generic BYOK adapter.
+- **Tools:** Built-in repository manipulation (read, edit, patch, search, git).
+- **Storage:** Config and state live in `~/.azycode` with secured file permissions.
 
 ---
 
@@ -95,9 +99,8 @@ We love lightweight contributions! If you find a bug or have a feature idea, fee
 
 ### 📄 License
 
-Distributed under the **MIT License**.
+Distributed under the **MIT License**. See `LICENSE` for more information.
 
 ---
 
-**Built with ❤️ by Interaction Company of California.**
-*Make coding effortless. Keep it lightweight.*
+**Make coding effortless. Keep it lightweight.**
