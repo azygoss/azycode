@@ -162,19 +162,21 @@ function help(args = []) {
     { title: "Common workflows", items: [
       "azycode login <openai|kimi|zai-coding|minimax|opencode-go|byok>",
       "azycode dashboard",
-      "azycode status",
+      "azycode status --json",
       "azycode plan \"task\"",
       "azycode run --context --progress \"task\"",
       "azycode review --local",
+      "azycode review --security",
       "azycode chat"
     ]},
     { title: "Project automation", items: [
       "azycode goal start \"goal\"",
+      "azycode mission dry-run ./mission.yml --json",
       "azycode mission run ./mission.yml",
-      "azycode subagent add <name>",
-      "azycode skills add <name>",
-      "azycode subagent run <name> \"task\"",
-      "azycode skills list"
+      "azycode subagent spawn --json '[{agent,prompt}]'",
+      "azycode skills list --json",
+      "azycode commands preview <name> [args]",
+      "azycode mcp status --json"
     ]},
     { title: "Inspect and configure", items: [
       "azycode providers",
@@ -228,28 +230,71 @@ function commandHelp(topic) {
       usage: [
         "azycode mission run ./mission.yml",
         "azycode mission dry-run ./mission.yml",
-        "azycode mission report <id>"
+        "azycode mission dry-run ./mission.yml --json",
+        "azycode mission report <id>",
+        "azycode mission list"
       ],
-      notes: ["Mission steps can target subagents and declare dependencies."]
+      notes: [
+        "Mission steps can target subagents and declare dependencies.",
+        "Dry-run shows ordered steps, parallel groups, risk level, and expected permissions.",
+        "Schema validation rejects unknown agents, invalid modes, bad maxSteps, and dependency cycles."
+      ]
     },
     subagent: {
       summary: "Create and run focused agent profiles.",
       usage: [
         "azycode subagent list",
         "azycode subagent add <name>",
-        "azycode subagent run <name> \"task\""
+        "azycode subagent run <name> \"task\"",
+        "azycode subagent spawn <agent> \"prompt\"",
+        "azycode subagent spawn --json '[{agent,prompt}]' --json"
       ],
-      notes: ["Built-ins: planner, reviewer, implementer, explorer.", "Use spawn for parallel subagent runs."]
+      notes: [
+        "Built-ins: planner, reviewer, implementer, explorer.",
+        "Set subagentIsolation to worktree for isolated git worktrees under .azycode/worktrees/.",
+        "Spawn results include duration, changed files, verification hints, and confidence."
+      ]
     },
     skills: {
       summary: "Manage reusable skill prompts.",
       usage: [
-        "azycode skills list",
+        "azycode skills list --json",
         "azycode skills add <name>",
         "azycode skills show <name>",
-        "azycode skills remove <name>"
+        "azycode skills remove <name>",
+        "azycode skills export <name> --to <file>",
+        "azycode skills import <file> [--scope project]"
       ],
-      notes: ["Apply skills with --skill <name> on run, plan, review, goal, chat."]
+      notes: [
+        "Apply skills with --skill <name> on run, plan, review, goal, chat.",
+        "Project skills live in .azycode/skills/<name>.md with optional activation keywords."
+      ]
+    },
+    mcp: {
+      summary: "Configure and inspect Model Context Protocol stdio servers.",
+      usage: [
+        "azycode mcp list --json",
+        "azycode mcp status --json",
+        "azycode mcp inspect <name>",
+        "azycode mcp resources <name>",
+        "azycode mcp prompts <name>"
+      ],
+      notes: [
+        "Configure servers under mcpServers in config.json.",
+        "Supports env allowlists, startup/request timeouts, and per-server tool allow/deny policy."
+      ]
+    },
+    commands: {
+      summary: "List and preview markdown custom slash commands.",
+      usage: [
+        "azycode commands list --json",
+        "azycode commands preview <name> [args]"
+      ],
+      notes: [
+        "Global commands: ~/.azycode/commands/*.md",
+        "Project commands: .azycode/commands/*.md",
+        "Prompts support {{args}} expansion and optional YAML frontmatter."
+      ]
     },
     config: {
       summary: "Inspect and change local Azycode configuration.",

@@ -19,7 +19,17 @@ Generated for the first product-quality pass of `azycode`.
 | Status and quota visibility | Partially provider-limited | `status` and `health` call model-list endpoints; exact subscription quota depends on provider support. |
 | Approval/safety controls | Implemented | Tool policies, permission profiles, always-approve, and independent git guard. |
 | Review mode | Implemented | Model-backed review plus `review --local` heuristic git review. |
-| Diagnostics | Implemented | `doctor`, `doctor --json`, `audit`, `report`, `tools log`, sessions/transcripts. |
+| Security review | Implemented | `review --security` combines local heuristics, test recommendations, and optional model analysis. |
+| Patch validation | Implemented | `patch validate` applies patches in isolated worktrees without mutating main workspace. |
+| MCP extensibility | Implemented | Stdio MCP with probe/inspect, resources, prompts, tool policy, and collision detection. |
+| Skills and commands | Implemented | Global/project skills with activation rules; markdown commands with `{{args}}` and preview. |
+| Mission validation | Implemented | Schema validation, dry-run with risk/permissions, parallel groups, dependency ordering. |
+| Subagent isolation | Implemented | Optional `subagentIsolation: worktree` for parallel runs under `.azycode/worktrees/`. |
+| Permission profiles | Implemented | `read-only`, `plan-only`, `safe-write`, `trusted-workspace`, `full-auto` via `permissions.js`. |
+| Sandbox execution | Implemented | Execution policy with local/docker/podman backends (`execution-policy.js`, `sandbox.js`). |
+| Context packs v3 | Implemented | Layered retrieval, byte budgets, injection hardening, cache invalidation. |
+| Benchmark harness | Implemented | `azycode bench list|run` with mock evaluation and JSON reports. |
+| Diagnostics | Implemented | `doctor`, `doctor --json`, `audit`, `report`, `tools log`, sessions/transcripts, `status --json`, `health --json`. |
 | Shell installation usability | Implemented | `npm link`/global bin support and `completion <bash|zsh|fish>`. |
 
 ## Verification Commands
@@ -62,6 +72,15 @@ azycode report
 | Live-filtered command palette in TUI | `src/tui.js`: `handleKeypress` updates palette on every keystroke with `printFilteredCommandPalette` |
 | Interactive skill picker with arrow keys | `src/tui.js`: `/skill add` and `/skill remove` use `selectFromList` for arrow-key navigation |
 | Screen clear shortcut (Ctrl+L) in TUI | `src/tui.js`: `handleKeypress` handles `Ctrl+L` to clear screen |
+| MCP hardening and CLI probe/inspect | `src/mcp.js`: env allowlist, tool policy, `mcp status|inspect|resources|prompts` |
+| Project skills and command preview | `src/skills.js`, `src/commands.js`: `.azycode/skills`, `commands preview`, export/import |
+| Mission schema validation and dry-run | `src/missions.js`: `validateMission`, `buildMissionDryRun`, `mission dry-run --json` |
+| Subagent worktree isolation | `src/subagents.js`: `subagentIsolation`, `prepareSubagentWorkspace`, structured results |
+| Security review and patch validation | `src/security-review.js`, `src/patch-validation.js`: `review --security`, `patch validate` |
+| Expanded local-review heuristics | `src/local-review.js`: path traversal, SSRF, shell interpolation, CI workflows, package scripts |
+| Provider capability registry | `src/provider-capabilities.js`, `src/stream-parse.js`, `src/provider-errors.js` |
+| Agent loop reliability | `src/tool-result.js`, `src/tool-retry.js`, `src/agent-report.js`, deterministic compaction |
+| Permission and shell-risk layers | `src/permissions.js`, `src/shell-risk.js`, `src/path-guard.js`, `src/execution-policy.js` |
 
 ## Known Provider Limits
 
