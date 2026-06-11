@@ -75,6 +75,8 @@ test("defaultConfig enables git guard and path protections", async () => {
   assert.equal(cfg.pathGuard.allowEnv, false);
   assert.equal(cfg.shellPolicy.allowDestructive, false);
   assert.equal(cfg.sandbox.mode, "local");
+  assert.equal(cfg.sandbox.fallbackMode, "local");
+  assert.equal(cfg.sandbox.image, "node:20-alpine");
 });
 
 test("saved gitGuard.enabled false is preserved on load", async () => {

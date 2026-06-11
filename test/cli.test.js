@@ -66,6 +66,22 @@ test("tool policy command updates config", () => {
   assert.match(search, /parameters\s+query, dir, maxResults, contextLines/);
 });
 
+test("sandbox status emits json diagnostics", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  const out = run(["sandbox", "status", "--json"], { AZYCODE_HOME: home });
+  const status = JSON.parse(out);
+  assert.equal(status.policy.mode, "local");
+  assert.ok(status.localShell.file);
+  assert.ok("docker" in status.runtimes);
+});
+
+test("config set sandbox mode persists", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  run(["config", "set", "sandbox", "mode", "podman"], { AZYCODE_HOME: home });
+  const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.sandbox.mode, "podman");
+});
+
 test("config set profile accepts plan-only and trusted-workspace", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   run(["config", "set", "profile", "plan-only"], { AZYCODE_HOME: home });

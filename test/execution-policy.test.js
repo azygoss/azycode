@@ -6,7 +6,8 @@ import {
   describeExecutionPolicy,
   buildContainerArgs,
   redactCommand,
-  filterEnv
+  filterEnv,
+  resolveShellInvocation
 } from "../src/execution-policy.js";
 import { defaultConfig } from "../src/config.js";
 
@@ -32,10 +33,17 @@ test("filterEnv excludes secret-like variables", () => {
 
 test("buildContainerArgs constructs docker invocation", () => {
   const policy = resolveExecutionPolicy({ sandbox: { mode: "docker", network: "deny" } }, "/tmp/ws");
-  const container = buildContainerArgs(policy, { command: "npm test" });
+  const container = buildContainerArgs(policy, { command: "npm test", env: { PATH: "/bin" } });
   assert.equal(container.binary, "docker");
   assert(container.args.includes("--network"));
   assert(container.args.includes("none"));
+});
+
+test("resolveShellInvocation blocks sandbox.mode none", () => {
+  const cfg = defaultConfig();
+  cfg.sandbox.mode = "none";
+  const invocation = resolveShellInvocation("echo hi", cfg, process.cwd());
+  assert.equal(invocation.blocked, true);
 });
 
 test("describeExecutionPolicy is JSON-serializable", () => {
