@@ -17,7 +17,7 @@ import { LlmClient } from "./llm.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
 import { ask, askSecret } from "./prompt.js";
-import { formatMissionPlan, loadMission, runMission } from "./missions.js";
+import { buildMissionDryRun, formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, formatSubagentResults, listSubagents, removeSubagent, runSubagentsParallel } from "./subagents.js";
 import {
   addSkill,
@@ -1685,7 +1685,13 @@ async function mission(args) {
     return;
   }
   if (args[0] === "dry-run" && args[1]) {
-    console.log(formatMissionPlan(loadMission(args[1]), loadConfig()));
+    const cfg = loadConfig();
+    const mission = loadMission(args[1]);
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(buildMissionDryRun(mission, cfg), null, 2));
+      return;
+    }
+    console.log(formatMissionPlan(mission, cfg));
     return;
   }
   if (args[0] === "report" && args[1]) {
@@ -1799,6 +1805,7 @@ async function subagent(args) {
       if (!name || !prompt) throw new Error("Usage: azycode subagent spawn <agent> \"prompt\" or --json '[{agent,prompt}]'");
       tasks = [{ agent: name, prompt }];
     }
+    const flags = parseFlags(args);
     const results = await runSubagentsParallel({
       cfg,
       cwd: process.cwd(),
@@ -1806,7 +1813,7 @@ async function subagent(args) {
       maxParallel: cfg.maxParallelSubagents,
       maxStepsPerAgent: cfg.subagentMaxSteps
     });
-    console.log(formatSubagentResults(results));
+    console.log(formatSubagentResults(results, { json: Boolean(flags.json) }));
     if (results.some((result) => !result.ok)) process.exitCode = 1;
     return;
   }

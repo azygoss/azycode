@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatMissionPlan, loadMission, missionPlan } from "../src/missions.js";
+import { defaultSubagents } from "../src/prompts.js";
+import {
+  buildMissionDryRun,
+  formatMissionPlan,
+  loadMission,
+  missionPlan,
+  validateMission
+} from "../src/missions.js";
 
 test("loads tiny yaml mission", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-mission-"));
@@ -87,4 +94,30 @@ test("missionPlan supports parallel step groups with dependencies", () => {
   assert.equal(plan[1].parallel.length, 2);
   assert.match(formatMissionPlan({ steps: plan }, { mode: "review" }), /parallel=2/);
   assert.match(formatMissionPlan({ steps: plan }, { mode: "review" }), /review-diff agent=reviewer/);
+});
+
+test("validateMission rejects unknown agents and invalid maxSteps", () => {
+  const cfg = { mode: "goal", subagents: defaultSubagents() };
+  const result = validateMission({
+    steps: [{ id: "bad", agent: "missing-agent", prompt: "do work", maxSteps: 0 }]
+  }, cfg);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => /unknown subagent/.test(error)));
+  assert.ok(result.errors.some((error) => /maxSteps must be a positive number/.test(error)));
+});
+
+test("buildMissionDryRun includes risk and permission metadata", () => {
+  const dryRun = buildMissionDryRun({
+    name: "demo",
+    mode: "review",
+    steps: [{ id: "review", prompt: "review diff" }]
+  }, { mode: "review", subagents: defaultSubagents() });
+  assert.equal(dryRun.ok, true);
+  assert.equal(dryRun.steps[0].risk, "low");
+  assert.equal(dryRun.steps[0].permissions.write, "deny");
+  assert.equal(dryRun.steps[0].permissions.read, "auto");
+});
+
+test("formatMissionPlan surfaces validation errors", () => {
+  assert.throws(() => formatMissionPlan({ steps: [] }, { mode: "goal" }), /non-empty steps array/);
 });

@@ -1,10 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { formatSubagentResults, runSubagentsParallel } from "../src/subagents.js";
+import {
+  collectSubagentChangedFiles,
+  formatSubagentResults,
+  isGitRepository,
+  prepareSubagentWorkspace,
+  resolveSubagentIsolation,
+  runSubagentsParallel
+} from "../src/subagents.js";
 
 function mockChatServer(handler) {
   const server = http.createServer((req, res) => {
@@ -167,4 +175,52 @@ test("runSubagentsParallel reports unknown subagents without throwing", async ()
   });
   assert.equal(results[0].ok, false);
   assert.match(results[0].error, /Unknown subagent/);
+});
+
+test("resolveSubagentIsolation defaults to same-workspace", () => {
+  assert.equal(resolveSubagentIsolation({}), "same-workspace");
+  assert.equal(resolveSubagentIsolation({ subagentIsolation: "worktree" }), "worktree");
+});
+
+test("prepareSubagentWorkspace creates isolated git worktree", async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-sub-worktree-"));
+  execFileSync("git", ["init"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: repo });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+  assert.equal(isGitRepository(repo), true);
+
+  const workspace = prepareSubagentWorkspace({
+    cfg: { subagentIsolation: "worktree" },
+    cwd: repo,
+    agentName: "implementer",
+    sessionId: "test"
+  });
+  assert.equal(workspace.isolation, "worktree");
+  assert.notEqual(workspace.cwd, repo);
+  assert.ok(fs.existsSync(workspace.cwd));
+  const changed = collectSubagentChangedFiles(workspace.cwd, repo);
+  assert.deepEqual(changed, []);
+  await workspace.cleanup();
+});
+
+test("formatSubagentResults includes duration and changed file metadata", () => {
+  const formatted = formatSubagentResults([{
+    index: 1,
+    agent: "explorer",
+    ok: true,
+    output: "done",
+    durationMs: 1200,
+    changedFiles: ["src/a.js"],
+    verification: ["npm test"],
+    confidence: "high",
+    isolation: "worktree",
+    worktree: ".azycode/worktrees/run/implementer"
+  }]);
+  assert.match(formatted, /duration: 1200ms/);
+  assert.match(formatted, /changedFiles: src\/a\.js/);
+  assert.match(formatted, /verification: npm test/);
+  assert.match(formatted, /confidence: high/);
 });

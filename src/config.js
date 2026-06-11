@@ -77,6 +77,7 @@ export function defaultConfig() {
     compaction: "trim",
     maxParallelSubagents: 4,
     subagentMaxSteps: 8,
+    subagentIsolation: "same-workspace",
     maxSubagentDepth: 2,
     streamResponses: false,
     mcpServers: {},
@@ -192,6 +193,10 @@ export function validateConfig(cfg) {
   cfg.maxSubagentDepth = Number.isFinite(subagentDepth) && subagentDepth >= 0
     ? Math.min(8, Math.floor(subagentDepth))
     : defaults.maxSubagentDepth;
+  const isolationModes = new Set(["same-workspace", "worktree"]);
+  if (!isolationModes.has(cfg.subagentIsolation)) {
+    cfg.subagentIsolation = defaults.subagentIsolation;
+  }
   const policy = cfg.toolPolicy || {};
   for (const key of Object.keys(policy)) {
     if (!KNOWN_TOOL_NAMES.has(key)) {

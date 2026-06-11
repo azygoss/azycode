@@ -2,7 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { runAgent } from "./agent.js";
 import { AgentCancelledError } from "./agent-errors.js";
-import { id, updateState } from "./config.js";
+import { id, MODES, updateState } from "./config.js";
+import { profileCategoryPolicy } from "./permissions.js";
+import { defaultSubagents } from "./prompts.js";
+
+export const MISSION_RISK_LEVELS = ["low", "medium", "high"];
 
 function initMissionRecord(missionId, mission, file) {
   updateState((state) => {
@@ -385,7 +389,105 @@ async function runSingleMissionStep({
   }
 }
 
+export function validateMission(mission, cfg = { mode: "plan", subagents: defaultSubagents() }) {
+  const errors = [];
+  const warnings = [];
+  if (!mission || typeof mission !== "object") {
+    errors.push("Mission must be an object.");
+    return { ok: false, errors, warnings };
+  }
+  if (!Array.isArray(mission.steps) || !mission.steps.length) {
+    errors.push("Mission file must contain a non-empty steps array.");
+    return { ok: false, errors, warnings };
+  }
+  if (mission.mode && !MODES.includes(mission.mode)) {
+    errors.push(`Mission mode must be one of: ${MODES.join(", ")}.`);
+  }
+  const missionMaxStepsError = validateMaxStepsValue(mission.maxSteps, "Mission");
+  if (missionMaxStepsError) errors.push(missionMaxStepsError);
+
+  const knownAgents = new Set(Object.keys(cfg.subagents || defaultSubagents()));
+  const ids = new Map();
+  for (const entry of collectMissionStepEntries(mission.steps)) {
+    const { path: stepPath, step, isGroup } = entry;
+    if (isGroup) {
+      if (!step.id) warnings.push(`${stepPath}: parallel group missing id; will use generated id.`);
+      if (step.mode && !MODES.includes(step.mode)) {
+        errors.push(`${stepPath}: mode must be one of: ${MODES.join(", ")}.`);
+      }
+      const groupMaxStepsError = validateMaxStepsValue(step.maxSteps, stepPath);
+      if (groupMaxStepsError) errors.push(groupMaxStepsError);
+      continue;
+    }
+    if (typeof step === "string") continue;
+    if (!step?.prompt) {
+      errors.push(`${stepPath}: step object must include prompt.`);
+      continue;
+    }
+    const stepId = step.id || inferStepId(stepPath);
+    if (ids.has(stepId)) errors.push(`${stepPath}: duplicate step id '${stepId}'.`);
+    else ids.set(stepId, stepPath);
+    if (step.mode && !MODES.includes(step.mode)) {
+      errors.push(`${stepPath}: mode must be one of: ${MODES.join(", ")}.`);
+    }
+    if (step.agent && !knownAgents.has(step.agent)) {
+      errors.push(`${stepPath}: unknown subagent '${step.agent}'.`);
+    }
+    const maxStepsError = validateMaxStepsValue(step.maxSteps, stepPath);
+    if (maxStepsError) errors.push(maxStepsError);
+    const dependsOn = normalizeDependsOn(step.dependsOn);
+    for (const dep of dependsOn) {
+      if (!ids.has(dep) && !missionStepIds(mission.steps).includes(dep)) {
+        warnings.push(`${stepPath}: dependsOn '${dep}' is not defined before this step in source order.`);
+      }
+    }
+  }
+
+  try {
+    planMissionSteps(mission, cfg);
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+export function buildMissionDryRun(mission, cfg = { mode: "plan", subagents: defaultSubagents() }) {
+  const validation = validateMission(mission, cfg);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      name: mission?.name || "mission",
+      mode: mission?.mode || cfg.mode || "plan",
+      continueOnError: Boolean(mission?.continueOnError),
+      passContext: Boolean(mission?.passContext),
+      errors: validation.errors,
+      warnings: validation.warnings,
+      steps: []
+    };
+  }
+  const ordered = missionPlan(mission, cfg);
+  return {
+    ok: true,
+    name: mission.name || "mission",
+    mode: mission.mode || cfg.mode || "plan",
+    continueOnError: Boolean(mission.continueOnError),
+    passContext: Boolean(mission.passContext),
+    errors: [],
+    warnings: validation.warnings,
+    steps: ordered.map((step, index) => describeDryRunStep(step, index + 1, cfg))
+  };
+}
+
 export function missionPlan(mission, cfg = { mode: "plan" }) {
+  const validation = validateMission(mission, cfg);
+  if (!validation.ok) {
+    throw new Error(validation.errors.join("\n"));
+  }
+  return planMissionSteps(mission, cfg);
+}
+
+function planMissionSteps(mission, cfg = { mode: "plan" }) {
   if (!Array.isArray(mission.steps) || !mission.steps.length) {
     throw new Error("Mission file must contain a steps array.");
   }
@@ -394,22 +496,149 @@ export function missionPlan(mission, cfg = { mode: "plan" }) {
 }
 
 export function formatMissionPlan(mission, cfg) {
-  const steps = missionPlan(mission, cfg);
-  return steps.map((step, index) => formatPlanStep(step, index + 1)).join("\n");
+  const dryRun = buildMissionDryRun(mission, cfg);
+  if (!dryRun.ok) throw new Error(dryRun.errors.join("\n"));
+  const header = [
+    `Mission: ${dryRun.name}`,
+    `Mode: ${dryRun.mode}`,
+    `Continue on error: ${dryRun.continueOnError ? "yes" : "no"}`,
+    `Pass context: ${dryRun.passContext ? "yes" : "no"}`
+  ];
+  if (dryRun.warnings.length) {
+    header.push("Warnings:");
+    for (const warning of dryRun.warnings) header.push(`- ${warning}`);
+  }
+  const body = dryRun.steps.map((step) => formatDryRunStep(step)).join("\n");
+  return `${header.join("\n")}\n\n${body}`;
 }
 
-function formatPlanStep(step, index) {
-  const depends = step.dependsOn.length ? ` dependsOn=${step.dependsOn.join(",")}` : "";
+function formatDryRunStep(step) {
+  const depends = step.dependsOn?.length ? ` dependsOn=${step.dependsOn.join(",")}` : "";
   const limit = step.maxSteps ? ` maxSteps=${step.maxSteps}` : " maxSteps=unlimited";
-  if (step.isParallelGroup) {
+  const context = step.passContext ? " passContext=yes" : "";
+  const risk = ` risk=${step.risk}`;
+  const permissions = ` permissions=read:${step.permissions.read},write:${step.permissions.write},shell:${step.permissions.shell},network:${step.permissions.network}`;
+  if (step.parallel?.length) {
     const children = step.parallel.map((child, childIndex) => {
       const agent = child.agent ? ` agent=${child.agent}` : "";
-      return `     ${childIndex + 1}. ${child.id}${agent} mode=${child.mode}${limit}\n        ${child.prompt}`;
+      const childLimit = child.maxSteps ? ` maxSteps=${child.maxSteps}` : limit;
+      return `     ${childIndex + 1}. ${child.id}${agent} mode=${child.mode}${childLimit}${risk}\n        ${child.prompt}`;
     }).join("\n");
-    return `${index}. ${step.id} parallel=${step.parallel.length} mode=${step.mode}${depends}\n${children}`;
+    return `${step.index}. ${step.id} parallel=${step.parallel.length} mode=${step.mode}${depends}${context}${risk}${permissions}\n${children}`;
   }
   const agent = step.agent ? ` agent=${step.agent}` : "";
-  return `${index}. ${step.id}${agent} mode=${step.mode}${limit}${depends}\n   ${step.prompt}`;
+  return `${step.index}. ${step.id}${agent} mode=${step.mode}${limit}${depends}${context}${risk}${permissions}\n   ${step.prompt}`;
+}
+
+function describeDryRunStep(step, index, cfg) {
+  const base = {
+    index,
+    id: step.id,
+    mode: step.mode,
+    agent: step.agent || null,
+    maxSteps: step.maxSteps ?? null,
+    dependsOn: step.dependsOn || [],
+    passContext: Boolean(step.passContext),
+    prompt: step.prompt,
+    risk: missionStepRisk(step.mode),
+    permissions: stepPermissions(cfg, step.mode)
+  };
+  if (step.isParallelGroup) {
+    return {
+      ...base,
+      parallel: step.parallel.map((child) => ({
+        id: child.id,
+        mode: child.mode,
+        agent: child.agent || null,
+        maxSteps: child.maxSteps ?? null,
+        prompt: child.prompt,
+        risk: missionStepRisk(child.mode),
+        permissions: stepPermissions(cfg, child.mode)
+      }))
+    };
+  }
+  return base;
+}
+
+function missionStepRisk(mode) {
+  if (mode === "plan" || mode === "review") return "low";
+  if (mode === "always-approve") return "high";
+  return "medium";
+}
+
+function stepPermissions(cfg, mode) {
+  const profile = cfg.permissionProfile || "normal";
+  const alwaysApprove = mode === "always-approve" || Boolean(cfg.alwaysApprove);
+  const categories = ["read", "write", "shell", "network", "git", "subagent"];
+  const permissions = {};
+  for (const category of categories) {
+    let rule = profileCategoryPolicy(profile, category);
+    if (alwaysApprove && rule !== "deny") rule = "auto";
+    if ((mode === "plan" || mode === "review") && (category === "write" || category === "shell" || category === "network" || category === "subagent")) {
+      rule = "deny";
+    }
+    permissions[category] = rule;
+  }
+  return permissions;
+}
+
+function validateMaxStepsValue(value, context) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return `${context}: maxSteps must be a positive number.`;
+  }
+  return null;
+}
+
+function normalizeDependsOn(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String);
+  return [String(value)];
+}
+
+function inferStepId(stepPath) {
+  const match = stepPath.match(/\[(\d+)\]/);
+  return match ? `step-${Number(match[1]) + 1}` : "step";
+}
+
+function missionStepIds(steps) {
+  const ids = [];
+  steps.forEach((step, index) => {
+    if (typeof step === "string") {
+      ids.push(`step-${index + 1}`);
+      return;
+    }
+    if (Array.isArray(step?.parallel)) {
+      if (step.id) ids.push(step.id);
+      for (const [childIndex, child] of step.parallel.entries()) {
+        ids.push(child?.id || `step-${childIndex + 1}`);
+      }
+      return;
+    }
+    ids.push(step?.id || `step-${index + 1}`);
+  });
+  return ids;
+}
+
+function collectMissionStepEntries(steps, parentPath = "steps") {
+  const entries = [];
+  steps.forEach((step, index) => {
+    const stepPath = `${parentPath}[${index}]`;
+    if (typeof step === "string") {
+      entries.push({ path: stepPath, step: { prompt: step } });
+      return;
+    }
+    if (Array.isArray(step?.parallel)) {
+      entries.push({ path: stepPath, step, isGroup: true });
+      step.parallel.forEach((child, childIndex) => {
+        entries.push({ path: `${stepPath}.parallel[${childIndex}]`, step: child });
+      });
+      return;
+    }
+    entries.push({ path: stepPath, step });
+  });
+  return entries;
 }
 
 function normalizeStep(step, mission, cfg, index = 0) {
