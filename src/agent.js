@@ -70,7 +70,7 @@ export async function runAgent({
 
   const buildSystemContent = () => [
     subagent?.system || systemForMode(modeRuntime.getMode(), { cwd, cfg, stepLimit }),
-    getSkillText(cfg, skills),
+    getSkillText(cfg, skills, { cwd, prompt }),
     projectRules,
     relevantMemory,
     activeTodos,

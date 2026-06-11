@@ -7,7 +7,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { applyPermissionProfile, COMPACTION_MODES, defaultConfig, loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, updateState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
-import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
+import { loadCustomCommands, previewCustomCommand, resolveCustomCommand } from "./commands.js";
 import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
 import { clearAllTodos, clearCompletedTodos, formatActiveTodos, formatTodoList, listActiveTodos, listTodos } from "./todos.js";
 import { loadHookConfig } from "./hooks.js";
@@ -19,7 +19,18 @@ import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.j
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, formatSubagentResults, listSubagents, removeSubagent, runSubagentsParallel } from "./subagents.js";
-import { addSkill, listSkills, removeSkill, formatSkillsList } from "./skills.js";
+import {
+  addSkill,
+  exportSkill,
+  formatSkillsList,
+  getSkillRecord,
+  importSkill,
+  listAllSkills,
+  listSkills,
+  removeSkill,
+  writeProjectSkill
+} from "./skills.js";
+import { inspectMcpServer, listConfiguredMcpServers, probeMcpServers } from "./mcp.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
@@ -35,7 +46,6 @@ import { launchTui } from "./tui.js";
 import { createAgentProgress, formatAgentRunSummary, formatAgentStepLine, formatSessionTranscript, formatToolRunLine, hasActiveProvider, runtimeSnapshot, sessionListEntries, summarizeAgentRun, summarizeToolArgs, toolRunListEntries, withAgentAbort } from "./harness.js";
 import { discoverProjectInstructions, listInstructionSources } from "./instructions.js";
 import { expandFileReferences } from "./prompt-expand.js";
-import { listConfiguredMcpServers } from "./mcp.js";
 import { readMultilinePrompt } from "./composer-input.js";
 
 const VERSION = "0.1.0";
@@ -1243,13 +1253,20 @@ async function execCmd(args) {
   console.log(result.content);
 }
 
-function mcpCmd(args) {
+async function mcpCmd(args) {
   const cfg = loadConfig();
-  const action = args[0] || "list";
+  const flags = parseFlags(args);
+  const positional = positionalArgs(args);
+  const action = positional[0] || "list";
+
   if (action === "list") {
     const rows = listConfiguredMcpServers(cfg);
     if (!rows.length) {
       console.log("No MCP servers configured. Add entries under mcpServers in config.json.");
+      return;
+    }
+    if (flags.json) {
+      console.log(JSON.stringify(rows, null, 2));
       return;
     }
     ui.table(rows, [
@@ -1260,7 +1277,60 @@ function mcpCmd(args) {
     ]);
     return;
   }
-  throw new Error("Usage: azycode mcp list");
+
+  if (action === "status") {
+    const results = await probeMcpServers(cfg);
+    if (flags.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    if (!results.length) {
+      console.log("No enabled MCP servers configured.");
+      return;
+    }
+    ui.table(results.map((entry) => ({
+      name: entry.name,
+      ok: entry.ok ? "yes" : "no",
+      tools: entry.tools ?? "",
+      resources: entry.resources ?? "",
+      prompts: entry.prompts ?? "",
+      detail: entry.ok ? "" : (entry.error || "")
+    })), [
+      { key: "name", label: "name" },
+      { key: "ok", label: "ok" },
+      { key: "tools", label: "tools" },
+      { key: "resources", label: "resources" },
+      { key: "prompts", label: "prompts" },
+      { key: "detail", label: "detail" }
+    ]);
+    return;
+  }
+
+  if (action === "inspect" || action === "resources" || action === "prompts") {
+    const name = positional[1];
+    if (!name) throw new Error(`Usage: azycode mcp ${action} <name> [--json]`);
+    const detail = await inspectMcpServer(name, cfg);
+    if (flags.json) {
+      if (action === "resources") console.log(JSON.stringify(detail.resources, null, 2));
+      else if (action === "prompts") console.log(JSON.stringify(detail.prompts, null, 2));
+      else console.log(JSON.stringify(detail, null, 2));
+      return;
+    }
+    if (action === "resources") {
+      for (const resource of detail.resources) console.log(`${resource.uri} · ${resource.name || ""}`);
+      return;
+    }
+    if (action === "prompts") {
+      for (const prompt of detail.prompts) console.log(`${prompt.name} · ${prompt.description || ""}`);
+      return;
+    }
+    console.log(`${detail.server.name} · ${detail.server.command}`);
+    console.log(`tools: ${detail.tools.length}, resources: ${detail.resources.length}, prompts: ${detail.prompts.length}`);
+    for (const tool of detail.tools) console.log(`- ${tool.name}: ${tool.description || ""}`);
+    return;
+  }
+
+  throw new Error("Usage: azycode mcp list|status|inspect <name>|resources <name>|prompts <name> [--json]");
 }
 
 function instructionsCmd(args) {
@@ -1773,8 +1843,31 @@ function hooksCmd(args = []) {
 }
 
 function commandsCmd(args = []) {
-  const commands = loadCustomCommands(process.cwd());
-  if (args.includes("--json")) {
+  const flags = parseFlags(args);
+  const positional = positionalArgs(args);
+  const action = positional[0] || "list";
+  const cwd = process.cwd();
+
+  if (action === "preview") {
+    const line = positional.slice(1).join(" ").trim();
+    if (!line) throw new Error("Usage: azycode commands preview <name> [args] [--json]");
+    const preview = previewCustomCommand(line.startsWith("/") ? line : `/${line}`, cwd);
+    if (!preview) throw new Error("Command not found.");
+    if (flags.json) {
+      console.log(JSON.stringify(preview, null, 2));
+      return;
+    }
+    console.log(`/${preview.name}${preview.args ? ` ${preview.args}` : ""}`);
+    console.log("");
+    console.log(preview.prompt);
+    return;
+  }
+
+  const commands = loadCustomCommands(cwd);
+  if (commands.errors?.length) {
+    for (const error of commands.errors) console.error(warnText(error));
+  }
+  if (flags.json) {
     console.log(JSON.stringify(commands, null, 2));
     return;
   }
@@ -1782,60 +1875,96 @@ function commandsCmd(args = []) {
   if (!commands.length) {
     console.log("No custom commands found.");
     console.log(`Global: ${path.join(process.env.AZYCODE_HOME || path.join(os.homedir(), ".azycode"), "commands")}`);
-    console.log(`Project: ${path.join(process.cwd(), ".azycode", "commands")}`);
+    console.log(`Project: ${path.join(cwd, ".azycode", "commands")}`);
     return;
   }
   ui.table(commands.map((command) => ({
     name: `/${command.name}`,
+    scope: command.scope || "",
     description: command.description || ""
   })), [
     { key: "name", label: "command" },
+    { key: "scope", label: "scope" },
     { key: "description", label: "description" }
   ]);
 }
 
 async function skills(args) {
-  const action = args[0] || "list";
+  const flags = parseFlags(args);
+  const positional = positionalArgs(args, ["description", "text", "scope", "file", "to"]);
+  const action = positional[0] || "list";
+  const cwd = process.cwd();
+  const cfg = loadConfig();
+
   if (action === "list") {
+    const items = listAllSkills(cfg, cwd);
+    if (flags.json) {
+      console.log(JSON.stringify(items, null, 2));
+      return;
+    }
     ui.title("Skills");
-    const items = listSkills(loadConfig());
     if (!items.length) {
       console.log(muted("No skills configured. Add one with: azycode skills add <name>"));
       return;
     }
     ui.table(items.map((skill) => ({
       name: skill.name,
-      description: skill.description || ""
+      scope: skill.scope || "",
+      description: skill.description || "",
+      activation: skill.activation?.join(", ") || ""
     })), [
       { key: "name", label: "name" },
-      { key: "description", label: "description" }
+      { key: "scope", label: "scope" },
+      { key: "description", label: "description" },
+      { key: "activation", label: "activation" }
     ]);
     return;
   }
   if (action === "add") {
-    const flags = parseFlags(args.slice(2));
-    const name = args[1] || await ask("Name");
+    const name = positional[1] || await ask("Name");
     const description = flags.description || await ask("Description", "");
     const text = flags.text || await ask("Skill text", "");
+    if (flags.scope === "project") {
+      writeProjectSkill(cwd, { name, description, text });
+      console.log(`Project skill ${name} added.`);
+      return;
+    }
     addSkill({ name, description, text });
     console.log(`Skill ${name} added.`);
     return;
   }
   if (action === "remove") {
-    removeSkill(args[1]);
-    console.log(`Skill ${args[1]} removed.`);
+    const scope = flags.scope === "project" ? "project" : "global";
+    removeSkill(positional[1], { scope, cwd });
+    console.log(`Skill ${positional[1]} removed.`);
     return;
   }
   if (action === "show") {
-    const cfg = loadConfig();
-    const skill = cfg.skills?.[args[1]];
-    if (!skill) throw new Error(`No skill named ${args[1]}.`);
-    console.log(`${bold(skill.name || args[1])}${skill.description ? ` · ${muted(skill.description)}` : ""}`);
+    const skill = getSkillRecord(positional[1], cfg, cwd);
+    if (!skill) throw new Error(`No skill named ${positional[1]}.`);
+    const activation = skill.activation?.length ? ` · activates: ${skill.activation.join(", ")}` : "";
+    console.log(`${bold(skill.name)}${skill.scope ? ` [${skill.scope}]` : ""}${skill.description ? ` · ${muted(skill.description)}` : ""}${activation}`);
     console.log("");
     console.log(skill.text || muted("(empty)"));
     return;
   }
-  throw new Error("Usage: azycode skills list|add|remove|show");
+  if (action === "export") {
+    const name = positional[1];
+    if (!name) throw new Error("Usage: azycode skills export <name> [--to <file>]");
+    const file = flags.to || flags.file;
+    const output = exportSkill(name, { cfg, cwd, file });
+    if (file) console.log(`Exported ${name} to ${file}`);
+    else console.log(output);
+    return;
+  }
+  if (action === "import") {
+    const file = positional[1] || flags.file;
+    if (!file) throw new Error("Usage: azycode skills import <file> [--scope global|project]");
+    const imported = importSkill(file, { scope: flags.scope, cwd });
+    console.log(`Imported skill ${imported.name}.`);
+    return;
+  }
+  throw new Error("Usage: azycode skills list|add|remove|show|export|import [--json] [--scope project]");
 }
 
 async function keys(args) {

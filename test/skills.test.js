@@ -3,7 +3,20 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addSkill, listSkills, removeSkill, getSkillText, formatSkillsList } from "../src/skills.js";
+import {
+  addSkill,
+  exportSkill,
+  formatSkillsList,
+  getSkillRecord,
+  getSkillText,
+  importSkill,
+  listAllSkills,
+  listProjectSkills,
+  listSkills,
+  removeSkill,
+  resolveActiveSkills,
+  writeProjectSkill
+} from "../src/skills.js";
 import { loadConfig, saveConfig, configPath } from "../src/config.js";
 
 let originalHome;
@@ -111,4 +124,69 @@ test("formatSkillsList formats items", () => {
 
 test("formatSkillsList returns placeholder when empty", () => {
   assert.equal(formatSkillsList([]), "No skills.");
+});
+
+test("writeProjectSkill stores markdown skill in repo", () => {
+  setup();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-skills-repo-"));
+  const skill = writeProjectSkill(repo, {
+    name: "review",
+    description: "Review diffs",
+    text: "Focus on risky changes.",
+    activation: ["review", "diff"]
+  });
+  assert.equal(skill.scope, "project");
+  const project = listProjectSkills(repo);
+  assert.equal(project.length, 1);
+  assert.equal(project[0].name, "review");
+  teardown();
+});
+
+test("listAllSkills merges global and project skills with project override", () => {
+  setup();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-skills-merge-"));
+  addSkill({ name: "shared", description: "Global", text: "Global text." });
+  writeProjectSkill(repo, { name: "shared", description: "Project", text: "Project text." });
+  const cfg = loadConfig();
+  const items = listAllSkills(cfg, repo);
+  const shared = items.find((item) => item.name === "shared");
+  assert.equal(shared.scope, "project");
+  assert.equal(shared.text, "Project text.");
+  teardown();
+});
+
+test("resolveActiveSkills activates skills from prompt keywords", () => {
+  setup();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-skills-active-"));
+  addSkill({ name: "tests", text: "Write tests.", activation: ["test", "spec"] });
+  const cfg = loadConfig();
+  const active = resolveActiveSkills(cfg, repo, { prompt: "Please add a spec for cli" });
+  assert.equal(active.length, 1);
+  assert.equal(active[0].name, "tests");
+  teardown();
+});
+
+test("getSkillText auto-activates skills when no explicit list is provided", () => {
+  setup();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-skills-auto-"));
+  addSkill({ name: "docs", text: "Document changes.", activation: ["readme"] });
+  const cfg = loadConfig();
+  const text = getSkillText(cfg, [], { cwd: repo, prompt: "update readme section" });
+  assert.match(text, /Document changes/);
+  teardown();
+});
+
+test("exportSkill and importSkill round-trip JSON skills", () => {
+  setup();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-skills-export-"));
+  addSkill({ name: "lint", description: "Lint code", text: "Run lint before commit.", tags: ["quality"] });
+  const cfg = loadConfig();
+  const file = path.join(repo, "lint.skill.json");
+  exportSkill("lint", { cfg, cwd: repo, file });
+  removeSkill("lint");
+  importSkill(file, { cwd: repo });
+  const restored = getSkillRecord("lint", loadConfig(), repo);
+  assert.equal(restored.description, "Lint code");
+  assert.deepEqual(restored.tags, ["quality"]);
+  teardown();
 });
