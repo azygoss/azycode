@@ -11,7 +11,7 @@ import { listMcpToolCatalog } from "./mcp.js";
 import { resolveToolPermission } from "./permissions.js";
 import { evaluateShellPolicy } from "./shell-risk.js";
 import { assertPatchPathsAllowed, assertWritePathAllowed, evaluateWritePath } from "./path-guard.js";
-import { resolveShellInvocation } from "./execution-policy.js";
+import { executePreparedShell, formatShellResultForModel, resolveShellInvocation } from "./execution-policy.js";
 import { debug } from "./logger.js";
 
 const GIT_TIMEOUT_MS = 20_000;
@@ -446,29 +446,16 @@ export function createTools({
       }
       const invocation = resolveShellInvocation(command, activeCfg, root);
       if (invocation.blocked) throw new Error(invocation.reason);
-      debug(`shell exec risk=${shellEval.level} cmd=${invocation.logCommand}`);
+      debug(`shell exec risk=${shellEval.level} backend=${invocation.backend} cmd=${invocation.logCommand}`);
       const timeout = Math.max(1, Number(timeoutMs) || invocation.timeout || 60000);
-      try {
-        const runner = invocation.useContainer
-          ? { file: invocation.container.binary, args: invocation.container.args }
-          : { file: invocation.file, args: invocation.args };
-        const { stdout, stderr } = await execFileCancellable(runner.file, runner.args, {
-          cwd: invocation.cwd,
-          env: invocation.env,
-          timeout,
-          maxBuffer: invocation.maxBuffer,
-          signal: runOptions.signal
-        });
-        return [stdout, stderr].filter(Boolean).join("\n") || "(no output)";
-      } catch (error) {
-        if (error.message === "Aborted" || runOptions.signal?.aborted) throw error;
-        const parts = [`exit code: ${error.code ?? "unknown"}`];
-        if (error.stdout) parts.push(`stdout:\n${String(error.stdout).slice(0, 4000)}`);
-        if (error.stderr) parts.push(`stderr:\n${String(error.stderr).slice(0, 4000)}`);
-        if (error.killed) parts.push("signal: process timed out or was killed");
-        else if (error.message && !String(error.message).startsWith("Command failed")) parts.push(error.message);
-        throw new Error(parts.join("\n"));
-      }
+      const result = await executePreparedShell(invocation, {
+        timeoutMs: timeout,
+        signal: runOptions.signal,
+        redact: activeCfg.shellPolicy?.redactSecrets !== false
+      });
+      const text = formatShellResultForModel(result);
+      if (!result.ok) throw new Error(text);
+      return text;
     }),
     tool("todo", "Manage the workspace todo list for multi-step tasks.", {
       type: "object",

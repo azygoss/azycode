@@ -31,6 +31,8 @@ export function execFileCancellable(file, args, options = {}) {
     cwd,
     timeout = null,
     maxBuffer = 1024 * 1024 * 8,
+    maxStdoutBytes = maxBuffer,
+    maxStderrBytes = maxBuffer,
     signal: externalSignal = null,
     env,
     shell = false
@@ -39,6 +41,8 @@ export function execFileCancellable(file, args, options = {}) {
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
+    let truncatedStdout = false;
+    let truncatedStderr = false;
     let settled = false;
     let timeoutTimer = null;
     let child = null;
@@ -104,33 +108,44 @@ export function execFileCancellable(file, args, options = {}) {
       stdio: ["ignore", "pipe", "pipe"]
     });
 
-    const append = (target, chunk) => {
-      const next = target + chunk;
-      if (next.length > maxBuffer) {
-        killChild(Object.assign(new Error("maxBuffer length exceeded"), { killed: true, code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }));
-        return null;
-      }
-      return next;
+    const overflow = (stream) => {
+      const error = Object.assign(new Error("maxBuffer length exceeded"), {
+        killed: true,
+        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        stdout,
+        stderr,
+        truncatedStdout,
+        truncatedStderr
+      });
+      if (stream === "stdout") truncatedStdout = true;
+      if (stream === "stderr") truncatedStderr = true;
+      killChild(error);
     };
 
     child.stdout?.on("data", (chunk) => {
-      const next = append(stdout, String(chunk));
-      if (next !== null) stdout = next;
+      const next = stdout + String(chunk);
+      if (next.length > maxStdoutBytes) return overflow("stdout");
+      stdout = next;
     });
     child.stderr?.on("data", (chunk) => {
-      const next = append(stderr, String(chunk));
-      if (next !== null) stderr = next;
+      const next = stderr + String(chunk);
+      if (next.length > maxStderrBytes) return overflow("stderr");
+      stderr = next;
     });
 
     child.on("error", (error) => finish(error));
     child.on("close", (code, sig) => {
       if (settled) return;
       if (pendingKillError) {
+        pendingKillError.stdout = stdout;
+        pendingKillError.stderr = stderr;
+        pendingKillError.truncatedStdout = truncatedStdout;
+        pendingKillError.truncatedStderr = truncatedStderr;
         finish(pendingKillError);
         return;
       }
       if (code === 0) {
-        finish(null, { stdout, stderr });
+        finish(null, { stdout, stderr, truncatedStdout, truncatedStderr, code: 0, signal: sig || null });
         return;
       }
       const error = new Error(`Command failed: ${file} ${args.join(" ")}`);
@@ -139,6 +154,8 @@ export function execFileCancellable(file, args, options = {}) {
       error.stderr = stderr;
       error.killed = Boolean(sig);
       error.signal = sig;
+      error.truncatedStdout = truncatedStdout;
+      error.truncatedStderr = truncatedStderr;
       finish(error);
     });
 
@@ -147,6 +164,10 @@ export function execFileCancellable(file, args, options = {}) {
         const error = new Error(`Command timed out after ${timeout}ms`);
         error.code = "ETIMEDOUT";
         error.killed = true;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.truncatedStdout = truncatedStdout;
+        error.truncatedStderr = truncatedStderr;
         killChild(error);
       }, timeout);
     }

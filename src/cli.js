@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
-import { applyPermissionProfile, COMPACTION_MODES, loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, updateState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
+import { applyPermissionProfile, COMPACTION_MODES, defaultConfig, loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, updateState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
 import { compactConversationWithModel } from "./compaction.js";
 import { loadHookConfig } from "./hooks.js";
@@ -25,7 +25,7 @@ import { formatLocalReview, localReview } from "./local-review.js";
 import { formatGuard, formatGuardJson, gitGuard } from "./guard.js";
 import { runAllBenchmarks, formatBenchReport, listBenchmarks } from "./bench.js";
 import { describePermissionProfile, PERMISSION_PROFILES } from "./permissions.js";
-import { describeExecutionPolicy, resolveExecutionPolicy } from "./execution-policy.js";
+import { describeExecutionPolicy, resolveExecutionPolicy, sandboxStatus, SANDBOX_MODES, SANDBOX_NETWORK_MODES, SANDBOX_FALLBACK_MODES } from "./execution-policy.js";
 import { formatLocalReviewJson } from "./local-review.js";
 import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
@@ -42,7 +42,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
-  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench"
+  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox"
 ];
 
 async function runAgentSafe(options, { cancellable = false } = {}) {
@@ -112,6 +112,7 @@ export async function main(argv) {
     case "hooks": return hooksCmd(args);
     case "commands": return commandsCmd(args);
     case "bench": return await benchCmd(args);
+    case "sandbox": return sandboxCmd(args);
     case "always-approve": return directMode("always-approve", args);
     case "approve": return directMode("always-approve", args);
     case "build": return directMode("build", args);
@@ -674,6 +675,27 @@ function guard(args) {
   console.log(formatGuard(result));
 }
 
+function sandboxCmd(args) {
+  const action = args[0] || "status";
+  const json = args.includes("--json");
+  if (action !== "status") throw new Error("Usage: azycode sandbox status [--json]");
+  const cfg = loadConfig();
+  const status = sandboxStatus(cfg, process.cwd());
+  if (json) {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  console.log("Sandbox status");
+  console.log(`mode: ${status.policy.mode}`);
+  console.log(`network: ${status.policy.network}`);
+  console.log(`fallback: ${status.policy.fallbackMode}`);
+  console.log(`image: ${status.policy.image}`);
+  console.log(`effective backend: ${status.effectiveBackend}`);
+  console.log(`local shell: ${status.localShell.shellName} (${status.localShell.file})`);
+  console.log(`docker: ${status.runtimes.docker.available ? "available" : "missing"}${status.runtimes.docker.selected ? " (selected)" : ""}`);
+  console.log(`podman: ${status.runtimes.podman.available ? "available" : "missing"}${status.runtimes.podman.selected ? " (selected)" : ""}`);
+}
+
 async function benchCmd(args) {
   const action = args[0] || "run";
   const json = args.includes("--json");
@@ -953,6 +975,31 @@ async function configCmd(args) {
       throw new Error(`Compaction must be one of: ${COMPACTION_MODES.join(", ")}`);
     }
     cfg.compaction = mode;
+  } else if (args[0] === "set" && args[1] === "sandbox") {
+    const key = args[2];
+    const value = args[3];
+    cfg.sandbox ||= defaultConfig().sandbox;
+    if (key === "mode") {
+      if (!SANDBOX_MODES.includes(value)) throw new Error(`sandbox.mode must be one of: ${SANDBOX_MODES.join(", ")}`);
+      cfg.sandbox.mode = value;
+    } else if (key === "network") {
+      if (!SANDBOX_NETWORK_MODES.includes(value)) throw new Error(`sandbox.network must be one of: ${SANDBOX_NETWORK_MODES.join(", ")}`);
+      cfg.sandbox.network = value;
+    } else if (key === "fallback") {
+      if (!SANDBOX_FALLBACK_MODES.includes(value)) throw new Error(`sandbox.fallback must be one of: ${SANDBOX_FALLBACK_MODES.join(", ")}`);
+      cfg.sandbox.fallbackMode = value;
+    } else if (key === "image") {
+      if (!value) throw new Error("Usage: azycode config set sandbox image <name>");
+      cfg.sandbox.image = value;
+    } else if (key === "timeout-ms") {
+      const ms = Number(value);
+      if (!Number.isFinite(ms) || ms <= 0) throw new Error("sandbox.timeout-ms must be a positive number");
+      cfg.sandbox.timeoutMs = Math.floor(ms);
+    } else if (key === "readonly-root") {
+      cfg.sandbox.readonlyRoot = parseBoolean(value);
+    } else {
+      throw new Error("Usage: azycode config set sandbox <mode|network|fallback|image|timeout-ms|readonly-root> <value>");
+    }
   } else if (args[0] === "toggle" && args[1] === "always-approve") {
     cfg.alwaysApprove = !cfg.alwaysApprove;
   } else if (args[0] === "export") {

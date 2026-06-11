@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { defaultSubagents } from "./prompts.js";
 import { applyPermissionProfile as applyProfile, PERMISSION_PROFILES } from "./permissions.js";
-import { defaultSandboxConfig } from "./execution-policy.js";
+import { defaultSandboxConfig, SANDBOX_FALLBACK_MODES, SANDBOX_MODES, SANDBOX_NETWORK_MODES } from "./execution-policy.js";
 
 export const DEFAULT_MODE = "build";
 export const MODES = ["plan", "build", "always-approve", "goal", "review"];
@@ -207,6 +207,11 @@ export function validateConfig(cfg) {
   cfg.pathGuard = { ...defaults.pathGuard, ...(cfg.pathGuard || {}) };
   cfg.shellPolicy = { ...defaults.shellPolicy, ...(cfg.shellPolicy || {}) };
   cfg.sandbox = { ...defaults.sandbox, ...(cfg.sandbox || {}) };
+  if (!SANDBOX_MODES.includes(cfg.sandbox.mode)) cfg.sandbox.mode = defaults.sandbox.mode;
+  if (!SANDBOX_NETWORK_MODES.includes(cfg.sandbox.network)) cfg.sandbox.network = defaults.sandbox.network;
+  if (!SANDBOX_FALLBACK_MODES.includes(cfg.sandbox.fallbackMode)) cfg.sandbox.fallbackMode = defaults.sandbox.fallbackMode;
+  const timeout = Number(cfg.sandbox.timeoutMs);
+  cfg.sandbox.timeoutMs = Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : defaults.sandbox.timeoutMs;
   return cfg;
 }
 
