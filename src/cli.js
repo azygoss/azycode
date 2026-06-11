@@ -34,6 +34,14 @@ import { inspectMcpServer, listConfiguredMcpServers, probeMcpServers } from "./m
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
+import { formatPatchValidationReport, validatePatch } from "./patch-validation.js";
+import {
+  buildSecurityReview,
+  formatSecurityReview,
+  formatSecurityReviewCombined,
+  formatSecurityReviewJson,
+  securityReviewPrompt
+} from "./security-review.js";
 import { formatGuard, formatGuardJson, gitGuard } from "./guard.js";
 import { runAllBenchmarks, formatBenchReport, listBenchmarks } from "./bench.js";
 import { describePermissionProfile, PERMISSION_PROFILES } from "./permissions.js";
@@ -53,7 +61,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "todo", "audit", "report", "completion", "config",
-  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox"
+  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox", "patch"
 ];
 
 async function runAgentSafe(options, { cancellable = false } = {}) {
@@ -125,6 +133,7 @@ export async function main(argv) {
     case "commands": return commandsCmd(args);
     case "bench": return await benchCmd(args);
     case "sandbox": return sandboxCmd(args);
+    case "patch": return await patchCmd(args);
     case "always-approve": return directMode("always-approve", args);
     case "approve": return directMode("always-approve", args);
     case "build": return directMode("build", args);
@@ -277,8 +286,19 @@ function commandHelp(topic) {
     },
     review: {
       summary: "Review local changes or ask the model for review.",
-      usage: ["azycode review --local", "azycode review --local --json", "azycode review \"review current changes\""],
-      notes: ["Local review is heuristic and does not call a provider."]
+      usage: [
+        "azycode review --local",
+        "azycode review --local --json",
+        "azycode review --security",
+        "azycode review --security --json",
+        "azycode review \"review current changes\""
+      ],
+      notes: ["Local review is heuristic and does not call a provider.", "--security combines local heuristics with optional model review."]
+    },
+    patch: {
+      summary: "Validate patches in an isolated worktree before applying them.",
+      usage: ["azycode patch validate patch.diff", "azycode patch validate patch.diff --json", "azycode patch validate patch.diff --check \"npm test\""],
+      notes: ["Never mutates the main workspace.", "Falls back to git apply --check when worktrees are unavailable."]
     },
     permissions: {
       summary: "Permission profiles control tool categories: read, write, shell, network, git, MCP, subagents.",
@@ -1541,6 +1561,43 @@ async function directMode(mode, args) {
   const cfg = loadConfig();
   mode = normalizeMode(mode);
   const flags = parseFlags(args);
+  if (mode === "review" && flags.security) {
+    const cwd = process.cwd();
+    const review = buildSecurityReview(cwd);
+    if (flags.json && !hasActiveProvider(cfg)) {
+      console.log(JSON.stringify(formatSecurityReviewJson(review), null, 2));
+      return;
+    }
+    if (!flags.json) console.log(formatSecurityReview(review));
+    if (!hasActiveProvider(cfg)) {
+      if (!flags.json) console.log("\n(No provider configured — local heuristic review only.)");
+      return;
+    }
+    const prompt = securityReviewPrompt(review);
+    const result = await runAgentSafe({
+      cfg,
+      cwd,
+      prompt,
+      mode: "review",
+      maxSteps: resolveAgentMaxSteps(cfg, flags["max-steps"]),
+      skills: parseSkills(args),
+      includeContext: Boolean(flags.context)
+    }, { cancellable: true });
+    if (result === undefined) {
+      process.exitCode = 1;
+      return;
+    }
+    const modelOutput = typeof result === "string" ? result : result.content;
+    if (flags.json) {
+      console.log(JSON.stringify({
+        ...formatSecurityReviewJson(review),
+        modelReview: modelOutput
+      }, null, 2));
+      return;
+    }
+    console.log(formatSecurityReviewCombined(review, modelOutput));
+    return;
+  }
   if (mode === "review" && flags.local) {
     const review = localReview(process.cwd());
     if (flags.json) console.log(JSON.stringify(formatLocalReviewJson(review), null, 2));
@@ -1570,6 +1627,28 @@ async function directMode(mode, args) {
     console.log(`Saved ${mode} artifact to ${flags.save}.`);
   }
   console.log(typeof result === "string" ? result : result.content);
+}
+
+async function patchCmd(args) {
+  const action = args[0] || "validate";
+  const flags = parseFlags(args);
+  if (action !== "validate") throw new Error("Usage: azycode patch validate <file> [--json] [--check <command>]");
+  const positional = positionalArgs(args, ["check", "file"]);
+  const file = positional[1] || flags.file;
+  if (!file) throw new Error("Usage: azycode patch validate <file> [--json] [--check <command>]");
+  const patch = fs.readFileSync(path.resolve(file), "utf8");
+  const checks = flags.check
+    ? (Array.isArray(flags.check) ? flags.check : [flags.check])
+    : [];
+  const report = await validatePatch({
+    cwd: process.cwd(),
+    patch,
+    checks,
+    timeoutMs: Number(flags.timeout) > 0 ? Number(flags.timeout) : 120_000
+  });
+  if (flags.json) console.log(JSON.stringify(report, null, 2));
+  else console.log(formatPatchValidationReport(report));
+  if (!report.ok) process.exitCode = 1;
 }
 
 async function goal(args) {
