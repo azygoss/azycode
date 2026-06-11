@@ -68,6 +68,26 @@ test("resolveAgentMaxSteps is unlimited by default and optional when set", async
   assert.equal(mod.formatAgentStepLimit(12), "max 12 steps");
 });
 
+test("defaultConfig enables git guard and path protections", async () => {
+  const mod = await import(`../src/config.js?guard=${Date.now()}`);
+  const cfg = mod.defaultConfig();
+  assert.equal(cfg.gitGuard.enabled, true);
+  assert.equal(cfg.pathGuard.allowEnv, false);
+  assert.equal(cfg.shellPolicy.allowDestructive, false);
+  assert.equal(cfg.sandbox.mode, "local");
+});
+
+test("saved gitGuard.enabled false is preserved on load", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azycode-"));
+  process.env.AZYCODE_HOME = dir;
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({
+    gitGuard: { enabled: false }
+  }));
+  const mod = await import(`../src/config.js?gd=${Date.now()}`);
+  const cfg = mod.loadConfig();
+  assert.equal(cfg.gitGuard.enabled, false);
+});
+
 test("permission profiles rewrite effective tool policy", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azycode-"));
   process.env.AZYCODE_HOME = dir;

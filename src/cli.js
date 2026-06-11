@@ -22,7 +22,11 @@ import { addSkill, listSkills, removeSkill, formatSkillsList } from "./skills.js
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
-import { formatGuard, gitGuard } from "./guard.js";
+import { formatGuard, formatGuardJson, gitGuard } from "./guard.js";
+import { runAllBenchmarks, formatBenchReport, listBenchmarks } from "./bench.js";
+import { describePermissionProfile, PERMISSION_PROFILES } from "./permissions.js";
+import { describeExecutionPolicy, resolveExecutionPolicy } from "./execution-policy.js";
+import { formatLocalReviewJson } from "./local-review.js";
 import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
 import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
@@ -38,7 +42,7 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
-  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands"
+  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench"
 ];
 
 async function runAgentSafe(options, { cancellable = false } = {}) {
@@ -107,6 +111,7 @@ export async function main(argv) {
     case "instructions": return instructionsCmd(args);
     case "hooks": return hooksCmd(args);
     case "commands": return commandsCmd(args);
+    case "bench": return await benchCmd(args);
     case "always-approve": return directMode("always-approve", args);
     case "approve": return directMode("always-approve", args);
     case "build": return directMode("build", args);
@@ -155,6 +160,7 @@ function help(args = []) {
       "azycode models sync [all] | azycode models use <model>",
       "azycode tools | azycode tools log",
       "azycode guard status",
+      "azycode bench run --mock",
       "azycode context pack",
       "azycode config set mode <plan|build|always-approve|goal|review>",
       "azycode config set reasoning <minimal|low|medium|high>"
@@ -228,7 +234,8 @@ function commandHelp(topic) {
       usage: [
         "azycode config set mode <plan|build|always-approve|goal|review>",
         "azycode config set reasoning <minimal|low|medium|high>",
-        "azycode config set profile <normal|read-only|safe-write|full-auto>",
+        "azycode config set profile <normal|read-only|plan-only|safe-write|trusted-workspace|full-auto>",
+        "azycode config set guard enabled <true|false>",
         "azycode config set compaction <trim|llm>",
         "azycode config export [file]"
       ],
@@ -253,8 +260,53 @@ function commandHelp(topic) {
     },
     review: {
       summary: "Review local changes or ask the model for review.",
-      usage: ["azycode review --local", "azycode review \"review current changes\""],
+      usage: ["azycode review --local", "azycode review --local --json", "azycode review \"review current changes\""],
       notes: ["Local review is heuristic and does not call a provider."]
+    },
+    permissions: {
+      summary: "Permission profiles control tool categories: read, write, shell, network, git, MCP, subagents.",
+      usage: [
+        "azycode config set profile read-only",
+        "azycode config set profile plan-only",
+        "azycode config set profile trusted-workspace",
+        "azycode config set profile full-auto"
+      ],
+      notes: PERMISSION_PROFILES.map((p) => `${p}: ${describePermissionProfile(p).description}`)
+    },
+    sandbox: {
+      summary: "Execution policy and optional container sandbox backends.",
+      usage: [
+        "azycode config set sandbox.mode local|docker|podman|none",
+        "azycode help sandbox"
+      ],
+      notes: [
+        "sandbox.mode=local runs on host with env allowlist and command redaction.",
+        "docker/podman backends mount workspace and optionally disable network.",
+        "Path guard and git guard apply regardless of sandbox mode."
+      ]
+    },
+    bench: {
+      summary: "Internal benchmark harness for deterministic regression checks.",
+      usage: [
+        "azycode bench list",
+        "azycode bench run --mock",
+        "azycode bench run --mock --json"
+      ],
+      notes: ["Uses mock evaluation by default; no provider required."]
+    },
+    guard: {
+      summary: "Git guard blocks writes and shell on protected branches (main/master) by default.",
+      usage: [
+        "azycode guard status",
+        "azycode guard status --json",
+        "azycode config set guard enabled false"
+      ],
+      notes: ["Use git_checkout with create:true to switch to a feature branch."]
+    },
+    context: {
+      summary: "Repository context packs with layered retrieval and injection hardening.",
+      usage: ["azycode context pack", "azycode context snapshot"],
+      notes: ["Context files are wrapped as untrusted data except AGENTS.md and .azycode/rules.md."]
     }
   };
   const page = pages[topic];
@@ -612,8 +664,40 @@ function toolsCmd(args = []) {
 
 function guard(args) {
   const action = args[0] || "status";
-  if (action !== "status") throw new Error("Usage: azycode guard status");
-  console.log(formatGuard(gitGuard(process.cwd(), loadConfig())));
+  const json = args.includes("--json");
+  if (action !== "status") throw new Error("Usage: azycode guard status [--json]");
+  const result = gitGuard(process.cwd(), loadConfig());
+  if (json) {
+    console.log(JSON.stringify(formatGuardJson(result), null, 2));
+    return;
+  }
+  console.log(formatGuard(result));
+}
+
+async function benchCmd(args) {
+  const action = args[0] || "run";
+  const json = args.includes("--json");
+  const mock = args.includes("--mock") || !args.includes("--live");
+  if (action === "list") {
+    const items = listBenchmarks();
+    if (json) {
+      console.log(JSON.stringify(items, null, 2));
+      return;
+    }
+    for (const item of items) console.log(`${item.id}\t${item.name || item.id}\t${item.type || ""}`);
+    return;
+  }
+  if (action === "run") {
+    const report = await runAllBenchmarks({ mock });
+    if (json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    console.log(formatBenchReport(report));
+    if (report.failed > 0) process.exitCode = 1;
+    return;
+  }
+  throw new Error("Usage: azycode bench <list|run> [--mock] [--json]");
 }
 
 async function status() {
@@ -851,8 +935,8 @@ async function configCmd(args) {
     cfg.toolPolicy[tool] = mode;
   } else if (args[0] === "set" && args[1] === "profile") {
     const profile = args[2];
-    if (!["normal", "read-only", "safe-write", "full-auto"].includes(profile)) {
-      throw new Error("Profile must be one of: normal, read-only, safe-write, full-auto");
+    if (!PERMISSION_PROFILES.includes(profile)) {
+      throw new Error(`Profile must be one of: ${PERMISSION_PROFILES.join(", ")}`);
     }
     cfg.permissionProfile = profile;
     applyPermissionProfile(cfg);
@@ -1094,10 +1178,13 @@ async function memory(args) {
 async function contextCmd(args) {
   if (args[0] === "pack") {
     const flags = parseFlags(args.slice(1));
-    console.log(formatContextPack(await contextPack(process.cwd(), {
+    const pack = await contextPack(process.cwd(), {
       maxFiles: flags.maxFiles || flags["max-files"],
-      maxBytes: flags.maxBytes || flags["max-bytes"]
-    })));
+      maxBytes: flags.maxBytes || flags["max-bytes"],
+      prompt: flags.prompt || ""
+    });
+    if (flags.json) console.log(JSON.stringify(pack, null, 2));
+    else console.log(formatContextPack(pack));
     return;
   }
   const snapshot = repoSnapshot(process.cwd());
@@ -1222,7 +1309,9 @@ async function directMode(mode, args) {
   mode = normalizeMode(mode);
   const flags = parseFlags(args);
   if (mode === "review" && flags.local) {
-    console.log(formatLocalReview(localReview(process.cwd())));
+    const review = localReview(process.cwd());
+    if (flags.json) console.log(JSON.stringify(formatLocalReviewJson(review), null, 2));
+    else console.log(formatLocalReview(review));
     return;
   }
   const prompt = positionalArgs(args, ["save"]).join(" ") || await interactivePrompt({ ...cfg, mode });

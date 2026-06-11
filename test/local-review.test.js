@@ -44,6 +44,34 @@ test("localReview detects child_process.exec in diff", () => {
   assert(review.findings.some((f) => f.title.includes("Unsafe shell")));
 });
 
+test("localReview detects path traversal patterns in diff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "bad.js"), "const p = path.join(base, req.query.file)\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "path-traversal" || f.title.includes("path traversal")));
+});
+
+test("localReview detects insecure random for tokens", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "token.js"), "const token = Math.random().toString() + 'session'\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("random") || f.title.includes("token")));
+});
+
+test("localReview flags CI workflow changes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.mkdirSync(path.join(dir, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".github", "workflows", "ci.yml"), "name: ci\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.title.includes("CI workflow")));
+});
+
 test("localReview detects TODO and FIXME markers in diff", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

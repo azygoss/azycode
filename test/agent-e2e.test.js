@@ -378,7 +378,7 @@ test("runAgent can include a context pack in the system prompt", async () => {
   fs.writeFileSync(path.join(cwd, "README.md"), "# context\n");
   let sawContext = false;
   const { server, port } = await mockChatServer((body) => {
-    sawContext = body.messages[0].content.includes("Context Pack") && body.messages[0].content.includes("README.md");
+    sawContext = body.messages[0].content.includes("<context-pack>") && body.messages[0].content.includes("README.md");
     return { choices: [{ message: { role: "assistant", content: "ok" } }] };
   });
 
