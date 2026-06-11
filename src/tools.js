@@ -6,7 +6,7 @@ import { confirm } from "./prompt.js";
 import { gitGuard, validateBranchName } from "./guard.js";
 import { runTodoAction } from "./todos.js";
 import { execFileCancellable } from "./exec.js";
-import { clearContextPackCache } from "./context.js";
+import { notifyContextWorkspaceMutation, shouldInvalidateContextForShell } from "./context.js";
 import { listMcpToolCatalog } from "./mcp.js";
 import { resolveToolPermission } from "./permissions.js";
 import { evaluateShellPolicy } from "./shell-risk.js";
@@ -28,8 +28,8 @@ const MAX_LIST_ENTRIES = 2000;
 const READ_CONCURRENCY = 6;
 const SEARCH_EXCLUDE_DIRS = ["node_modules", "dist", ".git", ".next", "build", "coverage", "target", ".cache"];
 
-function invalidateWorkspaceCaches() {
-  clearContextPackCache();
+function invalidateWorkspaceCaches(kind = "write", detail = "") {
+  notifyContextWorkspaceMutation(kind, detail);
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -455,6 +455,9 @@ export function createTools({
       });
       const text = formatShellResultForModel(result);
       if (!result.ok) throw new Error(text);
+      if (shouldInvalidateContextForShell(command)) {
+        invalidateWorkspaceCaches("shell", command);
+      }
       return text;
     }),
     tool("todo", "Manage the workspace todo list for multi-step tasks.", {
