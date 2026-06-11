@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { addMemory, removeMemory, searchMemory } from "../src/memory.js";
-import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "../src/context.js";
+import { clearContextPackCache, contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "../src/context.js";
 
 test("memory add/search/remove works in isolated AZYCODE_HOME", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-memory-"));
@@ -28,6 +28,19 @@ test("repo snapshot summarizes files and package scripts", () => {
   assert.equal(snapshot.package.name, "demo");
   assert(snapshot.files.includes("src/index.js"));
   assert.match(formatted, /scripts: test/);
+});
+
+test("contextPack caches results until workspace inputs change", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-context-cache-"));
+  fs.writeFileSync(path.join(dir, "README.md"), "cache v1\n");
+  clearContextPackCache();
+  const first = await contextPack(dir, { maxFiles: 5, maxBytes: 2000 });
+  const second = await contextPack(dir, { maxFiles: 5, maxBytes: 2000 });
+  assert.strictEqual(first, second);
+  fs.writeFileSync(path.join(dir, "README.md"), "cache v2\n");
+  const third = await contextPack(dir, { maxFiles: 5, maxBytes: 2000 });
+  assert.notStrictEqual(second, third);
+  assert.match(third.files[0].content, /cache v2/);
 });
 
 test("contextPack respects .azyignore and formats selected files", async () => {

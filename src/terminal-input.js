@@ -76,10 +76,16 @@ export function createPromptSession({ output = defaultOutput, getPrompt }) {
   function handleTabKeypress(key, rl, onShortcut) {
     key = normalizeTabKey(key);
     if (key?.name !== "tab") return false;
+    if (rl?.line?.startsWith("/")) return false;
     onShortcut(key, rl);
     stripTrailingTab(rl);
     return true;
   }
 
   return { refreshPrompt, stripTrailingTab, paintPromptLine, handleTabKeypress, syncReadlinePrompt };
+}
+
+export function syncTuiPrompt(rl, promptSession) {
+  if (!rl || !promptSession) return;
+  promptSession.refreshPrompt(rl);
 }

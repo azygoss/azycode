@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { applyShortcut, completeTuiInput, loginProvider, normalizeTabKey, promptLabel, stripTrailingTab, trimConversation } from "../src/tui.js";
+import { applyShortcut, buildCommandPaletteLines, buildCompactPaletteHints, buildComposerPaneLines, buildLivePaletteLines, buildSelectablePaletteLines, completeTuiInput, filterPaletteCommands, loginProvider, normalizeTabKey, promptLabel, resolveSlashSubmit, stripTrailingTab, trimConversation } from "../src/tui.js";
 import { promptStatus, stripAnsi, visibleLength, style } from "../src/ui.js";
 
 test("trimConversation starts retained context at a user boundary", () => {
@@ -46,7 +46,7 @@ test("stripTrailingTab redraws the prompt on the readline output stream", () => 
 
   stripTrailingTab(rl, state);
   assert.equal(rl.line, "hi");
-  assert.match(painted, /high/);
+  assert.match(painted, /› hi/);
 });
 
 test("applyShortcut rotates reasoning and mode without persistence when requested", () => {
@@ -56,10 +56,10 @@ test("applyShortcut rotates reasoning and mode without persistence when requeste
   applyShortcut({ name: "tab" }, state, options);
   applyShortcut({ name: "tab", shift: true }, state, options);
   assert.equal(state.cfg.reasoning, "high");
-  assert.equal(state.mode, "always-approve");
+  assert.equal(state.mode, "build");
   assert.equal(events.length, 2);
   assert.match(events[0], /reasoning: high/);
-  assert.match(events[1], /mode: always-approve/);
+  assert.match(events[1], /mode: build/);
 });
 
 test("applyShortcut ignores tab while the TUI is busy", () => {
@@ -127,11 +127,77 @@ test("loginProvider asks BYOK for endpoint and model", async () => {
   });
 });
 
-test("promptLabel shows mode, reasoning, and cursor", () => {
+test("buildComposerPaneLines renders dock, palette, and prompt rows", () => {
+  const state = {
+    cwd: process.cwd(),
+    mode: "plan",
+    cfg: { reasoning: "medium", activeProvider: "kimi", activeModel: "kimi-for-coding" }
+  };
+  const idle = buildComposerPaneLines(state, { line: "hello" }).map(stripAnsi).join("\n");
+  assert.match(idle, /hello/);
+  assert.doesNotMatch(idle, /\/status/);
+  const slash = buildComposerPaneLines(state, { line: "/status", paletteFilter: "status" }).map(stripAnsi).join("\n");
+  assert.match(slash, /\/status/);
+  assert.match(slash, /active model|commands/);
+  assert.doesNotMatch(slash, /\/exit/);
+});
+
+test("buildLivePaletteLines renders boxed palette and filters commands", () => {
+  const state = {
+    cwd: process.cwd(),
+    mode: "plan",
+    cfg: { reasoning: "medium", activeProvider: "kimi", activeModel: "kimi-for-coding" }
+  };
+  const lines = buildLivePaletteLines(state, "status", 12).map(stripAnsi).join("\n");
+  assert.match(lines, /commands/);
+  assert.match(lines, /\/status/);
+  assert.doesNotMatch(lines, /\/exit/);
+});
+
+test("filterPaletteCommands and resolveSlashSubmit support palette navigation", () => {
+  const state = {
+    cwd: process.cwd(),
+    mode: "plan",
+    cfg: { reasoning: "medium", activeProvider: "kimi", activeModel: "kimi-for-coding" }
+  };
+  const items = filterPaletteCommands(state, "status");
+  assert.ok(items.some(([command]) => command === "/status"));
+  assert.equal(resolveSlashSubmit("/status", items, 0), "/status");
+  assert.equal(resolveSlashSubmit("/", items, 0), items[0][0]);
+  const selected = buildSelectablePaletteLines(state, "status", { selection: 0 }).map(stripAnsi).join("\n");
+  assert.match(selected, /›.*\/status/);
+  assert.match(selected, /pick/);
+});
+
+test("buildCommandPaletteLines filters slash commands", () => {
+  const state = {
+    cwd: process.cwd(),
+    mode: "plan",
+    cfg: { reasoning: "medium", activeProvider: "kimi", activeModel: "kimi-for-coding" }
+  };
+  const lines = buildCommandPaletteLines(state, "status");
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.match(plain, /\/status/);
+  assert.doesNotMatch(plain, /\/exit/);
+});
+
+test("buildCompactPaletteHints stays compact and filters slash commands", () => {
+  const state = {
+    cwd: process.cwd(),
+    mode: "plan",
+    cfg: { reasoning: "medium", activeProvider: "kimi", activeModel: "kimi-for-coding" }
+  };
+  const lines = buildCompactPaletteHints(state, "status", 6);
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.ok(lines.length <= 7);
+  assert.match(plain, /\/status/);
+  assert.doesNotMatch(plain, /\/exit/);
+});
+
+test("promptLabel uses minimal grok-style composer cursor", () => {
   const label = promptLabel({ mode: "plan", cfg: { reasoning: "high" } });
-  assert.match(stripAnsi(label), /plan/);
-  assert.match(stripAnsi(label), /high/);
   assert.match(stripAnsi(label), /›/);
+  assert.doesNotMatch(stripAnsi(label), /plan/);
   assert.equal(label.endsWith(" "), true);
 });
 
@@ -147,6 +213,11 @@ test("promptStatus adds subagent and profile indicators", () => {
 test("promptStatus hides non-default profile", () => {
   const status = promptStatus({ mode: "plan", reasoning: "low", profile: "normal" });
   assert.doesNotMatch(stripAnsi(status), /normal/);
+});
+
+test("promptStatus shows conversation count in the prompt bar", () => {
+  const status = promptStatus({ mode: "plan", reasoning: "medium", messages: 6, maxMessages: 80 });
+  assert.match(stripAnsi(status), /6\/80 msg/);
 });
 
 test("handleKeypress on Tab defers backspace so it removes the tab, not the user input", async () => {
@@ -193,7 +264,7 @@ test("handleKeypress on Tab defers backspace so it removes the tab, not the user
   assert.equal(mockRl.line, "hello");
 
   await pressTab(true);
-  assert.equal(state.mode, "always-approve");
+  assert.equal(state.mode, "build");
   assert.equal(writes.length, 2);
   assert.equal(writes[1].key.name, "backspace");
   assert.equal(mockRl.line, "hello");

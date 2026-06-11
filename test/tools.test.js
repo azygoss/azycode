@@ -74,6 +74,68 @@ test("built-in tools inspect read and manage workspace paths", async () => {
   assert.equal(fs.existsSync(path.join(dir, "nested", "moved.txt")), false);
 });
 
+test("read_file rejects binary files with metadata message", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "binary.bin"), Buffer.from([0, 1, 2, 0, 4]));
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const output = await tools.find((tool) => tool.name === "read_file").run({ file: "binary.bin" });
+  assert.match(output, /Binary file/);
+});
+
+test("list_files caps huge directory listings", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  for (let i = 0; i < 2100; i += 1) fs.writeFileSync(path.join(dir, `f${i}.txt`), "x");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const output = await tools.find((tool) => tool.name === "list_files").run({ dir: ".", depth: 1 });
+  assert.match(output, /truncated at 2000 entries/);
+});
+
+test("read_many_files rejects binary files with metadata message", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "binary.bin"), Buffer.from([0, 1, 2, 0, 4]));
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const output = await tools.find((tool) => tool.name === "read_many_files").run({ files: ["binary.bin"] });
+  assert.match(output, /Binary file/);
+});
+
+test("shell tool aborts when signal is triggered", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {}, gitGuard: { enabled: false } } });
+  const shell = tools.find((tool) => tool.name === "shell");
+  const controller = new AbortController();
+  const started = Date.now();
+  const promise = shell.run(
+    { command: process.platform === "win32" ? "timeout 30" : "sleep 30", timeoutMs: 60_000 },
+    { signal: controller.signal }
+  );
+  setTimeout(() => controller.abort(), 80);
+  await assert.rejects(promise, /Aborted/i);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test("read_many_files tolerates missing files in a batch", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "present.txt"), "ok\n", "utf8");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const output = await tools.find((tool) => tool.name === "read_many_files").run({ files: ["present.txt", "missing.txt"] });
+  assert.match(output, /present\.txt[\s\S]*ok/);
+  assert.match(output, /missing\.txt[\s\S]*ERROR:/);
+});
+
+test("edit_file supports replaceAll", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  fs.writeFileSync(path.join(dir, "dup.txt"), "foo bar foo\n", "utf8");
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  const result = await tools.find((tool) => tool.name === "edit_file").run({
+    file: "dup.txt",
+    search: "foo",
+    replace: "baz",
+    replaceAll: true
+  });
+  assert.match(result, /2 replacements/);
+  assert.equal(fs.readFileSync(path.join(dir, "dup.txt"), "utf8"), "baz bar baz\n");
+});
+
 test("alwaysApprove does not bypass git guard", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
@@ -150,4 +212,25 @@ test("set_mode tool switches runtime mode for the agent run", async () => {
   assert.ok(setMode);
   assert.match(await setMode.run({ mode: "plan", reason: "plan first" }), /plan/);
   assert.equal(runtime.getMode(), "plan");
+});
+
+test("git_worktree tool can add and list isolated worktrees", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-worktree-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "test"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "README.md"), "hello\n", "utf8");
+  execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: dir, stdio: "ignore" });
+  const tools = createTools({
+    cwd: dir,
+    cfg: { alwaysApprove: true, gitGuard: { enabled: false }, toolPolicy: {} }
+  });
+  const gitWorktree = tools.find((tool) => tool.name === "git_worktree");
+  assert.ok(gitWorktree);
+  await gitWorktree.run({ action: "add", name: "feat-a", branch: "feat/a", createBranch: true });
+  const listed = await gitWorktree.run({ action: "list" });
+  assert.match(listed, /feat\/a|\.azycode\/worktrees\/feat-a/i);
+  const worktreePath = path.join(dir, ".azycode", "worktrees", "feat-a");
+  assert.ok(fs.existsSync(worktreePath));
 });

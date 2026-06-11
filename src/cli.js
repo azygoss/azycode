@@ -6,14 +6,18 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
-import { loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
-import { AgentStepLimitError } from "./agent-errors.js";
+import { applyPermissionProfile, COMPACTION_MODES, loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, updateState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
+import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
+import { compactConversationWithModel } from "./compaction.js";
+import { loadHookConfig } from "./hooks.js";
+import { trimConversation } from "./conversation.js";
+import { AgentCancelledError, AgentRunError, AgentStepLimitError } from "./agent-errors.js";
 import { LlmClient } from "./llm.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
 import { ask, askSecret } from "./prompt.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
-import { addSubagent, listSubagents, removeSubagent } from "./subagents.js";
+import { addSubagent, formatSubagentResults, listSubagents, removeSubagent, runSubagentsParallel } from "./subagents.js";
 import { addSkill, listSkills, removeSkill, formatSkillsList } from "./skills.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
@@ -23,21 +27,35 @@ import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
 import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
 import { launchTui } from "./tui.js";
-import { createAgentProgress, formatAgentEvent, formatAgentStepLine, runtimeSnapshot } from "./harness.js";
+import { createAgentProgress, formatAgentRunSummary, formatAgentStepLine, formatSessionTranscript, formatToolRunLine, hasActiveProvider, runtimeSnapshot, sessionListEntries, summarizeAgentRun, summarizeToolArgs, toolRunListEntries, withAgentAbort } from "./harness.js";
+import { discoverProjectInstructions, listInstructionSources } from "./instructions.js";
+import { expandFileReferences } from "./prompt-expand.js";
+import { listConfiguredMcpServers } from "./mcp.js";
+import { readMultilinePrompt } from "./composer-input.js";
 
 const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
-  "run", "chat", "always-approve", "approve", "plan", "review", "goal", "mission", "subagent", "skills", "keys"
+  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands"
 ];
 
-async function runAgentSafe(options) {
+async function runAgentSafe(options, { cancellable = false } = {}) {
+  const invoke = (signal) => runAgent({ progressStyle: "cli", signal, ...options });
   try {
-    return await runAgent(options);
+    if (cancellable && process.stdin.isTTY) {
+      return await withAgentAbort(invoke, {
+        onCancel: () => console.error("Cancelling agent run… (Ctrl+C again to exit)")
+      });
+    }
+    return await invoke(options.signal || null);
   } catch (error) {
-    if (error instanceof AgentStepLimitError) {
+    if (error instanceof AgentCancelledError) {
+      console.error("Agent run cancelled.");
+    } else if (error instanceof AgentStepLimitError) {
+      console.error(error.message);
+    } else if (error instanceof AgentRunError && error.report) {
       console.error(error.message);
     } else if (error.message?.includes("No active provider")) {
       console.error("No active provider configured. Run 'azycode login <provider>' first.");
@@ -83,9 +101,16 @@ export async function main(argv) {
     case "completion": return completion(args);
     case "config": return configCmd(args);
     case "run": return run(args);
+    case "exec": return execCmd(args);
     case "chat": return chat(args);
+    case "mcp": return mcpCmd(args);
+    case "instructions": return instructionsCmd(args);
+    case "hooks": return hooksCmd(args);
+    case "commands": return commandsCmd(args);
     case "always-approve": return directMode("always-approve", args);
     case "approve": return directMode("always-approve", args);
+    case "build": return directMode("build", args);
+    case "normal": return directMode("build", args);
     case "plan": return directMode("plan", args);
     case "review": return directMode("review", args);
     case "goal": return goal(args);
@@ -131,7 +156,7 @@ function help(args = []) {
       "azycode tools | azycode tools log",
       "azycode guard status",
       "azycode context pack",
-      "azycode config set mode <plan|always-approve|goal|review>",
+      "azycode config set mode <plan|build|always-approve|goal|review>",
       "azycode config set reasoning <minimal|low|medium|high>"
     ]},
     { title: "Diagnostics", items: [
@@ -142,7 +167,7 @@ function help(args = []) {
       "azycode completion <bash|zsh|fish>"
     ]},
     { title: "Interactive shortcuts", items: [
-      "Shift+Tab rotates mode: plan -> always-approve -> goal -> review",
+      "Shift+Tab rotates mode: plan -> build -> always-approve -> goal -> review",
       "Tab rotates reasoning: minimal -> low -> medium -> high",
       "Ctrl+D submits the interactive prompt"
     ]}
@@ -186,7 +211,7 @@ function commandHelp(topic) {
         "azycode subagent add <name>",
         "azycode subagent run <name> \"task\""
       ],
-      notes: ["Built-ins: planner, reviewer, implementer."]
+      notes: ["Built-ins: planner, reviewer, implementer, explorer.", "Use spawn for parallel subagent runs."]
     },
     skills: {
       summary: "Manage reusable skill prompts.",
@@ -201,9 +226,10 @@ function commandHelp(topic) {
     config: {
       summary: "Inspect and change local Azycode configuration.",
       usage: [
-        "azycode config set mode <plan|always-approve|goal|review>",
+        "azycode config set mode <plan|build|always-approve|goal|review>",
         "azycode config set reasoning <minimal|low|medium|high>",
         "azycode config set profile <normal|read-only|safe-write|full-auto>",
+        "azycode config set compaction <trim|llm>",
         "azycode config export [file]"
       ],
       notes: ["Set AZYCODE_HOME to isolate credentials and state."]
@@ -249,15 +275,62 @@ function commandHelp(topic) {
 function init() {
   fs.mkdirSync(".azycode/missions", { recursive: true });
   fs.mkdirSync(".azycode/agents", { recursive: true });
+  fs.mkdirSync(".azycode/commands", { recursive: true });
   const rules = ".azycode/rules.md";
+  const agents = "AGENTS.md";
   const mission = ".azycode/missions/example.yml";
+  const hooks = ".azycode/hooks.json";
+  const reviewCmd = ".azycode/commands/review.md";
+  if (!fs.existsSync(agents)) {
+    fs.writeFileSync(agents, "# AGENTS.md\n\n## Repository expectations\n\n- Keep changes scoped and verifiable.\n- Run relevant checks before final output.\n- Match existing code style and naming.\n", "utf8");
+  }
   if (!fs.existsSync(rules)) {
     fs.writeFileSync(rules, "# Azycode Rules\n\n- Keep changes scoped.\n- Run relevant checks before final output.\n", "utf8");
   }
   if (!fs.existsSync(mission)) {
     fs.writeFileSync(mission, "name: repo-review\nmode: review\nsteps:\n  - \"Inspect the repository structure.\"\n  - \"Review current git diff and identify risks.\"\n", "utf8");
   }
-  console.log("Initialized .azycode/ with rules, agents, and missions folders.");
+  if (!fs.existsSync(hooks)) {
+    fs.writeFileSync(hooks, `${JSON.stringify({
+      agent_run_start: [],
+      agent_run_end: [],
+      pre_model: [],
+      post_model: [],
+      pre_tool: [],
+      post_tool: []
+    }, null, 2)}\n`, "utf8");
+  }
+  if (!fs.existsSync(reviewCmd)) {
+    fs.writeFileSync(reviewCmd, `---
+name: review
+description: Focused local code review
+---
+Review the current git diff and recent changes.
+Lead with actionable findings ordered by severity.
+Cite file paths and include verification gaps.
+`, "utf8");
+  }
+  const parallelMission = ".azycode/missions/parallel-review.json";
+  if (!fs.existsSync(parallelMission)) {
+    fs.writeFileSync(parallelMission, `${JSON.stringify({
+      name: "parallel-review",
+      mode: "review",
+      passContext: true,
+      steps: [
+        { id: "plan", prompt: "Outline a concise review plan for the current repository changes." },
+        {
+          id: "parallel-review",
+          dependsOn: "plan",
+          parallel: [
+            { id: "diff-review", agent: "reviewer", prompt: "Review the current git diff for bugs and regressions." },
+            { id: "structure-scan", agent: "explorer", prompt: "Map the repository areas most likely affected by the diff." }
+          ]
+        },
+        { id: "summarize", dependsOn: "parallel-review", prompt: "Combine the parallel review outputs into one prioritized action list." }
+      ]
+    }, null, 2)}\n`, "utf8");
+  }
+  console.log("Initialized AGENTS.md, .azycode/ rules, agents, missions, hooks, and commands.");
 }
 
 function providers() {
@@ -302,10 +375,16 @@ function dashboard() {
   const overview = [
     ["mode", snap.mode],
     ["reasoning", snap.reasoning],
+    ["profile", snap.profile],
     ["provider", snap.provider || "(none)"],
     ["model", snap.model || "(none)"],
     ["provider ready", badge(snap.providerReady ? "ok" : "missing")],
     ["always approve", badge(snap.alwaysApprove ? "on" : "off")],
+    ["compaction", cfg.compaction || "trim"],
+    ["stream", badge(cfg.streamResponses ? "on" : "off")],
+    ["agent steps", snap.agentMaxSteps ? String(snap.agentMaxSteps) : "unlimited"],
+    ["skills", String(snap.counts.skills)],
+    ["subagents", String(snap.counts.subagents)],
     ["git guard", `${statusDot(snap.guard.ok ? "ok" : "blocked")} ${badge(snap.guard.ok ? "ok" : "blocked")}`]
   ];
   for (const row of keyValueList(overview)) console.log(`  ${row}`);
@@ -412,38 +491,13 @@ complete -F _azycode_complete azycode`);
     return;
   }
   if (shell === "zsh") {
+    const zshCommands = COMMANDS.map((name) => `    '${name}:${name} command'`).join("\n");
     console.log(`#compdef azycode
 
 _azycode() {
   local -a commands
   commands=(
-    'help:show help'
-    'providers:list provider presets'
-    'init:create .azycode scaffold'
-    'doctor:inspect installation'
-    'login:add provider credentials'
-    'status:show config and provider status'
-    'models:list or select models'
-    'provider:inspect active provider'
-    'health:check configured providers'
-    'dashboard:show local overview'
-    'tools:list tool policy'
-    'guard:show git guard'
-    'session:inspect sessions'
-    'memory:manage memory notes'
-    'context:show repo context'
-    'audit:run local product audit'
-    'report:create redacted support report'
-    'completion:emit shell completion'
-    'config:manage configuration'
-    'run:run coding agent'
-    'chat:start interactive chat'
-    'plan:plan mode'
-    'review:review mode'
-    'goal:manage goals'
-    'mission:run missions'
-    'subagent:manage subagents'
-    'keys:show keyboard shortcuts'
+${zshCommands}
   )
   _describe 'azycode command' commands
 }
@@ -520,18 +574,12 @@ function toolsCmd(args = []) {
   if (args[0] === "log") {
     const state = loadState();
     ui.title("Tool Runs");
-    ui.table((state.toolRuns || []).slice(-20).map((run) => ({
-      at: run.at,
-      session: run.sessionId,
-      step: run.step,
-      tool: run.name,
-      ok: run.ok,
-      ms: run.durationMs
-    })), [
+    ui.table(toolRunListEntries(state.toolRuns || {}), [
       { key: "at", label: "at" },
       { key: "session", label: "session" },
       { key: "step", label: "step" },
       { key: "tool", label: "tool" },
+      { key: "summary", label: "summary" },
       { key: "ok", label: "ok" },
       { key: "ms", label: "ms" }
     ]);
@@ -577,6 +625,7 @@ async function status() {
     ["mode", cfg.mode],
     ["reasoning", cfg.reasoning],
     ["always approve", badge(cfg.alwaysApprove || cfg.mode === "always-approve")],
+    ["compaction", cfg.compaction || "trim"],
     ["active provider", cfg.activeProvider || "(none)"],
     ["active model", cfg.activeModel || "(none)"]
   ];
@@ -761,16 +810,26 @@ async function health() {
     console.log("No providers configured. Run 'azycode login <provider>'.");
     return;
   }
-  for (const name of names) {
+  const results = await Promise.all(names.map(async (name) => {
     try {
       const client = new LlmClient(cfg, name);
       const result = await client.listModels();
       const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
-      console.log(`${name}: ok (${count} models)`);
+      return { name, ok: true, count, active: cfg.activeProvider === name };
     } catch (error) {
-      console.log(`${name}: failed (${error.message})`);
+      return { name, ok: false, error: error.message, active: cfg.activeProvider === name };
     }
-  }
+  }));
+  for (const line of renderTable(results.map((result) => ({
+    provider: result.active ? `${result.name} *` : result.name,
+    status: result.ok ? badge("ok") : badge("failed"),
+    detail: result.ok ? `${result.count} models` : result.error
+  })), [
+    { key: "provider", label: "provider" },
+    { key: "status", label: "status" },
+    { key: "detail", label: "detail" }
+  ])) console.log(line);
+  if (results.some((result) => !result.ok)) process.exitCode = 1;
 }
 
 async function configCmd(args) {
@@ -796,6 +855,7 @@ async function configCmd(args) {
       throw new Error("Profile must be one of: normal, read-only, safe-write, full-auto");
     }
     cfg.permissionProfile = profile;
+    applyPermissionProfile(cfg);
   } else if (args[0] === "set" && args[1] === "guard") {
     const key = args[2];
     const value = parseBoolean(args[3]);
@@ -803,6 +863,12 @@ async function configCmd(args) {
     if (key === "enabled") cfg.gitGuard.enabled = value;
     else if (key === "require-clean") cfg.gitGuard.requireClean = value;
     else throw new Error("Usage: azycode config set guard <enabled|require-clean> <true|false>");
+  } else if (args[0] === "set" && args[1] === "compaction") {
+    const mode = args[2];
+    if (!COMPACTION_MODES.includes(mode)) {
+      throw new Error(`Compaction must be one of: ${COMPACTION_MODES.join(", ")}`);
+    }
+    cfg.compaction = mode;
   } else if (args[0] === "toggle" && args[1] === "always-approve") {
     cfg.alwaysApprove = !cfg.alwaysApprove;
   } else if (args[0] === "export") {
@@ -839,15 +905,15 @@ async function session(args) {
       return;
     }
     ui.title("Sessions");
-    ui.table(Object.entries(state.sessions || {}).map(([id, item]) => ({
-      id,
-      created: item.createdAt || "",
-      mode: item.mode || "",
-      prompt: String(item.prompt || "").slice(0, 80)
-    })), [
+    ui.table(sessionListEntries(state.sessions || {}), [
       { key: "id", label: "id" },
       { key: "created", label: "created" },
       { key: "mode", label: "mode" },
+      { key: "status", label: "status" },
+      { key: "steps", label: "steps" },
+      { key: "tools", label: "tools" },
+      { key: "duration", label: "duration" },
+      { key: "tokens", label: "tokens" },
       { key: "prompt", label: "prompt" }
     ]);
     return;
@@ -861,7 +927,7 @@ async function session(args) {
   if (action === "transcript") {
     const id = args[1];
     if (!state.sessions?.[id]) throw new Error(`No session ${id}`);
-    console.log(formatTranscript(state.sessions[id]));
+    console.log(formatSessionTranscript(state.sessions[id], { style: "cli" }));
     return;
   }
   if (action === "export") {
@@ -872,7 +938,132 @@ async function session(args) {
     console.log(`Session ${id} exported to ${file}.`);
     return;
   }
-  throw new Error("Usage: azycode session list|show <id>|transcript <id>|export <id> <file>");
+  if (action === "resume") {
+    const cfg = loadConfig();
+    const flags = parseFlags(args.slice(1));
+    const tail = args.slice(1);
+    const useLast = tail.includes("--last");
+    const positional = positionalArgs(tail, ["max-steps"]);
+    let sessionId = useLast ? null : positional[0];
+    if (!sessionId || sessionId === "--last") {
+      const entries = Object.entries(state.sessions || {})
+        .sort((a, b) => String(b[1]?.createdAt || "").localeCompare(String(a[1]?.createdAt || "")));
+      sessionId = entries[0]?.[0];
+    }
+    if (!sessionId || !state.sessions?.[sessionId]) throw new Error("No session to resume. Run an agent task first.");
+    const selected = state.sessions[sessionId];
+    const followUp = (useLast ? positional : positional.slice(positional[0] === sessionId ? 1 : 0)).join(" ")
+      || (await interactivePrompt(cfg));
+    const conversation = (selected.messages || []).filter((message) => message.role !== "system");
+    const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
+    const skills = parseSkills(args);
+    const onEvent = flags.progress
+      ? createAgentProgress({ maxSteps, style: "cli", onLine: (line) => console.error(line) })
+      : null;
+    const result = await runAgentSafe({
+      cfg,
+      cwd: process.cwd(),
+      prompt: followUp,
+      mode: selected.mode || cfg.mode,
+      maxSteps,
+      conversation,
+      returnSession: true,
+      onEvent,
+      includeContext: Boolean(flags.context),
+      skills,
+      stream: flags.stream ? true : undefined
+    }, { cancellable: true });
+    if (result === undefined) {
+      process.exitCode = 1;
+      return;
+    }
+    console.log(typeof result === "string" ? result : result.content);
+    return;
+  }
+  throw new Error("Usage: azycode session list|show <id>|transcript <id>|export <id> <file>|resume [id|--last] [prompt]");
+}
+
+async function execCmd(args) {
+  const cfg = loadConfig();
+  const flags = parseFlags(args);
+  const rawPrompt = positionalArgs(args).join(" ");
+  if (!rawPrompt) throw new Error("Usage: azycode exec [--json] [--progress] [--context] \"task\"");
+  const { prompt } = resolveAgentPrompt(rawPrompt, process.cwd());
+  const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
+  const skills = parseSkills(args);
+  const events = [];
+  const onEvent = (event) => {
+    events.push(event);
+    if (flags.progress && !flags.json) console.error(formatAgentStepLine(event, { maxSteps, style: "cli" }));
+  };
+  const result = await runAgentSafe({
+    cfg,
+    cwd: process.cwd(),
+    prompt,
+    maxSteps,
+    onEvent,
+    returnSession: true,
+    includeContext: Boolean(flags.context),
+    skills,
+    stream: flags.stream ? true : undefined
+  }, { cancellable: true });
+  if (result === undefined) {
+    process.exitCode = 1;
+    if (flags.json) console.log(JSON.stringify({ ok: false, events }, null, 2));
+    return;
+  }
+  if (flags.json) {
+    console.log(JSON.stringify({
+      ok: true,
+      content: result.content,
+      sessionId: result.sessionId,
+      summary: formatAgentRunSummary(result.events || events, { style: "cli" }),
+      events: result.events || events
+    }, null, 2));
+    return;
+  }
+  console.log(result.content);
+}
+
+function mcpCmd(args) {
+  const cfg = loadConfig();
+  const action = args[0] || "list";
+  if (action === "list") {
+    const rows = listConfiguredMcpServers(cfg);
+    if (!rows.length) {
+      console.log("No MCP servers configured. Add entries under mcpServers in config.json.");
+      return;
+    }
+    ui.table(rows, [
+      { key: "name", label: "name" },
+      { key: "transport", label: "transport" },
+      { key: "command", label: "command" },
+      { key: "enabled", label: "enabled" }
+    ]);
+    return;
+  }
+  throw new Error("Usage: azycode mcp list");
+}
+
+function instructionsCmd(args) {
+  const cwd = process.cwd();
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({
+      sources: listInstructionSources(cwd),
+      text: discoverProjectInstructions(cwd)
+    }, null, 2));
+    return;
+  }
+  const sources = listInstructionSources(cwd);
+  console.log("Instruction sources:");
+  for (const source of sources) console.log(`- ${source}`);
+  const text = discoverProjectInstructions(cwd);
+  if (text) {
+    console.log("");
+    console.log(text);
+  } else {
+    console.log("(no instruction files found — create AGENTS.md or .azycode/rules.md)");
+  }
 }
 
 async function memory(args) {
@@ -948,13 +1139,26 @@ function auditChecks() {
 async function run(args) {
   const cfg = loadConfig();
   const flags = parseFlags(args);
-  const prompt = positionalArgs(args).join(" ") || await interactivePrompt(cfg);
+  const rawPrompt = positionalArgs(args).join(" ") || await interactivePrompt(cfg);
+  const { prompt } = resolveAgentPrompt(rawPrompt, process.cwd());
   const maxSteps = resolveAgentMaxSteps(cfg, flags["max-steps"]);
   const skills = parseSkills(args);
   const onEvent = flags.progress
     ? createAgentProgress({ maxSteps, style: "cli", onLine: (line) => console.error(line) })
     : null;
-  const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, maxSteps, onEvent, includeContext: Boolean(flags.context), skills });
+  const output = await runAgentSafe(
+    {
+      cfg,
+      cwd: process.cwd(),
+      prompt,
+      maxSteps,
+      onEvent,
+      includeContext: Boolean(flags.context),
+      skills,
+      stream: flags.stream ? true : undefined
+    },
+    { cancellable: true }
+  );
   if (output === undefined) {
     process.exitCode = 1;
     return;
@@ -971,7 +1175,25 @@ async function chat(args) {
   console.log(`azycode chat mode=${mode} reasoning=${cfg.reasoning} context=${includeContext} progress=${progress}`);
   console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /skill, /exit");
   const skills = parseSkills(args);
-  const chatState = { cfg, setMode: (next) => { mode = next; }, getMode: () => mode, setContext: (next) => { includeContext = next; }, getContext: () => includeContext, setProgress: (next) => { progress = next; }, getProgress: () => progress, skills, addSkill: (name) => { if (!cfg.skills?.[name]) { console.error(`No skill named ${name}`); return; } chatState.skills = [...chatState.skills, name]; }, removeSkill: (name) => { chatState.skills = chatState.skills.filter((s) => s !== name); }, getSkills: () => chatState.skills };
+  const maxConversation = cfg.maxConversationMessages || 40;
+  let conversation = [];
+  const chatState = {
+    cfg,
+    conversation,
+    maxConversation,
+    setMode: (next) => { mode = next; },
+    getMode: () => mode,
+    setContext: (next) => { includeContext = next; },
+    getContext: () => includeContext,
+    setProgress: (next) => { progress = next; },
+    getProgress: () => progress,
+    skills,
+    addSkill: (name) => { if (!cfg.skills?.[name]) { console.error(`No skill named ${name}`); return; } chatState.skills = [...chatState.skills, name]; },
+    removeSkill: (name) => { chatState.skills = chatState.skills.filter((s) => s !== name); },
+    getSkills: () => chatState.skills,
+    getConversation: () => conversation,
+    setConversation: (next) => { conversation = next; chatState.conversation = next; }
+  };
   if (!process.stdin.isTTY) {
     const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
     for (const raw of lines) {
@@ -1016,7 +1238,7 @@ async function directMode(mode, args) {
     onEvent: flags.progress ? progressPrinter(maxSteps) : null,
     skills,
     includeContext: Boolean(flags.context)
-  });
+  }, { cancellable: true });
   if (result === undefined) {
     process.exitCode = 1;
     return;
@@ -1048,12 +1270,14 @@ async function goal(args) {
     state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
     saveState(state);
     const skills = parseSkills(args);
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills });
-    const done = loadState();
-    done.goals[goalId].status = output !== undefined ? "done" : "stalled";
-    done.goals[goalId].finishedAt = new Date().toISOString();
-    saveState(done);
-    if (output !== undefined) console.log(output);
+    const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills, returnSession: true }, { cancellable: true });
+    updateState((done) => {
+      done.goals[goalId].status = result !== undefined ? "done" : "stalled";
+      done.goals[goalId].finishedAt = new Date().toISOString();
+      if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
+      return done;
+    });
+    if (result !== undefined) console.log(typeof result === "string" ? result : result.content);
     return;
   }
   if (action === "resume") {
@@ -1066,12 +1290,14 @@ async function goal(args) {
     saveState(state);
     const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
     const skills = parseSkills(args);
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills });
-    const done = loadState();
-    done.goals[goalId].status = output !== undefined ? "done" : "stalled";
-    done.goals[goalId].finishedAt = new Date().toISOString();
-    saveState(done);
-    if (output !== undefined) console.log(output);
+    const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills, returnSession: true }, { cancellable: true });
+    updateState((done) => {
+      done.goals[goalId].status = result !== undefined ? "done" : "stalled";
+      done.goals[goalId].finishedAt = new Date().toISOString();
+      if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
+      return done;
+    });
+    if (result !== undefined) console.log(typeof result === "string" ? result : result.content);
     return;
   }
   if (action === "status") {
@@ -1147,12 +1373,38 @@ async function mission(args) {
     console.log(formatMissionReport(args[1], selected));
     return;
   }
-  if (args[0] !== "run" || !args[1]) throw new Error("Usage: azycode mission run ./mission.yml");
+  if (args[0] !== "run" || !args[1]) throw new Error("Usage: azycode mission run ./mission.yml [--progress] [--context] [--skill <name>]");
   const cfg = loadConfig();
-  const result = await runMission({ cfg, cwd: process.cwd(), file: args[1] });
-  console.log(`Mission ${result.missionId} completed.`);
-  for (const step of result.outputs) {
-    console.log(`\n# Step ${step.index}\n${step.output}`);
+  const runArgs = args.slice(1);
+  const flags = parseFlags(runArgs.slice(1));
+  const skills = parseSkills(runArgs);
+  const onEvent = flags.progress
+    ? createAgentProgress({ maxSteps: resolveAgentMaxSteps(cfg), style: "cli", onLine: (line) => console.error(line) })
+    : null;
+  try {
+    const result = await withAgentAbort(async (signal) => runMission({
+      cfg,
+      cwd: process.cwd(),
+      file: args[1],
+      skills,
+      includeContext: Boolean(flags.context),
+      onEvent,
+      progressStyle: "cli",
+      signal
+    }), {
+      onCancel: () => console.error("Cancelling mission… (Ctrl+C again to exit)")
+    });
+    console.log(`Mission ${result.missionId} completed.`);
+    for (const step of result.outputs) {
+      console.log(`\n# Step ${step.index}\n${step.output}`);
+    }
+  } catch (error) {
+    if (error instanceof AgentCancelledError) {
+      console.error("Mission cancelled.");
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
   }
 }
 
@@ -1177,7 +1429,14 @@ async function subagent(args) {
     const flags = parseFlags(args.slice(2));
     const name = args[1] || await ask("Name");
     const description = flags.description || await ask("Description", "");
-    const system = flags.system || await ask("System prompt", "You are a focused coding subagent.");
+    const system = flags.system || await ask(
+      "System prompt",
+      [
+        "You are a focused Azycode subagent with a narrow scope.",
+        "Inspect before acting, keep changes minimal, cite file paths, and report verification results.",
+        "Do not expand beyond the assigned task."
+      ].join(" ")
+    );
     const model = flags.model || await ask("Model override", "");
     const reasoning = flags.reasoning || await ask("Reasoning", "medium");
     addSubagent({ name, description, system, model: model || null, reasoning });
@@ -1196,7 +1455,7 @@ async function subagent(args) {
     if (!selected) throw new Error(`No subagent named ${name}.`);
     const prompt = args.slice(2).join(" ") || await interactivePrompt(cfg);
     const skills = parseSkills(args);
-    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, subagent: selected, skills });
+    const output = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, subagent: selected, skills }, { cancellable: true });
     if (output === undefined) {
       process.exitCode = 1;
       return;
@@ -1204,7 +1463,83 @@ async function subagent(args) {
     console.log(output);
     return;
   }
-  throw new Error("Usage: azycode subagent list|add|remove|run");
+  if (action === "spawn") {
+    const cfg = loadConfig();
+    const jsonFlag = args.indexOf("--json");
+    let tasks = [];
+    if (jsonFlag >= 0) {
+      const payload = args[jsonFlag + 1];
+      if (!payload) throw new Error("Usage: azycode subagent spawn --json '<tasks-json>'");
+      tasks = JSON.parse(payload);
+    } else {
+      const name = args[1];
+      const prompt = args.slice(2).join(" ");
+      if (!name || !prompt) throw new Error("Usage: azycode subagent spawn <agent> \"prompt\" or --json '[{agent,prompt}]'");
+      tasks = [{ agent: name, prompt }];
+    }
+    const results = await runSubagentsParallel({
+      cfg,
+      cwd: process.cwd(),
+      tasks,
+      maxParallel: cfg.maxParallelSubagents,
+      maxStepsPerAgent: cfg.subagentMaxSteps
+    });
+    console.log(formatSubagentResults(results));
+    if (results.some((result) => !result.ok)) process.exitCode = 1;
+    return;
+  }
+  throw new Error("Usage: azycode subagent list|add|remove|run|spawn");
+}
+
+function hooksCmd(args = []) {
+  const cfg = loadConfig();
+  const hooks = loadHookConfig(cfg, process.cwd());
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(hooks, null, 2));
+    return;
+  }
+  ui.title("Hooks");
+  const rows = [];
+  for (const [event, handlers] of Object.entries(hooks)) {
+    if (!Array.isArray(handlers) || !handlers.length) continue;
+    for (const handler of handlers) {
+      const command = typeof handler === "string" ? handler : handler?.command;
+      if (!command) continue;
+      rows.push({ event, command });
+    }
+  }
+  if (!rows.length) {
+    console.log("No hook handlers configured.");
+    console.log(`Global: ${path.join(process.env.AZYCODE_HOME || path.join(os.homedir(), ".azycode"), "hooks.json")}`);
+    console.log(`Project: ${path.join(process.cwd(), ".azycode", "hooks.json")}`);
+    return;
+  }
+  ui.table(rows, [
+    { key: "event", label: "event" },
+    { key: "command", label: "command" }
+  ]);
+}
+
+function commandsCmd(args = []) {
+  const commands = loadCustomCommands(process.cwd());
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(commands, null, 2));
+    return;
+  }
+  ui.title("Custom commands");
+  if (!commands.length) {
+    console.log("No custom commands found.");
+    console.log(`Global: ${path.join(process.env.AZYCODE_HOME || path.join(os.homedir(), ".azycode"), "commands")}`);
+    console.log(`Project: ${path.join(process.cwd(), ".azycode", "commands")}`);
+    return;
+  }
+  ui.table(commands.map((command) => ({
+    name: `/${command.name}`,
+    description: command.description || ""
+  })), [
+    { key: "name", label: "command" },
+    { key: "description", label: "description" }
+  ]);
 }
 
 async function skills(args) {
@@ -1253,38 +1588,39 @@ async function skills(args) {
 
 async function keys(args) {
   if (args[0] !== "shortcuts") return help();
-  console.log("Shift+Tab: rotate mode. Tab: rotate reasoning. These are active in the multiline prompt reader.");
+  console.log([
+    "Composer shortcuts (TTY prompt reader):",
+    "  Tab            rotate reasoning",
+    "  Shift+Tab      rotate mode",
+    "  Shift+Enter    insert newline",
+    "  Ctrl+D         insert newline",
+    "  Ctrl+C         cancel input",
+    "  Ctrl+U         clear line",
+    "  Ctrl+L         redraw screen",
+    "  /              open slash command palette",
+    "  ↑/↓            pick palette item when typing /commands",
+    "",
+    "Agent run:",
+    "  Ctrl+C         cancel current agent run (press twice to exit)"
+  ].join("\n"));
 }
 
 async function interactivePrompt(cfg) {
-  if (!process.stdin.isTTY) return fs.readFileSync(0, "utf8");
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-  let text = "";
-  process.stdout.write(`[mode=${cfg.mode} reasoning=${cfg.reasoning}] Enter task, Ctrl+D to run\n> `);
-  return await new Promise((resolve) => {
-    process.stdin.on("data", (chunk) => {
-      if (chunk === "\u0004") {
-        process.stdin.setRawMode(false);
-        process.stdout.write("\n");
-        saveConfig(cfg);
-        resolve(text.trim());
-      } else if (chunk === "\u001b[Z") {
-        cfg.mode = rotateMode(cfg.mode);
-        process.stdout.write(`\n[mode=${cfg.mode}]\n> ${text}`);
-      } else if (chunk === "\t") {
-        cfg.reasoning = rotateReasoning(cfg.reasoning);
-        process.stdout.write(`\n[reasoning=${cfg.reasoning}]\n> ${text}`);
-      } else if (chunk === "\u0003") {
-        process.stdin.setRawMode(false);
-        process.exit(130);
-      } else {
-        text += chunk;
-        process.stdout.write(chunk);
-      }
-    });
+  if (!process.stdin.isTTY) return fs.readFileSync(0, "utf8").trim();
+  const banner = `[mode=${cfg.mode} reasoning=${cfg.reasoning}] Enter task, Enter to run, Shift+Enter for newline`;
+  const text = await readMultilinePrompt({
+    input,
+    output,
+    banner,
+    onShortcut: (key) => {
+      if (key.shift) cfg.mode = rotateMode(cfg.mode);
+      else cfg.reasoning = rotateReasoning(cfg.reasoning);
+      output.write(`\n[mode=${cfg.mode} reasoning=${cfg.reasoning}]\n`);
+    },
+    onExit: () => process.exit(130)
   });
+  saveConfig(cfg);
+  return text;
 }
 
 function redact(cfg) {
@@ -1329,27 +1665,19 @@ function parseBoolean(value) {
 }
 
 function progressPrinter(maxSteps) {
-  return createAgentProgress({
+  const events = [];
+  const progress = createAgentProgress({
     maxSteps,
     style: "cli",
-    onLine: (line) => console.error(line)
-  });
-}
-
-function formatTranscript(session) {
-  const lines = [];
-  for (const msg of session.messages || []) {
-    if (msg.role === "system") continue;
-    if (msg.role === "assistant") {
-      lines.push(`assistant: ${msg.content || ""}`);
-      for (const call of msg.tool_calls || []) lines.push(`assistant tool_call: ${call.function?.name} ${call.function?.arguments || "{}"}`);
-    } else if (msg.role === "tool") {
-      lines.push(`tool ${msg.name}: ${String(msg.content || "").slice(0, 2000)}`);
-    } else {
-      lines.push(`${msg.role}: ${msg.content || ""}`);
+    onLine: (line, event) => {
+      events.push(event);
+      console.error(line);
+      if (event?.type === "agent_run_end") {
+        console.error(`summary: ${formatAgentRunSummary(events, { style: "cli" })}`);
+      }
     }
-  }
-  return lines.join("\n");
+  });
+  return progress;
 }
 
 function formatMissionReport(id, mission) {
@@ -1366,6 +1694,12 @@ function formatMissionReport(id, mission) {
     if (step.error) lines.push(`  error: ${step.error}`);
   }
   return lines.join("\n");
+}
+
+function resolveAgentPrompt(rawPrompt, cwd = process.cwd()) {
+  const custom = rawPrompt.startsWith("/") ? resolveCustomCommand(rawPrompt, cwd) : null;
+  const text = custom ? custom.prompt : rawPrompt;
+  return expandFileReferences(text, cwd);
 }
 
 function positionalArgs(args, valueFlags = []) {
@@ -1404,6 +1738,41 @@ function planArtifact({ mode, prompt, result }) {
 async function handleChatCommand(line, state) {
   const [command, ...rest] = line.slice(1).split(/\s+/);
   if (command === "exit" || command === "quit") return "exit";
+  if (command === "new") {
+    state.setConversation([]);
+    console.log("conversation cleared");
+    return;
+  }
+  if (command === "compact") {
+    const before = state.getConversation().length;
+    const keepRecent = Math.max(8, Math.floor((state.maxConversation || 40) * 0.5));
+    if (state.cfg.compaction === "llm" && !hasActiveProvider(state.cfg)) {
+      state.setConversation(trimConversation(state.getConversation(), keepRecent));
+      console.log("llm compaction requires an active provider; trimmed instead.");
+      console.log(`conversation: ${before} -> ${state.getConversation().length} messages`);
+      return;
+    }
+    if (state.cfg.compaction === "llm") {
+      try {
+        const client = new LlmClient(state.cfg);
+        const compacted = await compactConversationWithModel({
+          client,
+          messages: state.getConversation(),
+          model: state.cfg.activeModel,
+          keepRecent
+        });
+        state.setConversation(compacted);
+        console.log(`conversation: ${before} -> ${compacted.length} messages (llm)`);
+      } catch (error) {
+        state.setConversation(trimConversation(state.getConversation(), keepRecent));
+        console.log(`llm compact failed (${error.message}); trimmed to ${state.getConversation().length}`);
+      }
+    } else {
+      state.setConversation(trimConversation(state.getConversation(), keepRecent));
+      console.log(`conversation: ${before} -> ${state.getConversation().length} messages`);
+    }
+    return;
+  }
   if (command === "mode") {
     const next = normalizeMode(rest[0]);
     if (!MODES.includes(next)) console.log(`Mode must be one of: ${MODES.join(", ")}`);
@@ -1462,24 +1831,38 @@ async function handleChatCommand(line, state) {
     return;
   }
   if (command === "help") {
-    console.log("Slash commands: /mode <mode>, /reasoning <level>, /context, /progress, /review, /status, /skill, /exit");
+    console.log("Slash commands: /mode, /reasoning, /context, /progress, /review, /status, /skill, /compact, /new, /exit");
+    return;
+  }
+  const custom = resolveCustomCommand(line, process.cwd());
+  if (custom) {
+    await handleChatLine(custom.prompt, state, { skipSlash: true });
     return;
   }
   console.log(`Unknown slash command: /${command}`);
 }
 
-async function handleChatLine(line, state) {
-  if (line.startsWith("/")) return handleChatCommand(line, state);
+async function handleChatLine(line, state, { skipSlash = false } = {}) {
+  if (!skipSlash && line.startsWith("/")) return handleChatCommand(line, state);
+  const { prompt } = expandFileReferences(line, process.cwd());
   const maxSteps = resolveAgentMaxSteps(state.cfg);
   const result = await runAgentSafe({
     cfg: state.cfg,
     cwd: process.cwd(),
-    prompt: line,
+    prompt,
     mode: state.getMode(),
     maxSteps,
     includeContext: state.getContext(),
+    conversation: state.getConversation(),
+    returnSession: true,
     onEvent: state.getProgress() ? progressPrinter(maxSteps) : null,
     skills: state.getSkills()
-  });
-  if (result !== undefined) console.log(result);
+  }, { cancellable: true });
+  if (result && typeof result === "object") {
+    state.setConversation(trimConversation(
+      result.messages.filter((message) => message.role !== "system"),
+      state.maxConversation
+    ));
+    console.log(result.content);
+  }
 }

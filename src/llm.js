@@ -32,11 +32,29 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithTimeout(url, init, timeoutMs) {
+function mergeSignals(signals = []) {
+  const active = signals.filter(Boolean);
+  if (!active.length) return null;
+  const controller = new AbortController();
+  const abort = (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  for (const signal of active) {
+    if (signal.aborted) {
+      abort(signal.reason || new Error("Aborted"));
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal.reason || new Error("Aborted")), { once: true });
+  }
+  return controller.signal;
+}
+
+async function fetchWithTimeout(url, init, timeoutMs, externalSignal = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("TimeoutError")), timeoutMs);
+  const signal = mergeSignals([controller.signal, externalSignal]);
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: signal || controller.signal });
     return response;
   } finally {
     clearTimeout(timer);
@@ -48,11 +66,12 @@ function jitterDelay(baseMs, attempt) {
   return exponential + Math.random() * baseMs;
 }
 
-async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = MAX_RETRIES } = {}) {
+async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = MAX_RETRIES, signal = null } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (signal?.aborted) throw signal.reason || new Error("Aborted");
     try {
-      const response = await fetchWithTimeout(url, init, timeoutMs);
+      const response = await fetchWithTimeout(url, init, timeoutMs, signal);
       if (!response.ok && isRetryableStatus(response.status) && attempt < maxRetries) {
         const delay = Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
         warn(`LLM request HTTP ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
@@ -62,6 +81,7 @@ async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRe
       return response;
     } catch (error) {
       lastError = error;
+      if (signal?.aborted) throw signal.reason || error;
       if (isRetryableError(error) && attempt < maxRetries) {
         const delay = Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
         warn(`LLM request error (${error.name || error.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
@@ -88,33 +108,115 @@ export class LlmClient {
     return Array.isArray(data.data) ? data.data : data.models || data;
   }
 
-  async chat({ messages, tools = [], model, reasoning, stream = false }) {
+  async chat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
     const selectedModel = model || this.provider.model;
     const protocol = resolveProtocol(this.provider, selectedModel);
     if (protocol === "anthropic-messages") {
-      return this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream });
+      return this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta });
     }
-    return this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream });
+    return this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta });
   }
 
-  async openaiChat({ messages, tools = [], model, reasoning, stream = false }) {
+  async openaiChat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
     const body = {
       model,
       messages,
-      stream,
+      stream: Boolean(stream),
       tools: tools.length ? tools.map((tool) => tool.schema) : undefined,
       tool_choice: tools.length ? "auto" : undefined
     };
     applyReasoning(body, reasoning);
+    if (stream) {
+      return this.openaiChatStream(chatPathFor(this.provider, model), body, signal, onDelta);
+    }
     const response = await this.request(chatPathFor(this.provider, model), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
-    });
+    }, signal);
     return response.json();
   }
 
-  async anthropicMessages({ messages, tools = [], model, reasoning, stream = false }) {
+  async openaiChatStream(path, body, signal = null, onDelta = null) {
+    const response = await this.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ ...body, stream: true })
+    }, signal);
+    if (!response.body) throw new Error("Streaming response missing body.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const message = {
+      role: "assistant",
+      content: "",
+      tool_calls: []
+    };
+    let usage = null;
+    let finishReason = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let lineBreak;
+      while ((lineBreak = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, lineBreak).trim();
+        buffer = buffer.slice(lineBreak + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let chunk;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        usage = chunk.usage || usage;
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+        finishReason = choice.finish_reason || finishReason;
+        const delta = choice.delta || {};
+        if (delta.content) {
+          message.content += delta.content;
+          onDelta?.({ content: delta.content });
+        }
+        for (const call of delta.tool_calls || []) {
+          const index = call.index ?? message.tool_calls.length;
+          if (!message.tool_calls[index]) {
+            message.tool_calls[index] = {
+              id: call.id || "",
+              type: "function",
+              function: { name: call.function?.name || "", arguments: "" }
+            };
+          }
+          const target = message.tool_calls[index];
+          if (call.id) target.id = call.id;
+          if (call.function?.name) target.function.name = call.function.name;
+          if (call.function?.arguments) target.function.arguments += call.function.arguments;
+        }
+      }
+    }
+
+    if (message.tool_calls.length) {
+      message.tool_calls = message.tool_calls.filter(Boolean);
+    } else {
+      delete message.tool_calls;
+    }
+
+    return {
+      id: "stream",
+      object: "chat.completion",
+      choices: [{
+        index: 0,
+        finish_reason: finishReason,
+        message
+      }],
+      usage
+    };
+  }
+
+  async anthropicMessages({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
     const { system, anthropicMessages } = toAnthropicMessages(messages);
     const body = {
       model,
@@ -125,19 +227,117 @@ export class LlmClient {
       tools: tools.length ? tools.map((tool) => toAnthropicTool(tool.schema)) : undefined
     };
     applyReasoning(body, reasoning);
-    const response = await this.request(chatPathFor(this.provider, model), {
+    const path = chatPathFor(this.provider, model);
+    if (stream) {
+      return this.anthropicMessagesStream(path, body, signal, onDelta);
+    }
+    const response = await this.request(path, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify(body)
-    });
+    }, signal);
     const raw = await response.json();
     return fromAnthropicMessage(raw);
   }
 
-  async request(path, init) {
+  async anthropicMessagesStream(path, body, signal = null, onDelta = null) {
+    const response = await this.request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({ ...body, stream: true })
+    }, signal);
+    if (!response.body) throw new Error("Streaming response missing body.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let messageId = "stream";
+    let text = "";
+    const toolBlocks = new Map();
+    let finishReason = null;
+    let usage = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let eventEnd;
+      while ((eventEnd = buffer.indexOf("\n\n")) >= 0) {
+        const chunk = buffer.slice(0, eventEnd);
+        buffer = buffer.slice(eventEnd + 2);
+        let data = "";
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("data:")) data = line.slice(5).trim();
+        }
+        if (!data) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (parsed.type === "message_start") {
+          messageId = parsed.message?.id || messageId;
+        } else if (parsed.type === "content_block_start") {
+          const block = parsed.content_block;
+          if (block?.type === "tool_use") {
+            toolBlocks.set(parsed.index, {
+              id: block.id || "",
+              name: block.name || "",
+              arguments: ""
+            });
+          }
+        } else if (parsed.type === "content_block_delta") {
+          const delta = parsed.delta;
+          if (delta?.type === "text_delta" && delta.text) {
+            text += delta.text;
+            onDelta?.({ content: delta.text });
+          } else if (delta?.type === "input_json_delta" && delta.partial_json) {
+            const block = toolBlocks.get(parsed.index);
+            if (block) block.arguments += delta.partial_json;
+          }
+        } else if (parsed.type === "message_delta") {
+          finishReason = parsed.delta?.stop_reason || finishReason;
+          usage = parsed.usage || usage;
+        }
+      }
+    }
+
+    const toolCalls = [...toolBlocks.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, block]) => ({
+        id: block.id,
+        type: "function",
+        function: {
+          name: block.name,
+          arguments: block.arguments || "{}"
+        }
+      }));
+    const message = {
+      role: "assistant",
+      content: text,
+      tool_calls: toolCalls.length ? toolCalls : undefined
+    };
+    if (!message.tool_calls) delete message.tool_calls;
+    return {
+      id: messageId,
+      object: "chat.completion",
+      choices: [{
+        index: 0,
+        finish_reason: finishReason,
+        message
+      }],
+      usage
+    };
+  }
+
+  async request(path, init, signal = null) {
     const url = `${this.provider.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const response = await fetchWithRetry(url, {
       ...init,
@@ -146,7 +346,7 @@ export class LlmClient {
         authorization: `Bearer ${this.provider.apiKey}`,
         ...(init.headers || {})
       }
-    });
+    }, { signal });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw new Error(formatProviderHttpError(this.provider.name, response.status, text));
@@ -193,21 +393,30 @@ export function toAnthropicMessages(messages) {
   for (const msg of messages) {
     if (msg.role === "system") continue;
     if (msg.role === "tool") {
-      anthropicMessages.push({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content || "" }]
-      });
+      const last = anthropicMessages[anthropicMessages.length - 1];
+      const block = { type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content || "" };
+      if (last?.role === "user" && Array.isArray(last.content) && last.content[0]?.type === "tool_result") {
+        last.content.push(block);
+      } else {
+        anthropicMessages.push({ role: "user", content: [block] });
+      }
       continue;
     }
     if (msg.role === "assistant" && msg.tool_calls?.length) {
       const content = [];
       if (msg.content) content.push({ type: "text", text: msg.content });
       for (const call of msg.tool_calls) {
+        let input = {};
+        try {
+          input = JSON.parse(call.function?.arguments || "{}");
+        } catch {
+          input = { _invalidArguments: String(call.function?.arguments || "") };
+        }
         content.push({
           type: "tool_use",
           id: call.id,
           name: call.function?.name,
-          input: JSON.parse(call.function?.arguments || "{}")
+          input
         });
       }
       anthropicMessages.push({ role: "assistant", content });

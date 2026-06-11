@@ -2,9 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { defaultSubagents } from "./prompts.js";
 
-export const DEFAULT_MODE = "plan";
-export const MODES = ["plan", "always-approve", "goal", "review"];
+export const DEFAULT_MODE = "build";
+export const MODES = ["plan", "build", "always-approve", "goal", "review"];
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high"];
 
 /** Returns a positive step cap, or null for unlimited agent runs (default). */
@@ -68,6 +69,16 @@ export function defaultConfig() {
     subagents: defaultSubagents(),
     skills: {},
     permissionProfile: "normal",
+    toolTimeoutMs: 120_000,
+    maxInRunMessages: 80,
+    maxConversationMessages: 40,
+    compaction: "trim",
+    maxParallelSubagents: 4,
+    subagentMaxSteps: 8,
+    maxSubagentDepth: 2,
+    streamResponses: false,
+    mcpServers: {},
+    hooks: {},
     gitGuard: {
       enabled: false,
       blockBranches: ["main", "master"],
@@ -92,57 +103,25 @@ export function defaultConfig() {
       apply_patch: "ask",
       git_diff: "auto",
       git_checkout: "auto",
+      git_commit: "ask",
+      web_fetch: "ask",
+      spawn_subagents: "ask",
+      git_worktree: "ask",
       todo: "auto",
       set_mode: "auto"
     }
   };
 }
 
-export function defaultSubagents() {
-  return {
-    planner: {
-      description: "Breaks a coding request into scoped implementation steps.",
-      model: null,
-      reasoning: "high",
-      system: [
-        "You are Azycode's planning subagent.",
-        "Inspect only the context needed to understand the repository shape, relevant files, constraints, and risk.",
-        "Produce a concise ordered plan with implementation steps, expected file areas, verification commands, and risks.",
-        "Do not modify files. If the request is ambiguous, state the smallest concrete assumption that keeps work moving."
-      ].join("\n")
-    },
-    reviewer: {
-      description: "Reviews code changes for bugs, regressions, missing tests, and risky assumptions.",
-      model: null,
-      reasoning: "high",
-      system: [
-        "You are Azycode's strict code review subagent.",
-        "Inspect diffs, touched files, and relevant tests before concluding.",
-        "Lead with actionable findings ordered by severity. Cite file paths, functions, commands, or evidence.",
-        "Prioritize correctness bugs, regressions, security issues, data loss risk, missing tests, and misleading UX.",
-        "If no issues are found, say so clearly and list any residual risk or unrun checks."
-      ].join("\n")
-    },
-    implementer: {
-      description: "Implements scoped coding tasks using the available filesystem and shell tools.",
-      model: null,
-      reasoning: "medium",
-      system: [
-        "You are Azycode's pragmatic implementation subagent.",
-        "Inspect before editing, keep changes narrow, and preserve local style.",
-        "Use built-in tools for repository work: bounded read/search for context, apply_patch/edit/write for changes, and shell only for relevant verification.",
-        "After edits, run focused checks when available and report changed files plus verification results.",
-        "Do not leave half-applied work or claim success without evidence."
-      ].join("\n")
-    }
-  };
-}
+export const COMPACTION_MODES = ["trim", "llm"];
+
+export { defaultSubagents };
 
 const KNOWN_TOOL_NAMES = new Set([
   "list_files", "read_file", "read_many_files", "file_info", "search",
   "make_dir", "write_file", "edit_file", "copy_path", "move_path", "delete_path",
-  "apply_patch", "git_diff", "git_status", "git_log", "git_show", "git_checkout",
-  "shell", "todo", "set_mode"
+  "apply_patch", "git_diff", "git_status", "git_log", "git_show", "git_checkout", "git_commit",
+  "web_fetch", "spawn_subagents", "git_worktree", "shell", "todo", "set_mode"
 ]);
 const KNOWN_PROFILES = new Set(["normal", "read-only", "safe-write", "full-auto"]);
 
@@ -172,6 +151,7 @@ export function readJson(file, fallback) {
 
 export function validateConfig(cfg) {
   const defaults = defaultConfig();
+  cfg.mode = normalizeMode(cfg.mode);
   if (!MODES.includes(cfg.mode)) {
     cfg.mode = defaults.mode;
   }
@@ -181,6 +161,21 @@ export function validateConfig(cfg) {
   if (!KNOWN_PROFILES.has(cfg.permissionProfile)) {
     cfg.permissionProfile = defaults.permissionProfile;
   }
+  if (!COMPACTION_MODES.includes(cfg.compaction)) {
+    cfg.compaction = defaults.compaction;
+  }
+  const maxParallel = Number(cfg.maxParallelSubagents);
+  cfg.maxParallelSubagents = Number.isFinite(maxParallel) && maxParallel > 0
+    ? Math.min(8, Math.floor(maxParallel))
+    : defaults.maxParallelSubagents;
+  const subagentSteps = Number(cfg.subagentMaxSteps);
+  cfg.subagentMaxSteps = Number.isFinite(subagentSteps) && subagentSteps > 0
+    ? Math.floor(subagentSteps)
+    : defaults.subagentMaxSteps;
+  const subagentDepth = Number(cfg.maxSubagentDepth);
+  cfg.maxSubagentDepth = Number.isFinite(subagentDepth) && subagentDepth >= 0
+    ? Math.min(8, Math.floor(subagentDepth))
+    : defaults.maxSubagentDepth;
   const policy = cfg.toolPolicy || {};
   for (const key of Object.keys(policy)) {
     if (!KNOWN_TOOL_NAMES.has(key)) {
@@ -211,6 +206,7 @@ export function loadConfig() {
   cfg.skills = { ...defaults.skills, ...(saved.skills || {}) };
   cfg.gitGuard = { ...defaults.gitGuard, ...(saved.gitGuard || {}) };
   cfg.toolPolicy = { ...defaults.toolPolicy, ...(saved.toolPolicy || {}) };
+  cfg.mcpServers = { ...defaults.mcpServers, ...(saved.mcpServers || {}) };
   validateConfig(cfg);
   applyPermissionProfile(cfg);
   _configCache = cfg;
@@ -253,6 +249,35 @@ export function saveState(state) {
   _stateMtime = 0;
 }
 
+/** Atomic read-modify-write with fresh disk read (bypasses stale cache). */
+export function updateState(mutator, { retries = 4 } = {}) {
+  ensureHome();
+  const sPath = statePath();
+  const defaults = { version: 1, sessions: {}, goals: {}, missions: {}, toolRuns: [] };
+  let lastError = null;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    _stateCache = null;
+    _stateMtime = 0;
+    const beforeMtime = fileMtime(sPath);
+    const state = readJson(sPath, defaults);
+    state.sessions ||= {};
+    state.goals ||= {};
+    state.missions ||= {};
+    state.toolRuns ||= [];
+    try {
+      const next = mutator(state) ?? state;
+      next.version = (Number(next.version) || 0) + 1;
+      if (beforeMtime !== fileMtime(sPath)) continue;
+      saveState(next);
+      return next;
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries - 1) throw error;
+    }
+  }
+  throw lastError || new Error("updateState failed");
+}
+
 export function loadTodos() {
   const tPath = todosPath();
   const mtime = fileMtime(tPath);
@@ -291,7 +316,9 @@ export function rotateMode(current) {
 }
 
 export function normalizeMode(mode) {
-  return mode === "approve" ? "always-approve" : mode;
+  if (mode === "approve") return "always-approve";
+  if (mode === "normal") return "build";
+  return mode;
 }
 
 export function rotateReasoning(current) {

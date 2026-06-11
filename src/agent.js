@@ -2,37 +2,65 @@ import fs from "node:fs";
 import path from "node:path";
 import { LlmClient, assistantMessageFromCompletion } from "./llm.js";
 import { createTools } from "./tools.js";
-import { id, loadState, resolveAgentMaxSteps, saveState } from "./config.js";
-import { AgentStepLimitError } from "./agent-errors.js";
+import { id, loadState, resolveAgentMaxSteps, updateState } from "./config.js";
+import { AgentCancelledError, AgentStepLimitError } from "./agent-errors.js";
 import { searchMemory } from "./memory.js";
 import { contextPack, formatContextPack } from "./context.js";
-import { summarizeToolArgs } from "./harness.js";
+import { extractToolPreview, READ_ONLY_TOOLS, summarizeToolArgs } from "./harness.js";
+import { trimConversation } from "./conversation.js";
 import { createModeRuntime } from "./agent-runtime.js";
 import { formatActiveTodos } from "./todos.js";
 import { getSkillText } from "./skills.js";
-import { debug, warn, error as logError } from "./logger.js";
 
-export function systemForMode(mode) {
-  const base = [
-    "You are Azycode, an AI coding harness running inside the user's local repository.",
-    "Operate like a senior coding agent: inspect current files before changing them, keep edits scoped, and verify behavior with the most relevant available checks.",
-    "Use bounded tools deliberately: prefer search/list/file_info before broad reads, use read_file line ranges for large files, and use search maxResults/contextLines to keep context small.",
-    "Use the todo tool to track multi-step work. Use set_mode when the task phase changes: switch to plan before large or risky changes, then switch back to always-approve or goal to implement.",
-    "Do not claim a file changed unless a write/edit/copy/move/delete/apply_patch/shell tool actually changed it.",
-    "Respect tool policy and git guard when enabled. If writes or shell are blocked on a protected branch, use git_checkout with create:true to switch branches, then continue.",
-    "When editing, preserve existing style and avoid unrelated refactors. When reviewing, lead with concrete defects and cite files, commands, or evidence.",
-    "Before final output, summarize what changed, what was verified, and any remaining risk or unrun checks."
-  ].join("\n");
-  const modes = {
-    plan: "Plan mode: inspect enough context to produce an implementation plan. Do not modify files unless the user explicitly asks you to proceed.",
-    "always-approve": "Always-approve mode: execute the requested coding work efficiently with available tools. Tool calls may be auto-approved by policy, but git guard and path safety still apply.",
-    goal: "Goal mode: persist across steps until the stated goal is genuinely handled. Track progress, make concrete improvements, and verify each meaningful change.",
-    review: "Review mode: behave like a strict code reviewer. Prioritize bugs, regressions, missing tests, security risks, and unclear assumptions before summaries."
-  };
-  return `${base}\n${modes[mode] || modes.plan}`;
+import { discoverProjectInstructions } from "./instructions.js";
+import { createMcpTools } from "./mcp.js";
+import { runHooks, loadHookConfig } from "./hooks.js";
+import { compactConversationWithModel } from "./compaction.js";
+import { formatSubagentResults, runSubagentsParallel } from "./subagents.js";
+import { mergeAbortSignals } from "./exec.js";
+import { debug, warn, error as logError } from "./logger.js";
+import { systemForMode } from "./prompts.js";
+
+export { systemForMode };
+
+function classifyToolResult(name, content) {
+  const text = String(content ?? "");
+  if (text.startsWith("Unknown tool:")) return { ok: false, code: "unknown_tool" };
+  if (text === "Tool call rejected by user.") return { ok: false, code: "rejected" };
+  if (text.startsWith(`Tool ${name} blocked by hook:`)) return { ok: false, code: "rejected" };
+  if (text.startsWith("Tool arguments were invalid JSON:")) return { ok: false, code: "invalid_args" };
+  if (text.startsWith(`Tool ${name} failed:`) && /timed out after/.test(text)) return { ok: false, code: "timeout" };
+  if (text.startsWith(`Tool ${name} failed:`) && /Aborted/i.test(text)) return { ok: false, code: "cancelled" };
+  if (text.startsWith(`Tool ${name} failed:`)) return { ok: false, code: "error" };
+  if (name === "read_many_files" && /\nERROR:/.test(text)) return { ok: false, code: "partial_error" };
+  if (text.startsWith("exit code:")) return { ok: false, code: "error" };
+  return { ok: true, code: "ok" };
 }
 
-export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = null, maxSteps, returnSession = false, onEvent = null, includeContext = false, conversation = [], confirmTool = null, onModeChange = null, skills = [] }) {
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+const MAX_SESSIONS = 50;
+const MAX_IN_RUN_MESSAGES = 80;
+
+export async function runAgent({
+  cfg,
+  cwd,
+  prompt,
+  mode = cfg.mode,
+  subagent = null,
+  maxSteps,
+  returnSession = false,
+  onEvent = null,
+  includeContext = false,
+  conversation = [],
+  confirmTool = null,
+  onModeChange = null,
+  skills = [],
+  progressStyle = "tui",
+  signal = null,
+  stream = null,
+  onToken = null,
+  subagentDepth = 0
+} = {}) {
   const stepLimit = resolveAgentMaxSteps(cfg, maxSteps);
   const client = new LlmClient(cfg);
   const activeModel = subagent?.model || client.provider.model;
@@ -41,28 +69,24 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     const activeMode = modeRuntime.getMode();
     return activeMode === "always-approve" ? { ...cfg, alwaysApprove: true } : cfg;
   };
-  const tools = createTools({ cwd, resolveCfg, confirmTool, modeRuntime });
-  const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-  debug(`Agent start mode=${mode} model=${activeModel} stepLimit=${stepLimit ?? "unlimited"} tools=${tools.map((t) => t.name).join(",")}`);
+  debug(`Agent start mode=${mode} model=${activeModel} stepLimit=${stepLimit ?? "unlimited"}`);
 
-  // Cache expensive static parts of the system message so rebuilds (mode/todo changes) are cheap.
-  const projectRules = loadProjectRules(cwd);
+  const projectRules = discoverProjectInstructions(cwd);
+  const useStream = stream ?? Boolean(cfg.streamResponses);
   const relevantMemory = loadRelevantMemory(prompt);
   const contextPackStr = includeContext ? await loadContextPack(cwd) : "";
   if (includeContext) debug(`Context pack loaded: ${contextPackStr.length} chars`);
   let activeTodos = formatActiveTodos(cwd);
 
   const buildSystemContent = () => [
-    subagent?.system || systemForMode(modeRuntime.getMode()),
-    stepLimit
-      ? `Run budget: at most ${stepLimit} model steps. Track work with todo and finish with a final answer before the limit.`
-      : "No step cap in this run: continue with todo tracking until the task is complete, then return a final answer instead of looping on tools.",
+    subagent?.system || systemForMode(modeRuntime.getMode(), { cwd, cfg, stepLimit }),
     getSkillText(cfg, skills),
     projectRules,
     relevantMemory,
     activeTodos,
     contextPackStr
   ].filter(Boolean).join("\n\n");
+
   const messages = [
     { role: "system", content: buildSystemContent() },
     ...conversation.filter((message) => message.role !== "system"),
@@ -70,15 +94,62 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
   ];
   const sessionId = id("ses");
   const events = [];
+  const runStartedAt = Date.now();
+  let lastStep = 0;
+
   const emit = (event) => {
     const enriched = { ...event, sessionId, at: new Date().toISOString() };
     events.push(enriched);
     if (onEvent) onEvent(enriched);
   };
 
+  const hooks = loadHookConfig(cfg, cwd);
+  const maxSubagentDepth = Number.isFinite(Number(cfg.maxSubagentDepth))
+    ? Math.max(0, Math.floor(Number(cfg.maxSubagentDepth)))
+    : 2;
+  const subagentSpawner = async (tasks, runOptions = {}) => {
+    if (subagentDepth >= maxSubagentDepth) {
+      return formatSubagentResults((Array.isArray(tasks) ? tasks : []).map((task, index) => ({
+        index: index + 1,
+        agent: task?.agent,
+        ok: false,
+        error: `Subagent nesting depth limit (${maxSubagentDepth}) reached.`
+      })));
+    }
+    const results = await runSubagentsParallel({
+      cfg,
+      cwd,
+      tasks,
+      signal: runOptions.signal || signal,
+      maxParallel: cfg.maxParallelSubagents || 4,
+      maxStepsPerAgent: cfg.subagentMaxSteps || 8,
+      subagentDepth: subagentDepth + 1,
+      onSubagentEvent: (event) => emit({ ...event, step: lastStep, maxSteps: stepLimit })
+    });
+    return formatSubagentResults(results);
+  };
+  const builtinTools = createTools({
+    cwd,
+    resolveCfg,
+    confirmTool,
+    modeRuntime,
+    subagentSpawner,
+    onApproval: (event) => emit({ ...event, step: lastStep, maxSteps: stepLimit, summary: summarizeToolArgs(event.tool, event.args) })
+  });
+  let mcp = { tools: [], close: async () => {} };
+  try {
+    mcp = await createMcpTools(cfg);
+  } catch (error) {
+    warn(`MCP tools unavailable: ${error.message}`);
+  }
+  const tools = [...builtinTools, ...mcp.tools];
+  const toolMap = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+
   const pendingToolRuns = [];
   let pendingSession = null;
   let sessionRecorded = false;
+  let stoppedReason = null;
+  const recentFailures = new Map();
 
   function recordToolRun(run) {
     pendingToolRuns.push({ ...run, at: new Date().toISOString(), content: String(run.content).slice(0, 2000) });
@@ -89,73 +160,314 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
     sessionRecorded = true;
   }
 
-  function flushState() {
-    if (!pendingToolRuns.length && !pendingSession) return;
-    const state = loadState();
-    if (pendingSession) {
-      state.sessions[pendingSession.sessionId] = pendingSession.session;
-    }
-    if (pendingToolRuns.length) {
-      state.toolRuns.push(...pendingToolRuns);
-      state.toolRuns = state.toolRuns.slice(-500);
-    }
-    saveState(state);
-    pendingToolRuns.length = 0;
-    pendingSession = null;
+  function trimPersistedSessions(state) {
+    const entries = Object.entries(state.sessions || {});
+    if (entries.length <= MAX_SESSIONS) return;
+    entries.sort((a, b) => String(b[1]?.createdAt || "").localeCompare(String(a[1]?.createdAt || "")));
+    state.sessions = Object.fromEntries(entries.slice(0, MAX_SESSIONS));
   }
 
-  async function executeToolCalls(calls, step) {
-    for (const call of calls) {
-      const name = call.function?.name;
-      const rawArgs = call.function?.arguments || "{}";
-      const parsed = parseToolArgs(rawArgs);
-      if (!parsed.ok) {
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          name,
-          content: `Tool arguments were invalid JSON: ${parsed.error}`
-        });
-        continue;
-      }
-      const args = parsed.value;
-      const selected = toolMap[name];
-      emit({ type: "tool_start", step, maxSteps: stepLimit, tool: name, summary: summarizeToolArgs(name, args) });
+  function flushState() {
+    if (!pendingToolRuns.length && !pendingSession) return;
+    const toolBatch = pendingToolRuns.splice(0, pendingToolRuns.length);
+    const sessionBatch = pendingSession;
+    pendingSession = null;
+    try {
+      updateState((state) => {
+        if (sessionBatch) {
+          state.sessions[sessionBatch.sessionId] = sessionBatch.session;
+          trimPersistedSessions(state);
+        }
+        if (toolBatch.length) {
+          state.toolRuns.push(...toolBatch);
+          state.toolRuns = state.toolRuns.slice(-500);
+        }
+        return state;
+      });
+    } catch (error) {
+      if (toolBatch.length) pendingToolRuns.unshift(...toolBatch);
+      if (sessionBatch) pendingSession = sessionBatch;
+      logError(`Failed to persist agent state: ${error.message}`);
+      emit({ type: "agent_error", step: lastStep, error: `state persistence failed: ${error.message}` });
+    }
+  }
+
+  function assertNotCancelled(activeSignal = signal) {
+    if (activeSignal?.aborted || signal?.aborted) {
+      throw new AgentCancelledError({ events, style: progressStyle });
+    }
+  }
+
+  function toolTimeoutMs() {
+    const configured = Number(cfg.toolTimeoutMs);
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_TOOL_TIMEOUT_MS;
+  }
+
+  async function runSingleToolCall(call, step, batchSignal = null) {
+    const activeSignal = mergeAbortSignals([signal, batchSignal]);
+    const name = call.function?.name;
+    const rawArgs = call.function?.arguments || "{}";
+    const parsed = parseToolArgs(rawArgs);
+    const summary = summarizeToolArgs(name, parsed.ok ? parsed.value : {});
+
+    if (!parsed.ok) {
+      emit({ type: "tool_start", step, maxSteps: stepLimit, tool: name, summary });
       const startedAt = Date.now();
-      let content;
-      let ok = true;
-      try {
-        content = selected ? await selected.run(args) : `Unknown tool: ${name}`;
-      } catch (error) {
-        ok = false;
-        content = `Tool ${name} failed: ${error.message}`;
-        warn(`Tool ${name} failed at step ${step}: ${error.message}`);
-      }
+      const content = `Tool arguments were invalid JSON: ${parsed.error}`;
       const durationMs = Date.now() - startedAt;
-      emit({ type: "tool_end", step, maxSteps: stepLimit, tool: name, ok, durationMs });
-      recordToolRun({ sessionId, step, name, ok, durationMs, args, content });
-      messages.push({
+      emit({
+        type: "tool_end",
+        step,
+        maxSteps: stepLimit,
+        tool: name,
+        ok: false,
+        code: "invalid_args",
+        durationMs,
+        summary,
+        args: parsed.ok ? parsed.value : {},
+        errorPreview: parsed.error
+      });
+      recordToolRun({ sessionId, step, name, ok: false, durationMs, args: { raw: rawArgs }, content });
+      return {
         role: "tool",
         tool_call_id: call.id,
         name,
-        content: String(content).slice(0, 120000)
-      });
+        content
+      };
     }
+
+    const args = parsed.value;
+    let hookPayload = { tool: name, args, step, sessionId, cwd };
+    try {
+      hookPayload = await runHooks("pre_tool", hookPayload, hooks, { cwd, signal: activeSignal });
+    } catch (error) {
+      const content = `Tool ${name} blocked by hook: ${error.message}`;
+      emit({ type: "tool_start", step, maxSteps: stepLimit, tool: name, summary });
+      emit({
+        type: "tool_end",
+        step,
+        maxSteps: stepLimit,
+        tool: name,
+        ok: false,
+        code: "rejected",
+        durationMs: 0,
+        summary,
+        args,
+        errorPreview: error.message
+      });
+      recordToolRun({ sessionId, step, name, ok: false, durationMs: 0, args, content });
+      return { role: "tool", tool_call_id: call.id, name, content };
+    }
+    const effectiveName = hookPayload.tool ?? name;
+    const effectiveArgs = hookPayload.args ?? args;
+    const effectiveSummary = summarizeToolArgs(effectiveName, effectiveArgs);
+    const selected = toolMap[effectiveName];
+    emit({ type: "tool_start", step, maxSteps: stepLimit, tool: effectiveName, summary: effectiveSummary });
+    const startedAt = Date.now();
+    let content;
+    let timer = null;
+    const toolAbort = new AbortController();
+    const onAgentAbort = () => toolAbort.abort();
+    activeSignal?.addEventListener("abort", onAgentAbort, { once: true });
+    try {
+      assertNotCancelled(activeSignal);
+      const timeout = toolTimeoutMs();
+      const runner = selected
+        ? selected.run(effectiveArgs, { signal: mergeAbortSignals([toolAbort.signal, activeSignal]) })
+        : Promise.resolve(`Unknown tool: ${effectiveName}`);
+      content = await Promise.race([
+        runner,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            toolAbort.abort();
+            reject(new Error(`Tool ${effectiveName} timed out after ${timeout}ms`));
+          }, timeout);
+        })
+      ]);
+    } catch (error) {
+      if (activeSignal?.aborted || signal?.aborted || toolAbort.signal.aborted) {
+        throw new AgentCancelledError({ events, style: progressStyle });
+      }
+      content = error.message?.includes("timed out after")
+        ? `Tool ${effectiveName} failed: ${error.message}`
+        : `Tool ${effectiveName} failed: ${error.message}`;
+      warn(`Tool ${effectiveName} failed at step ${step}: ${error.message}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+      activeSignal?.removeEventListener("abort", onAgentAbort);
+      if (!toolAbort.signal.aborted) toolAbort.abort();
+    }
+    const outcome = classifyToolResult(effectiveName, content);
+    if (!outcome.ok) {
+      const key = `${effectiveName}:${JSON.stringify(effectiveArgs)}`;
+      const count = (recentFailures.get(key) || 0) + 1;
+      recentFailures.set(key, count);
+      if (count >= 3) {
+        content = `${content}\n\nThis identical tool call has failed ${count} times. Change approach, arguments, or tools.`;
+      }
+    }
+    const durationMs = Date.now() - startedAt;
+    emit({
+      type: "tool_end",
+      step,
+      maxSteps: stepLimit,
+      tool: effectiveName,
+      ok: outcome.ok,
+      code: outcome.code,
+      durationMs,
+      summary: effectiveSummary,
+      args: effectiveArgs,
+      preview: outcome.ok ? extractToolPreview(effectiveName, effectiveArgs, content) : null,
+      errorPreview: outcome.ok ? "" : String(content).slice(0, 120)
+    });
+    recordToolRun({ sessionId, step, name: effectiveName, ok: outcome.ok, durationMs, args: effectiveArgs, content });
+    await runHooks("post_tool", {
+      tool: effectiveName,
+      args: effectiveArgs,
+      ok: outcome.ok,
+      code: outcome.code,
+      content: String(content).slice(0, 2000),
+      step,
+      sessionId,
+      cwd
+    }, hooks, { cwd, signal: activeSignal }).catch((error) => warn(`post_tool hook failed: ${error.message}`));
+    return {
+      role: "tool",
+      tool_call_id: call.id,
+      name: effectiveName,
+      content: String(content).slice(0, 120000)
+    };
+  }
+
+  async function executeToolCalls(calls, step) {
+    assertNotCancelled();
+    const readOnly = [];
+    const sequential = [];
+    for (const call of calls) {
+      const name = call.function?.name;
+      if (READ_ONLY_TOOLS.has(name)) readOnly.push(call);
+      else sequential.push(call);
+    }
+
+    if (readOnly.length > 1) {
+      const batchAbort = new AbortController();
+      const batchSignal = mergeAbortSignals([signal, batchAbort.signal]);
+      try {
+        const settled = await Promise.allSettled(readOnly.map(async (call) => {
+          try {
+            return await runSingleToolCall(call, step, batchSignal);
+          } catch (error) {
+            if (error instanceof AgentCancelledError) batchAbort.abort(error);
+            throw error;
+          }
+        }));
+        let cancelError = null;
+        for (let i = 0; i < settled.length; i += 1) {
+          const entry = settled[i];
+          const call = readOnly[i];
+          if (entry.status === "fulfilled") {
+            messages.push(entry.value);
+            continue;
+          }
+          if (entry.reason instanceof AgentCancelledError) {
+            cancelError = cancelError || entry.reason;
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function?.name,
+              content: "Tool call cancelled."
+            });
+            continue;
+          }
+          throw entry.reason;
+        }
+        if (cancelError) throw cancelError;
+      } finally {
+        if (!batchAbort.signal.aborted) batchAbort.abort();
+      }
+    } else if (readOnly.length === 1) {
+      messages.push(await runSingleToolCall(readOnly[0], step));
+    }
+
+    for (const call of sequential) {
+      messages.push(await runSingleToolCall(call, step));
+    }
+    flushState();
+  }
+
+  async function maybeTrimMessages(step) {
+    const maxMessages = Number(cfg.maxInRunMessages) || MAX_IN_RUN_MESSAGES;
+    const nonSystem = messages.filter((message) => message.role !== "system");
+    if (nonSystem.length <= maxMessages) return;
+    const before = nonSystem.length;
+    let trimmed;
+    if (cfg.compaction === "llm") {
+      try {
+        trimmed = await compactConversationWithModel({
+          client,
+          messages: nonSystem,
+          model: activeModel,
+          keepRecent: Math.max(8, Math.floor(maxMessages * 0.4)),
+          signal
+        });
+        emit({ type: "context_compact", step, maxSteps: stepLimit, before, after: trimmed.length, method: "llm" });
+      } catch (error) {
+        warn(`LLM compaction failed, falling back to trim: ${error.message}`);
+        trimmed = trimConversation(nonSystem, maxMessages);
+        emit({ type: "context_trim", step, maxSteps: stepLimit, before, after: trimmed.length });
+      }
+    } else {
+      trimmed = trimConversation(nonSystem, maxMessages);
+      emit({ type: "context_trim", step, maxSteps: stepLimit, before, after: trimmed.length });
+    }
+    messages.length = 0;
+    messages.push({ role: "system", content: buildSystemContent() }, ...trimmed);
   }
 
   async function runModelTurn(step) {
+    assertNotCancelled();
+    lastStep = step;
+    if (stepLimit && step >= stepLimit - 1) {
+      emit({ type: "step_budget_low", step, maxSteps: stepLimit, remaining: Math.max(0, stepLimit - step + 1) });
+    }
     const activeMode = modeRuntime.getMode();
-    emit({ type: "model_start", step, maxSteps: stepLimit, model: activeModel, mode: activeMode });
+    let modelPayload = { step, mode: activeMode, model: activeModel, sessionId, cwd };
+    try {
+      modelPayload = await runHooks("pre_model", modelPayload, hooks, { cwd, signal });
+    } catch (error) {
+      if (error.code === "hook_blocked") throw error;
+      warn(`pre_model hook failed: ${error.message}`);
+    }
+    const turnModel = modelPayload.model ?? activeModel;
+    const turnMode = modelPayload.mode ?? activeMode;
+    emit({ type: "model_start", step, maxSteps: stepLimit, model: turnModel, mode: turnMode });
+    const startedAt = Date.now();
+    let streamedText = "";
     const completion = await client.chat({
       messages,
       tools,
-      model: activeModel,
-      reasoning: subagent?.reasoning || cfg.reasoning
+      model: turnModel,
+      reasoning: subagent?.reasoning || cfg.reasoning,
+      signal,
+      stream: useStream,
+      onDelta: useStream
+        ? (delta) => {
+          if (delta.content) {
+            streamedText += delta.content;
+            const tokenEvent = { type: "model_token", step, maxSteps: stepLimit, delta: delta.content, text: streamedText };
+            emit(tokenEvent);
+            onToken?.(tokenEvent);
+          }
+        }
+        : null
     });
+    const durationMs = Date.now() - startedAt;
     const message = assistantMessageFromCompletion(completion);
     if (!message) {
       logError(`Provider returned no assistant message at step ${step}`);
-      throw new Error("Provider returned no assistant message.");
+      const providerError = new Error("Provider returned no assistant message.");
+      providerError.code = "provider_empty_message";
+      throw providerError;
     }
     messages.push(message);
     const calls = message.tool_calls || [];
@@ -164,61 +476,139 @@ export async function runAgent({ cfg, cwd, prompt, mode = cfg.mode, subagent = n
       step,
       maxSteps: stepLimit,
       toolCalls: calls.length,
-      tools: calls.map((call) => call.function?.name).filter(Boolean)
+      tools: calls.map((call) => call.function?.name).filter(Boolean),
+      durationMs,
+      usage: completion?.usage || null
     });
-    return { message, calls };
+    let postPayload = {
+      step,
+      toolCalls: calls.length,
+      durationMs,
+      usage: completion?.usage || null,
+      sessionId,
+      cwd,
+      tools: calls.map((call) => call.function?.name).filter(Boolean)
+    };
+    try {
+      postPayload = await runHooks("post_model", postPayload, hooks, { cwd, signal });
+    } catch (error) {
+      if (error.code === "hook_blocked") throw error;
+      warn(`post_model hook failed: ${error.message}`);
+    }
+    const skipTools = new Set(Array.isArray(postPayload.skipTools) ? postPayload.skipTools : []);
+    const effectiveCalls = skipTools.size
+      ? calls.filter((call) => !skipTools.has(call.function?.name))
+      : calls;
+    return { message, calls: effectiveCalls };
+  }
+
+  function finishRun(content, step, status = "ok") {
+    stoppedReason = status;
+    emit({ type: "final", step, maxSteps: stepLimit });
+    emit({ type: "agent_run_end", step, maxSteps: stepLimit, status, durationMs: Date.now() - runStartedAt });
+    recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: status });
+    flushState();
+    return returnSession ? { content, sessionId, messages, events } : content;
   }
 
   debug(`Agent run start: mode=${modeRuntime.getMode()} model=${activeModel} steps=${stepLimit ?? "unlimited"}`);
   emit({ type: "agent_run_start", step: 0, maxSteps: stepLimit, mode: modeRuntime.getMode(), model: activeModel });
+  try {
+    await runHooks("agent_run_start", { prompt, mode: modeRuntime.getMode(), model: activeModel, sessionId, cwd }, hooks, { cwd, signal });
+  } catch (error) {
+    if (error.code === "hook_blocked") {
+      const message = error.message || "Agent run blocked by hook";
+      emit({ type: "agent_run_end", step: 0, maxSteps: stepLimit, status: "blocked", durationMs: Date.now() - runStartedAt });
+      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "blocked" });
+      flushState();
+      if (returnSession) return { content: message, sessionId, messages, events };
+      return message;
+    }
+    warn(`agent_run_start hook failed: ${error.message}`);
+  }
 
   try {
     for (let step = 1; stepLimit === null || step <= stepLimit; step += 1) {
       const { message, calls } = await runModelTurn(step);
       if (!calls.length) {
-        emit({ type: "final", step, maxSteps: stepLimit });
-        recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
-        flushState();
-        const content = message.content || "";
-        return returnSession ? { content, sessionId, messages } : content;
+        return finishRun(message.content || "", step);
       }
 
       await executeToolCalls(calls, step);
+      await maybeTrimMessages(step);
 
       const hadTodo = calls.some((call) => call.function?.name === "todo");
-      const nextMode = modeRuntime.consumeModeChange();
-      if (nextMode || hadTodo) {
+      const modeChange = modeRuntime.consumeModeChange();
+      if (modeChange || hadTodo) {
         if (hadTodo) activeTodos = formatActiveTodos(cwd);
         messages[0] = { role: "system", content: buildSystemContent() };
-        if (nextMode) emit({ type: "mode_change", step, mode: nextMode });
+        if (modeChange) {
+          emit({
+            type: "mode_change",
+            step,
+            mode: modeChange.mode,
+            previous: modeChange.previous,
+            reason: modeChange.reason || ""
+          });
+        }
       }
     }
 
-    // Bonus phase: if the last model response had tool_calls, give the model up to two
-    // additional turns to see the tool results and produce a final answer.
-    let bonusStep = stepLimit + 1;
-    while (messages[messages.length - 1]?.role === "tool" && bonusStep <= stepLimit + 2) {
-      const { message, calls } = await runModelTurn(bonusStep);
-      if (!calls.length) {
-        emit({ type: "final", step: bonusStep, maxSteps: stepLimit });
-        recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events });
+    if (stepLimit != null) {
+      let bonusStep = stepLimit + 1;
+      while (messages[messages.length - 1]?.role === "tool" && bonusStep <= stepLimit + 2) {
+        const { message, calls } = await runModelTurn(bonusStep);
+        if (!calls.length) {
+          return finishRun(message.content || "", bonusStep);
+        }
+        for (const call of calls) {
+          const name = call.function?.name || "tool";
+          const content = "Step budget exhausted. Provide your final answer as assistant text without requesting more tools.";
+          emit({ type: "tool_start", step: bonusStep, maxSteps: stepLimit, tool: name, summary: summarizeToolArgs(name, {}) });
+          emit({ type: "tool_end", step: bonusStep, maxSteps: stepLimit, tool: name, ok: false, code: "rejected", durationMs: 0, summary: "budget exhausted" });
+          messages.push({ role: "tool", tool_call_id: call.id, name, content });
+        }
         flushState();
-        const content = message.content || "";
-        return returnSession ? { content, sessionId, messages } : content;
+        bonusStep += 1;
       }
-      await executeToolCalls(calls, bonusStep);
-      bonusStep += 1;
     }
 
     const partialContent = lastAssistantContent(messages);
     warn(`Agent step limit reached: ${stepLimit} steps without a final answer`);
-    emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit });
+    emit({ type: "step_limit", step: stepLimit, maxSteps: stepLimit, stoppedAtStep: lastStep });
+    emit({ type: "agent_run_end", step: lastStep, maxSteps: stepLimit, status: "step_limit", durationMs: Date.now() - runStartedAt });
+    stoppedReason = "step_limit";
     recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
     flushState();
-    throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent });
+    throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent, style: progressStyle });
+  } catch (error) {
+    if (!(error instanceof AgentStepLimitError)) {
+      const cancelled = error instanceof AgentCancelledError || signal?.aborted;
+      stoppedReason = cancelled ? "cancelled" : "error";
+      if (!events.some((event) => event.type === "agent_error" && event.error === error.message)) {
+        emit({ type: "agent_error", step: lastStep, error: error.message });
+      }
+      if (!events.some((event) => event.type === "agent_run_end")) {
+        emit({
+          type: "agent_run_end",
+          step: lastStep,
+          maxSteps: stepLimit,
+          status: stoppedReason,
+          durationMs: Date.now() - runStartedAt
+        });
+      }
+    }
+    throw error;
   } finally {
+    await runHooks("agent_run_end", {
+      sessionId,
+      stopped: stoppedReason || "error",
+      cwd,
+      prompt
+    }, hooks, { cwd, signal }).catch(() => {});
+    await mcp.close().catch(() => {});
     if (!sessionRecorded) {
-      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "error" });
+      recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: stoppedReason || "error" });
     }
     flushState();
   }
@@ -246,16 +636,6 @@ function loadRelevantMemory(prompt) {
   const notes = searchMemory(prompt).slice(0, 8);
   if (!notes.length) return "";
   return `User memory:\n${notes.map((note) => `- ${note.text}`).join("\n")}`;
-}
-
-function loadProjectRules(cwd) {
-  const file = path.join(cwd, ".azycode", "rules.md");
-  try {
-    return `Project rules:\n${fs.readFileSync(file, "utf8")}`;
-  } catch (error) {
-    if (error.code === "ENOENT") return "";
-    throw error;
-  }
 }
 
 async function loadContextPack(cwd) {

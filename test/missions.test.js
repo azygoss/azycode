@@ -15,6 +15,24 @@ test("loads tiny yaml mission", () => {
   assert.deepEqual(mission.steps, ["first", "second"]);
 });
 
+test("loads yaml mission object steps", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-mission-yaml-"));
+  const file = path.join(dir, "mission.yml");
+  fs.writeFileSync(file, [
+    "name: yaml-objects",
+    "mode: goal",
+    "steps:",
+    "  - id: plan",
+    "    prompt: plan work",
+    "  - id: build",
+    "    prompt: build work",
+    "    dependsOn: plan"
+  ].join("\n"));
+  const mission = loadMission(file);
+  assert.equal(mission.steps[0].id, "plan");
+  assert.equal(mission.steps[1].dependsOn, "plan");
+});
+
 test("loads json mission object steps", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-mission-"));
   const file = path.join(dir, "mission.json");
@@ -47,4 +65,26 @@ test("missionPlan rejects dependency cycles", () => {
       { id: "b", dependsOn: "a", prompt: "b" }
     ]
   }, { mode: "goal" }), /cycle/);
+});
+
+test("missionPlan supports parallel step groups with dependencies", () => {
+  const plan = missionPlan({
+    steps: [
+      { id: "plan", prompt: "plan" },
+      {
+        id: "parallel-review",
+        dependsOn: "plan",
+        parallel: [
+          { id: "review-diff", agent: "reviewer", prompt: "review diff" },
+          { id: "map-src", agent: "explorer", prompt: "map src" }
+        ]
+      },
+      { id: "summarize", dependsOn: "parallel-review", prompt: "summarize" }
+    ]
+  }, { mode: "review" });
+  assert.deepEqual(plan.map((step) => step.id), ["plan", "parallel-review", "summarize"]);
+  assert.equal(plan[1].isParallelGroup, true);
+  assert.equal(plan[1].parallel.length, 2);
+  assert.match(formatMissionPlan({ steps: plan }, { mode: "review" }), /parallel=2/);
+  assert.match(formatMissionPlan({ steps: plan }, { mode: "review" }), /review-diff agent=reviewer/);
 });

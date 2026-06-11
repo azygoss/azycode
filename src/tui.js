@@ -1,47 +1,76 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { clearLine, cursorTo, emitKeypressEvents, moveCursor } from "node:readline";
+import { clearLine, cursorTo, moveCursor } from "node:readline";
 import readlinePromises from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
+import { stdin as input, stdout as output, stderr } from "node:process";
 import { execFileSync } from "node:child_process";
 import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
 import { applyPermissionProfile, azyHome, configPath, formatAgentStepLimit, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
-import { AgentStepLimitError } from "./agent-errors.js";
+import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
+import { compactConversationWithModel } from "./compaction.js";
+import { loadHookConfig } from "./hooks.js";
+import { AgentCancelledError, AgentStepLimitError } from "./agent-errors.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { listSkills } from "./skills.js";
 import { gitGuard } from "./guard.js";
 import {
   accent,
+  activityHeader,
+  approvalPanel,
   badge,
   blank,
   bold,
   box,
   brand,
+  brandBanner,
+  taskPanel,
+  budgetProgressBar,
+  chip,
   code,
+  createStreamPanel,
   dim,
   error as errorText,
   faint,
+  grokActionRow,
+  grokComposerDock,
+  grokRunMeta,
+  grokUserBar,
+  grokWelcomeScreen,
   header as renderHeader,
+  highlightTerms,
+  helpPanel,
+  paletteHintLine,
   icon,
   info as infoText,
   keyValueList,
   kv,
   list,
+  listPanel,
   muted,
   paint,
   padEnd,
+  palettePanel,
   panel,
   pill,
   prettyMs,
+  progressBar,
   promptStatus,
+  quoteBlock,
   renderTable,
+  renderGrokResponse,
+  responsePanel,
   rule,
+  runSummaryPanel,
   section as sectionText,
+  shellPanel,
   spinnerFrame,
+  spinnerRunLabel,
   startSpinner,
+  statCells,
   statusDot,
+  statusPanel,
   stopSpinner,
   stripAnsi,
   style,
@@ -52,7 +81,9 @@ import {
   truncate,
   tree,
   visibleLength,
-  warn as warnText
+  warn as warnText,
+  welcomeHero,
+  wordmark
 } from "./ui.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
@@ -60,22 +91,58 @@ import { addMemory, removeMemory, searchMemory } from "./memory.js";
 import { formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { contextPack, formatContextPack } from "./context.js";
 import { toolCatalog } from "./tools.js";
-import { createAgentProgress, hasActiveProvider, runtimeSnapshot } from "./harness.js";
+import { createAgentProgress, formatAgentRunStats, formatAgentRunSummary, formatSessionTranscript, formatToolRunLine, hasActiveProvider, runtimeSnapshot, sessionListEntries, summarizeAgentRun, toolRunListEntries, withAgentAbort } from "./harness.js";
+import { trimConversation } from "./conversation.js";
+import { discoverProjectInstructions, listInstructionSources } from "./instructions.js";
+import { expandFileReferences } from "./prompt-expand.js";
+import { execFileCancellable } from "./exec.js";
 import { formatTodoList, listTodos, runTodoAction } from "./todos.js";
-import { createPromptSession, normalizeTabKey } from "./terminal-input.js";
+import { readComposerLine } from "./composer-input.js";
+import { fitTerminalWidth, maxBottomPaneRows, terminalRows, writeInBottomPane } from "./screen.js";
+import { createPromptSession, normalizeTabKey, syncTuiPrompt } from "./terminal-input.js";
 
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
-  "session", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "review", "todo", "new", "compact", "clear", "exit", "quit"
+  "session", "resume", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
+  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "stream", "instructions", "review", "skill", "todo", "new", "compact", "hooks", "commands", "clear", "reload", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
 const AGENT_BORDER = "rounded";
-const PANEL_WIDTH = (output.columns && output.columns >= 60 ? Math.min(output.columns - 4, 96) : 80);
+
+function tuiWidth() {
+  return fitTerminalWidth(output, 2);
+}
+
+function tuiEmit(text = "", stream = output) {
+  if (stream.isTTY) stream.write("\x1b[?25h");
+  stream.write(text);
+}
+
+export function tuiWriteln(text = "", stream = output) {
+  tuiEmit(`${text}\n`, stream);
+}
+
+function tuiBlank(stream = output) {
+  tuiWriteln("", stream);
+}
+
+function emitLine(line, { tty = output.isTTY, stream = output } = {}) {
+  if (tty) tuiWriteln(line, stream);
+  else console.log(line);
+}
+
+function emitLines(lines, options = {}) {
+  for (const line of lines) emitLine(line, options);
+}
+
+function composerInitialRows(state) {
+  const dockRows = getComposerDockLines(state).length;
+  return Math.min(maxBottomPaneRows(output), Math.max(6, dockRows + 2));
+}
 
 export async function launchTui({ cwd = process.cwd() } = {}) {
   const cfg = loadConfig();
@@ -85,13 +152,11 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     mode: normalizeMode(cfg.mode),
     includeContext: false,
     progress: true,
+    streamResponses: Boolean(cfg.streamResponses),
     conversation: [],
     skills: [],
     subagent: null,
     maxConversationMessages: cfg.maxConversationMessages || MAX_CONVERSATION_MESSAGES,
-    commandPaletteShown: false,
-    paletteLines: 0,
-    _paletteTimeout: null
   };
   printWelcome(state);
   const promptSession = createPromptSession({
@@ -115,88 +180,209 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
   }
 
   const rl = readlinePromises.createInterface({ input, output, completer: (line) => completeTuiInput(line, state) });
-  emitKeypressEvents(input, rl);
-
-  const onKeypress = (_, key) => handleKeypress(key, state, rl, promptSession);
-  input.on("keypress", onKeypress);
+  const renderPane = createComposerRenderer(state);
+  const originalLog = console.log;
+  console.log = (...args) => {
+    const text = args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" ");
+    if (!text) {
+      tuiBlank();
+      return;
+    }
+    for (const line of text.split("\n")) tuiWriteln(line);
+  };
   try {
     while (true) {
       state.acceptingInput = true;
-      const line = (await rl.question(promptLabel(state))).trim();
+      const line = (await readComposerLine({
+        input,
+        output,
+        readlineInterface: rl,
+        renderPane,
+        getPaletteItems: (value) => (value.startsWith("/") ? filterPaletteCommands(state, value.slice(1).trim()) : []),
+        resolveSlashSubmit: (value, items, selection) => resolveSlashSubmit(value, items, selection),
+        completeLine: (value) => completeTuiInput(value, state),
+        onShortcut: (key) => applyShortcut(key, state, { persist: true }),
+        onClearScreen: () => {
+          output.write("\x1Bc");
+          printWelcome(state);
+        },
+        initialRows: composerInitialRows(state)
+      })).trim();
       state.acceptingInput = false;
       if (!line) continue;
-      input.off("keypress", onKeypress);
-      try {
-        if (line.startsWith("/")) {
-          const done = await handleCommand(line, state, rl);
-          if (done === "exit") break;
-        } else {
-          await askAgent(line, state, rl);
-        }
-      } finally {
-        input.on("keypress", onKeypress);
+      if (line.startsWith("/")) {
+        const done = await handleCommand(line, state, rl, promptSession);
+        if (rl) rl.pause();
+        if (done === "exit") break;
+      } else if (line.startsWith("!")) {
+        await runLocalShell(line.slice(1).trim(), state, rl, promptSession);
+      } else {
+        await askAgent(line, state, rl, promptSession);
       }
     }
   } finally {
-    input.off("keypress", onKeypress);
+    console.log = originalLog;
     rl.close();
   }
 }
 
 function printWelcome(state) {
   const repo = path.basename(state.cwd);
-  const provider = state.cfg.activeProvider || "no provider";
-  const model = state.cfg.activeModel || "no model";
-  const guard = gitGuard(state.cwd, state.cfg);
-  const guardLabel = guard.ok ? "ok" : "blocked";
-  const guardStyle = guard.ok ? "success" : "error";
+  const git = gitSummary(state.cwd);
+  const connected = hasActiveProvider(state.cfg);
   blank();
-
-  // Pick a banner width that comfortably fits the longest line of content while
-  // staying within typical TTY widths.
-  const W = 96;
-  const header = `${bold("azycode")}  ${muted("v0.1")}  ${muted("·")}  ${muted("interactive coding harness")}`;
-  console.log(padEnd(header, W));
-  console.log(rule(W, { label: "ready", labelColor: "info" }));
-
-  const segments = [
-    ["workspace", repo],
-    ["model", `${provider}/${model}`],
-    ["session", `${state.mode} · reasoning ${state.cfg.reasoning} · profile ${state.cfg.permissionProfile || "normal"}`],
-    ["guard", `${statusDot(guardLabel)} ${style(guardLabel, guardStyle)}`]
-  ];
-  for (const [label, value] of segments) {
-    // padEnd from ui.js accounts for ANSI escape codes, so labels align cleanly.
-    console.log(`  ${padEnd(muted(label), 16)}${value}`);
-  }
-
-  console.log(rule(W, { char: "·", color: "subtle" }));
-
-  const shortcuts = [
-    `${muted("type a task")}  ${muted("·")}  ${muted("/help commands")}  ${muted("·")}  ${muted("Tab reasoning")}  ${muted("·")}  ${muted("Shift+Tab mode")}`,
-    `${muted("shortcuts:")}  ${subtle("/login")} ${muted("connect")}  ${subtle("/status")} ${muted("inspect")}  ${subtle("/model")} ${muted("switch")}`
-  ];
-  for (const line of shortcuts) {
-    console.log(`  ${padEnd(line, W - 2)}`);
-  }
-  if (!hasActiveProvider(state.cfg)) {
-    console.log(`  ${warnText(icon("warn"))} ${muted("No provider connected — type")} ${subtle("/login")} ${muted("to start.")}`);
+  for (const line of grokWelcomeScreen({
+    connected,
+    workspace: repo,
+    branch: git.branch,
+    width: tuiWidth()
+  })) {
+    console.log(line);
   }
   blank();
 }
 
-export function promptLabel(state, { styled = true } = {}) {
-  // Prompt focuses on mode/reasoning/agent — guard status lives in the welcome
-  // banner and /status so the prompt stays compact and scannable.
-  const status = promptStatus({
+function getComposerDockLines(state) {
+  const model = state.cfg.activeProvider && state.cfg.activeModel
+    ? `${state.cfg.activeProvider}/${state.cfg.activeModel}`
+    : null;
+  return grokComposerDock({
+    model,
     mode: state.mode,
     reasoning: state.cfg.reasoning,
     agent: state.subagent?.name,
-    profile: state.cfg.permissionProfile
+    messages: (state.conversation?.length ?? 0) > 0 ? state.conversation.length : null,
+    maxMessages: state.maxConversationMessages,
+    width: tuiWidth()
   });
-  const cursor = styled ? style(icon("chevron"), "brand") : "›";
-  if (!styled) return `${status}  ${cursor} `;
-  return `${status}  ${cursor} `;
+}
+
+export function filterPaletteCommands(state, filter = "") {
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const items = [];
+  for (const group of commandPaletteGroups(state)) {
+    for (const [command, summary] of group.items) {
+      const haystack = `${command} ${summary}`.toLowerCase();
+      if (terms.length && !terms.every((term) => haystack.includes(term))) continue;
+      items.push([command, summary]);
+    }
+  }
+  return items;
+}
+
+export function resolveSlashSubmit(line, items, selection = 0) {
+  const typed = String(line ?? "").trim();
+  if (!typed.startsWith("/")) return typed;
+  const exact = items.find(([command]) => command === typed);
+  if (exact) return typed;
+  const body = typed.slice(1).trim();
+  if (!body.includes(" ") && items[selection]?.[0]) return items[selection][0];
+  return typed;
+}
+
+const PALETTE_HINTS = [
+  { key: "↑↓", label: "pick" },
+  { key: "Enter", label: "run" },
+  { key: "Tab", label: "fill" },
+  { key: "Esc", label: "clear" }
+];
+
+function formatPaletteCommand(command, terms, picked) {
+  const highlighted = highlightTerms(String(command), terms);
+  return picked ? bold(brand(highlighted)) : style(highlighted, "brightWhite");
+}
+
+export function buildSelectablePaletteLines(state, filter = "", { maxLines = 8, selection = 0 } = {}) {
+  const items = filterPaletteCommands(state, filter);
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const width = tuiWidth();
+  if (!items.length) {
+    return [
+      muted(`  ${filter ? "no matching commands" : `${countPaletteCommands(state)} commands — type to filter`}`),
+      paletteHintLine(PALETTE_HINTS)
+    ];
+  }
+  const commandWidth = items.reduce((max, [command]) => Math.max(max, String(command).length), 0);
+  const visible = items.slice(0, Math.max(1, maxLines - 1));
+  const lines = visible.map(([command, summary], index) => {
+    const picked = index === selection;
+    const marker = picked ? brand(bold("›")) + " " : "  ";
+    const cmd = formatPaletteCommand(command, terms, picked);
+    const prefix = `${marker}${padEnd(cmd, commandWidth + 2)}`;
+    const avail = Math.max(0, width - visibleLength(prefix));
+    const desc = avail > 0 ? subtle(truncate(summary, avail)) : "";
+    return truncate(prefix + desc, width);
+  });
+  if (items.length > visible.length) {
+    lines.push(truncate(subtle(`  … ${items.length - visible.length} more — type to filter`), width));
+  }
+  lines.push(paletteHintLine(PALETTE_HINTS));
+  return lines;
+}
+
+export function buildLivePaletteLines(state, filter = "", maxLines = 10) {
+  if (maxLines < 3) return [];
+  const panelLines = buildCommandPaletteLines(state, filter);
+  if (!panelLines.length) {
+    return filter ? [muted("  no matching commands")] : [muted(`  ${countPaletteCommands(state)} commands — type to filter`)];
+  }
+  if (panelLines.length <= maxLines) return panelLines;
+  return [
+    ...panelLines.slice(0, maxLines - 1),
+    truncate(muted(`  … ${panelLines.length - maxLines + 1} more — type to filter`), tuiWidth())
+  ];
+}
+
+export function maxComposerPaletteLines(state, { line = "" } = {}) {
+  const dockRows = getComposerDockLines(state).length;
+  const promptRows = Math.max(1, (String(line).match(/\n/g) || []).length + 1);
+  const reserved = dockRows + promptRows + 2;
+  return Math.max(3, maxBottomPaneRows(output) - reserved);
+}
+
+export function buildComposerPaneLines(state, { line = "", paletteFilter = null, paletteSelection = 0 } = {}) {
+  const rows = [...getComposerDockLines(state)];
+  if (paletteFilter !== null) {
+    const maxLines = maxComposerPaletteLines(state, { line });
+    rows.push(subtle("  " + "─".repeat(Math.max(0, tuiWidth() - 4))));
+    rows.push(...buildSelectablePaletteLines(state, paletteFilter, { maxLines, selection: paletteSelection }));
+  }
+  const parts = line ? line.split("\n") : [""];
+  for (let i = 0; i < parts.length; i++) {
+    const prefix = i === 0 ? promptLabel(state) : "  ";
+    const input = parts[i] ? bold(style(parts[i], "brightWhite")) : "";
+    rows.push(`${prefix}${input}`);
+  }
+  return rows;
+}
+
+function createComposerRenderer(state) {
+  const renderer = ({ line, cursor, layout, paletteSelection = 0 }) => {
+    const paletteFilter = line.startsWith("/") ? line.slice(1).trim() : null;
+    const rows = buildComposerPaneLines(state, { line, paletteFilter, paletteSelection });
+    const maxCol = tuiWidth();
+    for (let i = 0; i < layout.bottomRows; i++) {
+      const row = i < rows.length ? rows[i] : "";
+      writeInBottomPane(layout, i, truncate(row, maxCol), output);
+    }
+    const before = line.slice(0, cursor);
+    const lineIndex = (before.match(/\n/g) || []).length;
+    const colInLine = before.length - (before.lastIndexOf("\n") + 1);
+    const inputLineCount = Math.max(1, (line.match(/\n/g) || []).length + 1);
+    renderer.promptOffset = Math.min(
+      layout.bottomRows - 1,
+      rows.length - inputLineCount + lineIndex
+    );
+    renderer.promptColumn = () => (lineIndex === 0
+      ? visibleLength(promptLabel(state, { styled: false }))
+      : 2) + colInLine;
+    return rows.length;
+  };
+  return renderer;
+}
+
+export function promptLabel(state, { styled = true } = {}) {
+  return styled ? `${brand(bold("›"))} ` : "› ";
 }
 
 export { normalizeTabKey } from "./terminal-input.js";
@@ -220,54 +406,28 @@ export function applyShortcut(key, state, options = {}) {
   }
 }
 
-function handleKeypress(key, state, rl, promptSession) {
-  if (promptSession?.handleTabKeypress(key, rl, (tabKey) => {
-    applyShortcut(tabKey, state, { rl, promptSession });
-  })) return;
-  if (key?.name === "escape" && state.commandPaletteShown) {
-    state.commandPaletteShown = false;
-    clearLine(output, 0);
-    cursorTo(output, 0);
-    promptSession?.refreshPrompt(rl);
-    return;
+const MAX_COMPACT_PALETTE_LINES = 6;
+
+function countPaletteCommands(state) {
+  let total = 0;
+  for (const group of commandPaletteGroups(state)) total += group.items.length;
+  return total;
+}
+
+export function buildCompactPaletteHints(state, filter = "", maxLines = MAX_COMPACT_PALETTE_LINES) {
+  const items = filterPaletteCommands(state, filter);
+  const width = tuiWidth();
+  const commandWidth = items.reduce((max, [command]) => Math.max(max, String(command).length), 0);
+  const lines = items.slice(0, maxLines).map(([command, summary]) => {
+    const prefix = `  ${padEnd(style(String(command), "brightWhite"), commandWidth + 2)}`;
+    const avail = Math.max(0, width - visibleLength(prefix));
+    const desc = avail > 0 ? muted(truncate(summary, avail)) : "";
+    return truncate(prefix + desc, width);
+  });
+  if (items.length > maxLines) {
+    lines.push(truncate(muted(`  … ${items.length - maxLines} more — type to filter`), width));
   }
-  if (key?.ctrl && key?.name === "l") {
-    output.write("\x1Bc");
-    printWelcome(state);
-    promptSession?.refreshPrompt(rl);
-    return;
-  }
-  clearTimeout(state._paletteTimeout);
-  state._paletteTimeout = setTimeout(() => {
-    const line = rl.line || "";
-    if (line.startsWith("/")) {
-      if (!state.commandPaletteShown) {
-        state.commandPaletteShown = true;
-        state.paletteLines = 0;
-      }
-      if (state.paletteLines > 0) {
-        for (let i = 0; i < state.paletteLines; i++) {
-          output.write("\x1b[1A\x1b[2K");
-        }
-      }
-      output.write("\n");
-      const filter = line.slice(1).trim();
-      const lines = printFilteredCommandPalette(state, filter);
-      state.paletteLines = lines;
-      promptSession?.refreshPrompt(rl);
-    } else {
-      if (state.commandPaletteShown) {
-        state.commandPaletteShown = false;
-        if (state.paletteLines > 0) {
-          for (let i = 0; i < state.paletteLines; i++) {
-            output.write("\x1b[1A\x1b[2K");
-          }
-        }
-        state.paletteLines = 0;
-        promptSession?.refreshPrompt(rl);
-      }
-    }
-  }, 0);
+  return lines;
 }
 
 export { findUnderlyingInterface } from "./terminal-input.js";
@@ -280,18 +440,6 @@ export function stripTrailingTab(rl, state) {
   session.stripTrailingTab(rl);
 }
 
-function paintInlineOverlay(rl, state, message) {
-  const line = rl?.line || "";
-  const cursor = rl?.cursor ?? line.length;
-  const label = `${muted(message)}`;
-  clearLine(output, 0);
-  cursorTo(output, 0);
-  output.write(label);
-  output.write("  ");
-  output.write(line);
-  cursorTo(output, visibleLength(label) + 2 + cursor);
-}
-
 export function completeTuiInput(line, state) {
   if (!line.startsWith("/")) return [[], line];
   const body = line.slice(1);
@@ -299,8 +447,10 @@ export function completeTuiInput(line, state) {
   const parts = body.split(/\s+/).filter(Boolean);
   const command = parts[0] || "";
   if (parts.length === 0 || (parts.length === 1 && !hasTrailingSpace)) {
-    const completions = TUI_COMMANDS.map((item) => `/${item}`).filter((item) => item.startsWith(`/${command}`));
-    return [completions.length ? completions : TUI_COMMANDS.map((item) => `/${item}`), line];
+    const custom = loadCustomCommands(state.cwd).map((entry) => entry.name).filter((name) => !TUI_COMMANDS.includes(name));
+    const allCommands = [...TUI_COMMANDS, ...custom];
+    const completions = allCommands.map((item) => `/${item}`).filter((item) => item.startsWith(`/${command}`));
+    return [completions.length ? completions : allCommands.map((item) => `/${item}`), line];
   }
 
   const argPrefix = hasTrailingSpace ? "" : parts.at(-1);
@@ -335,44 +485,56 @@ function tuiArgCandidates(command, fixedArgs, state) {
   return [];
 }
 
-async function askAgent(prompt, state, rl = null) {
+async function askAgent(prompt, state, rl = null, promptSession = null) {
+  state.cfg = loadConfig();
+  const tty = output.isTTY;
+  if (rl) rl.pause();
+  const { prompt: expandedPrompt, attachments } = expandFileReferences(prompt, state.cwd);
   if (!hasActiveProvider(state.cfg)) {
-    blank();
-    for (const line of box([
+    tuiBlank();
+    emitLines(box([
       `${warnText(icon("warn"))} ${bold("Provider required")}`,
       "",
       `${muted("Connect a model provider before running tasks.")}`,
       `${muted("In this workspace, type")} ${subtle("/login")} ${muted("and follow the prompts.")}`
-    ], { width: PANEL_WIDTH, frame: AGENT_BORDER, title: "setup" })) {
-      console.log(line);
-    }
-    blank();
+    ], { width: tuiWidth(), frame: AGENT_BORDER, title: "setup" }), { tty });
+    tuiBlank();
     return;
   }
   const maxSteps = resolveAgentMaxSteps(state.cfg);
-  blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold("Agent run")}  ${muted(`· ${formatAgentStepLimit(maxSteps)}`)}  ${muted(`· ${state.mode}`)}`);
-  console.log(rule(PANEL_WIDTH, { char: "·", color: "subtle" }));
+  const W = tuiWidth();
+  tuiBlank();
+  printAgentRunHeader(state, expandedPrompt, maxSteps, attachments, W, { tty });
 
-  const spinner = state.progress ? startSpinner({ label: maxSteps ? `step 0/${maxSteps}` : "step 0", stream: output, isTTY: output.isTTY }) : null;
+  const spinner = state.progress && !state.streamResponses
+    ? startSpinner({
+      label: spinnerRunLabel({ step: 0, maxSteps, tool: "starting", width: Math.min(18, Math.max(10, Math.floor(W / 6))) }),
+      stream: stderr,
+      isTTY: stderr.isTTY
+    })
+    : null;
+  let streamed = false;
+  const streamPanel = state.streamResponses
+    ? createStreamPanel({ width: W, stream: output, onLine: (line) => emitLine(line, { tty }) })
+    : null;
   const onEvent = state.progress
     ? createAgentProgress({
       spinner,
       maxSteps,
+      style: "grok",
+      quietModelTurns: true,
+      panelWidth: W,
       onLine: (line, event) => {
-        if (event?.type === "agent_run_start" || event?.type === "model_start") {
-          console.log(infoText(line.trim()));
-        } else {
-          console.log(muted(line));
-        }
+        if (event?.type === "model_token") return;
+        emitLine(line, { tty });
       }
     })
     : null;
   try {
-    const result = await runAgent({
+    const result = await withAgentAbort(async (signal) => runAgent({
       cfg: state.cfg,
       cwd: state.cwd,
-      prompt,
+      prompt: expandedPrompt,
       mode: state.mode,
       maxSteps,
       includeContext: state.includeContext,
@@ -382,49 +544,111 @@ async function askAgent(prompt, state, rl = null) {
       confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
       subagent: state.subagent,
       skills: state.skills,
+      signal,
+      stream: state.streamResponses,
+      onToken: state.streamResponses
+        ? (event) => {
+          if (!streamed) {
+            streamed = true;
+            if (spinner) stopSpinner();
+          }
+          streamPanel?.write(event.delta || "");
+        }
+        : null,
       onModeChange: ({ mode, persist }) => {
         if (state.subagent) return;
         state.mode = mode;
         state.cfg.mode = mode;
         if (persist) saveConfig(state.cfg);
       }
+    }), {
+      onCancel: () => {
+        if (spinner) stopSpinner({ finalStyle: "warn", finalLabel: `cancelling  ${truncate(prompt, 36)}` });
+        tuiBlank();
+        emitLine(warnText(`  ${icon("warn")} Cancelling run… (Ctrl+C again to exit)`), { tty });
+      }
     });
     state.conversation = trimConversation(result.messages.filter((message) => message.role !== "system"), state.maxConversationMessages);
-    if (spinner) stopSpinner({ finalLabel: `done  ${truncate(prompt, 36)}` });
-    blank();
-    console.log(`${brand(icon("spike"))} ${bold(brand("assistant"))}`);
-    console.log(renderAssistantContent(result.content));
-    blank();
+    if (spinner) stopSpinner();
+    if (streamed) {
+      streamPanel?.close();
+      tuiBlank();
+    } else {
+      emitLines(renderGrokResponse(result.content, { width: W }), { tty });
+    }
+    if (state.progress && result.events?.length) {
+      const meta = grokRunMeta(formatAgentRunStats(result.events, { maxSteps }));
+      if (meta) emitLine(meta, { tty });
+    }
+    tuiBlank();
   } catch (error) {
     if (spinner) stopSpinner({ finalStyle: "error", finalLabel: `error  ${truncate(prompt, 36)}` });
-    blank();
-    console.log(errorText(`${icon("cross")}  ${bold("Agent stopped")}`));
-    if (error instanceof AgentStepLimitError) {
-      console.log(warnText("  Step limit reached before a final answer."));
+    streamPanel?.close();
+    tuiBlank();
+    emitLine(errorText(`${icon("cross")}  ${bold("Agent stopped")}`), { tty });
+    if (error instanceof AgentCancelledError) {
+      emitLine(warnText("  Run cancelled."), { tty });
+    } else if (error instanceof AgentStepLimitError) {
+      emitLine(warnText("  Step limit reached before a final answer."), { tty });
+      if (error.report) {
+        emitLine(`  ${muted("Run steps:")}`, { tty });
+        for (const line of error.report.split("\n")) emitLine(muted(`  ${line}`), { tty });
+      }
       if (error.partialContent) {
-        console.log(`  ${muted("Last model text:")}`);
-        console.log(renderAssistantContent(error.partialContent));
+        tuiBlank();
+        emitLines(renderGrokResponse(error.partialContent, { width: tuiWidth() }), { tty });
       }
     } else {
-      console.log(errorText(`  ${error.message}`));
+      emitLine(errorText(`  ${error.message}`), { tty });
     }
-    blank();
+    tuiBlank();
+  }
+}
+
+async function runLocalShell(command, state, rl = null, promptSession = null) {
+  if (!command) return;
+  const tty = output.isTTY;
+  if (rl) rl.pause();
+  tuiBlank();
+  try {
+    const { stdout, stderr } = await execFileCancellable(process.env.SHELL || "sh", ["-lc", command], {
+      cwd: state.cwd,
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024 * 4
+    });
+    const text = [stdout, stderr].filter(Boolean).join("\n").trim();
+    emitLines(shellPanel(command, text, { width: tuiWidth() }), { tty });
+  } catch (error) {
+    emitLines(shellPanel(command, error.message, { width: tuiWidth(), title: "shell error" }), { tty });
+  }
+  tuiBlank();
+}
+
+function printAgentRunHeader(state, prompt, maxSteps, attachments, width = tuiWidth(), { tty = output.isTTY } = {}) {
+  emitLine(grokUserBar(prompt, { width }), { tty });
+  if (attachments.length) {
+    emitLine(grokActionRow("Attached", attachments.join(", ")), { tty });
   }
 }
 
 function renderAssistantContent(content) {
   const text = String(content ?? "").trim();
   if (!text) return muted("(no response)");
-  const lines = text.split(/\n/);
-  return lines.map((line) => `  ${line}`).join("\n");
+  return responsePanel(text, { width: tuiWidth(), title: "assistant" }).join("\n");
 }
 
 async function confirmInTui(rl, question) {
-  const answer = (await rl.question(`${warnText(icon("warn") + "  " + question)} ${muted("[y/n]")} (n): `)).trim().toLowerCase();
+  const tty = output.isTTY;
+  tuiBlank();
+  emitLines(approvalPanel(question, { width: tuiWidth() }), { tty });
+  rl.resume();
+  const answer = (await rl.question(`${warnText(icon("warn"))} ${muted("Allow?")} ${muted("[y/n]")} (n): `)).trim().toLowerCase();
+  rl.pause();
   return answer === "y" || answer === "yes" || answer === "evet" || answer === "e";
 }
 
-async function handleCommand(line, state, rl = null) {
+async function handleCommand(line, state, rl = null, promptSession = null) {
+  if (rl) rl.pause();
   const [command, ...args] = line.slice(1).trim().split(/\s+/);
   if (!command) {
     printCommandPalette(state);
@@ -447,8 +671,39 @@ async function handleCommand(line, state, rl = null) {
   }
   if (command === "compact") {
     const before = state.conversation.length;
-    state.conversation = trimConversation(state.conversation, 20);
-    console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages`);
+    const keepRecent = Math.max(8, Math.floor((state.maxConversationMessages || 40) * 0.5));
+    if (state.cfg.compaction === "llm" && hasActiveProvider(state.cfg)) {
+      try {
+        const client = new LlmClient(state.cfg);
+        state.conversation = await compactConversationWithModel({
+          client,
+          messages: state.conversation,
+          model: state.cfg.activeModel,
+          keepRecent
+        });
+        console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages (llm)`);
+      } catch (error) {
+        state.conversation = trimConversation(state.conversation, keepRecent);
+        console.log(`${warnText(icon("warn"))} llm compact failed (${error.message}); trimmed to ${state.conversation.length}`);
+      }
+    } else {
+      state.conversation = trimConversation(state.conversation, keepRecent);
+      console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages`);
+    }
+    return;
+  }
+  if (command === "hooks") {
+    printHooks(state);
+    return;
+  }
+  if (command === "commands") {
+    printCustomCommands(state);
+    return;
+  }
+  if (command === "reload") {
+    state.cfg = loadConfig();
+    state.mode = state.cfg.mode;
+    console.log(`${successText(icon("check"))} ${muted("reloaded config from")} ${faint(configPath())}`);
     return;
   }
   if (command === "mode") {
@@ -540,6 +795,43 @@ async function handleCommand(line, state, rl = null) {
   if (command === "progress") {
     state.progress = !state.progress;
     console.log(`${muted(icon("chevron"))} progress: ${state.progress ? successText("on") : muted("off")}`);
+    return;
+  }
+  if (command === "stream") {
+    state.streamResponses = !state.streamResponses;
+    state.cfg.streamResponses = state.streamResponses;
+    saveConfig(state.cfg);
+    console.log(`${muted(icon("chevron"))} stream: ${state.streamResponses ? successText("on") : muted("off")}`);
+    return;
+  }
+  if (command === "instructions") {
+    const sources = listInstructionSources(state.cwd);
+    console.log(`${brand(icon("chevronRight"))} ${bold("Instruction sources")}`);
+    for (const source of sources) console.log(`  ${muted(icon("bullet"))} ${source}`);
+    const text = discoverProjectInstructions(state.cwd);
+    if (text) console.log(`\n${text}`);
+    else console.log(muted("  (none — add AGENTS.md or .azycode/rules.md)"));
+    return;
+  }
+  if (command === "resume") {
+    const sessionId = args[0];
+    const sessions = loadState().sessions || {};
+    const selectedId = sessionId && sessions[sessionId]
+      ? sessionId
+      : Object.entries(sessions).sort((a, b) => String(b[1]?.createdAt || "").localeCompare(String(a[1]?.createdAt || "")))[0]?.[0];
+    if (!selectedId) {
+      console.log(`${warnText(icon("warn"))} No saved session to resume.`);
+      return;
+    }
+    const selected = sessions[selectedId];
+    state.conversation = trimConversation(
+      (selected.messages || []).filter((message) => message.role !== "system"),
+      state.maxConversationMessages
+    );
+    if (selected.mode) state.mode = normalizeMode(selected.mode);
+    console.log(`${successText(icon("check"))} resumed ${selectedId} · ${state.conversation.length} messages loaded`);
+    const followUp = sessionId && args[0] === sessionId ? args.slice(1).join(" ") : args.join(" ");
+    if (followUp) await askAgent(followUp, state, rl, promptSession);
     return;
   }
   if (command === "review") {
@@ -693,11 +985,17 @@ async function handleCommand(line, state, rl = null) {
     printDoctor(state);
     return;
   }
+  const custom = resolveCustomCommand(line, state.cwd);
+  if (custom) {
+    await askAgent(custom.prompt, state, rl, promptSession);
+    return;
+  }
   console.log(`${warnText(icon("warn"))} Unknown command: /${command}. Use /help.`);
 }
 
 function modeColor(mode) {
   if (mode === "plan") return "info";
+  if (mode === "build") return "success";
   if (mode === "always-approve") return "warn";
   if (mode === "goal") return "brand";
   if (mode === "review") return "accent";
@@ -748,8 +1046,8 @@ function printHelp(topic = null) {
   printHelpGroups();
 }
 
-function printHelpGroups() {
-  const groups = [
+function helpGroups() {
+  return [
     { title: "Status", items: [
       ["/status", "active model, provider, guard"],
       ["/health", "provider connectivity"],
@@ -765,7 +1063,7 @@ function printHelpGroups() {
       ["/credentials", "masked provider key sources"]
     ]},
     { title: "Run", items: [
-      ["/mode", "plan, always-approve, goal, review"],
+      ["/mode", "plan, build, always-approve, goal, review"],
       ["/reasoning", "minimal, low, medium, high"],
       ["/profile", "permission profile"],
       ["/context", "toggle repository context"],
@@ -790,118 +1088,98 @@ function printHelpGroups() {
       ["/memory", "manage notes"],
       ["/keys", "keyboard shortcuts"],
       ["/new", "start a fresh conversation"],
-      ["/compact", "trim context"],
+      ["/compact", "trim or llm-compact context"],
+      ["/hooks", "show lifecycle hook handlers"],
+      ["/commands", "list custom slash commands"],
       ["/clear", "redraw the screen"],
       ["/exit", "leave azycode"]
     ]}
   ];
+}
+
+function printHelpGroups() {
   blank();
-  for (const group of groups) {
-    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
-    const width = group.items.reduce((max, [name]) => Math.max(max, name.length), 0);
-    for (const [name, summary] of group.items) {
-      console.log(`  ${name.padEnd(width)}  ${muted(summary)}`);
-    }
-    console.log("");
+  const footer = `${muted(icon("sparkle"))} hint: type ${infoText("/")} alone to open the command palette.`;
+  for (const line of helpPanel(helpGroups(), { width: tuiWidth(), footer })) {
+    console.log(line);
   }
-  console.log(`  ${muted(icon("sparkle"))} hint: type ${infoText("/")} alone to open the command palette.`);
   blank();
 }
 
-function printFilteredCommandPalette(state, filter = "") {
-  const groups = [
-    { title: "Status", items: [
-      ["/status", "active model, provider, guard"],
-      ["/health", "provider connectivity"],
-      ["/doctor", "local binary and config paths"],
-      ["/login", "connect a provider"],
-      ["/provider", "switch configured provider"],
-      ["/model", "all models grouped by provider"],
-      ["/providers", "show provider presets"],
-      ["/credentials", "masked provider key sources"],
-      ["/keys", "keyboard shortcuts"]
-    ]},
-    { title: "Run", items: [
-      ["/mode", "set plan, always-approve, goal, review"],
-      ["/reasoning", "set minimal, low, medium, high"],
-      ["/policy", "show tool approvals"],
-      ["/tool", "set tool approval mode"],
-      ["/agents", "show subagents"],
-      ["/agent", "select subagent"],
-      ["/missions", "show missions"],
-      ["/memory", "manage notes"],
-      ["/review", "local review"]
-    ]},
-    { title: "State", items: [
-      ["/dashboard", "local overview"],
-      ["/workspace", "cwd, config, git, guard"],
-      ["/session", "show session transcript"],
-      ["/clear", "redraw screen"],
-      ["/exit", "leave azycode"]
-    ]}
-  ];
+function commandPaletteGroups(state) {
+  const groups = helpGroups();
+  const custom = loadCustomCommands(state.cwd)
+    .map((entry) => [`/${entry.name}`, entry.description || "custom command"])
+    .filter(([command]) => !TUI_COMMANDS.includes(command.slice(1)));
+  if (custom.length) groups.splice(2, 0, { title: "Custom", items: custom });
+  return groups;
+}
+
+export function buildCommandPaletteLines(state, filter = "") {
   const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
-  let lines = 0;
-  blank(); lines += 1;
-  for (const group of groups) {
-    const filtered = terms.length
-      ? group.items.filter(([command, summary]) => {
+  const filteredGroups = commandPaletteGroups(state)
+    .map((group) => ({
+      ...group,
+      items: terms.length
+        ? group.items.filter(([command, summary]) => {
           const haystack = `${command} ${summary}`.toLowerCase();
           return terms.every((term) => haystack.includes(term));
         })
-      : group.items;
-    if (!filtered.length) continue;
-    console.log(`${brand(icon("chevronRight"))} ${bold(group.title)}`); lines += 1;
-    const width = filtered.reduce((max, [command]) => Math.max(max, command.length), 0);
-    for (const [command, summary] of filtered) {
-      console.log(`  ${command.padEnd(width)}  ${muted(summary)}`); lines += 1;
-    }
-    console.log(""); lines += 1;
-  }
+        : group.items
+    }))
+    .filter((group) => group.items.length);
   const provider = state.cfg.activeProvider || "no provider";
   const model = state.cfg.activeModel || "no model";
-  console.log(`  ${muted("active:")} ${provider}/${model}  ${style(state.mode, modeColor(state.mode))}  ${muted("reasoning")} ${state.cfg.reasoning}`); lines += 1;
-  blank(); lines += 1;
-  return lines;
+  const footer = statCells([
+    { label: "active", value: `${provider}/${model}`, style: "info" },
+    { value: state.mode, style: modeColor(state.mode) },
+    { label: "reasoning", value: state.cfg.reasoning, style: "muted" }
+  ]);
+  return palettePanel(filteredGroups, { width: tuiWidth(), footer, highlight: terms });
+}
+
+function printFilteredCommandPalette(state, filter = "") {
+  blank();
+  const panelLines = buildCommandPaletteLines(state, filter);
+  for (const line of panelLines) console.log(line);
+  blank();
+  return panelLines.length + 2;
 }
 
 function printCommandPalette(state) {
   printFilteredCommandPalette(state);
 }
 
-export function trimConversation(messages, maxMessages = MAX_CONVERSATION_MESSAGES) {
-  if (messages.length <= maxMessages) return messages;
-  const tailStart = Math.max(0, messages.length - maxMessages);
-  const userBoundary = messages.findIndex((message, index) => index >= tailStart && message.role === "user");
-  return messages.slice(userBoundary === -1 ? tailStart : userBoundary);
-}
+export { trimConversation } from "./conversation.js";
 
 function printDashboard(state) {
   const saved = loadState();
   const guard = gitGuard(state.cwd, state.cfg);
+  const W = tuiWidth();
   blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold("Dashboard")}`);
-  const leftRows = [
-    [`${muted("workspace")}  ${path.basename(state.cwd)}`],
-    [`${muted("model")}  ${state.cfg.activeProvider || muted("none")}/${state.cfg.activeModel || muted("none")}`],
-    [`${muted("mode")}  ${style(state.mode, modeColor(state.mode))}`],
-    [`${muted("reasoning")}  ${infoText(state.cfg.reasoning)}`],
-    [`${muted("profile")}  ${state.cfg.permissionProfile ? accent(state.cfg.permissionProfile) : muted("normal")}`],
-    [`${muted("agent")}  ${state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")}`],
-    [`${muted("context")}  ${state.includeContext ? successText("on") : muted("off")}`],
-    [`${muted("git guard")}  ${statusDot(guard.ok ? "ok" : "blocked")} ${guard.ok ? successText("ok") : errorText("blocked")}${guard.dirty ? ` ${faint("(dirty)")}` : ""}`]
-  ];
-  for (const [row] of leftRows) console.log(`  ${row}`);
-  blank();
-  const counts = [
-    ["sessions", Object.keys(saved.sessions || {}).length],
-    ["goals", Object.keys(saved.goals || {}).length],
-    ["missions", Object.keys(saved.missions || {}).length],
-    ["tool runs", (saved.toolRuns || []).length],
-    ["messages", state.conversation.length]
-  ];
-  for (const [label, value] of counts) {
-    console.log(`  ${muted(label.padEnd(11))} ${bold(String(value))}`);
+  const overview = keyValueList([
+    ["workspace", accent(path.basename(state.cwd))],
+    ["model", `${state.cfg.activeProvider || muted("none")}/${state.cfg.activeModel || muted("none")}`],
+    ["mode", style(state.mode, modeColor(state.mode))],
+    ["reasoning", infoText(state.cfg.reasoning)],
+    ["profile", state.cfg.permissionProfile ? accent(state.cfg.permissionProfile) : muted("normal")],
+    ["agent", state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")],
+    ["context", state.includeContext ? successText("on") : muted("off")],
+    ["git guard", `${statusDot(guard.ok ? "ok" : "blocked")} ${guard.ok ? successText("ok") : errorText("blocked")}${guard.dirty ? faint(" · dirty") : ""}`]
+  ]);
+  const snap = runtimeSnapshot(state.cfg, state.cwd, { mode: state.mode });
+  const counts = statCells([
+    { label: "sessions", value: Object.keys(saved.sessions || {}).length, style: "info" },
+    { label: "goals", value: Object.keys(saved.goals || {}).length, style: "accent" },
+    { label: "missions", value: Object.keys(saved.missions || {}).length, style: "brand" },
+    { label: "tools", value: (saved.toolRuns || []).length, style: "muted" },
+    { label: "skills", value: snap.counts.skills, style: "brand" },
+    { label: "subagents", value: snap.counts.subagents, style: "info" },
+    { label: "messages", value: state.conversation.length, style: "success" },
+    { label: "steps", value: snap.agentMaxSteps ? String(snap.agentMaxSteps) : "∞", style: "muted" }
+  ]);
+  for (const line of brandBanner([...overview, "", counts], { width: W, title: "dashboard" })) {
+    console.log(line);
   }
   blank();
 }
@@ -936,10 +1214,12 @@ function printReview(state) {
   }
 }
 
+const GIT_STDIO = ["ignore", "pipe", "ignore"];
+
 function gitSummary(cwd) {
   try {
-    const branch = execFileSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8" }).trim() || "detached";
-    const dirty = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8" }).trim() ? "yes" : "no";
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd, encoding: "utf8", stdio: GIT_STDIO }).trim() || "detached";
+    const dirty = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf8", stdio: GIT_STDIO }).trim() ? "yes" : "no";
     return { branch, dirty };
   } catch {
     return { branch: "unknown", dirty: "unknown" };
@@ -947,58 +1227,91 @@ function gitSummary(cwd) {
 }
 
 function printStatus(state) {
+  const W = tuiWidth();
+  const guard = gitGuard(state.cwd, state.cfg);
+  const git = gitSummary(state.cwd);
+  const saved = loadState();
   blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold("Status")}`);
-  const overview = [
-    ["workspace", path.basename(state.cwd)],
-    ["provider", state.cfg.activeProvider || "no provider"],
-    ["model", state.cfg.activeModel || "no model"],
+  const sessionRows = keyValueList([
+    ["workspace", accent(path.basename(state.cwd))],
+    ["cwd", faint(truncate(state.cwd, W - 16))],
+    ["branch", git.branch],
+    ["provider", state.cfg.activeProvider || warnText("not connected")],
+    ["model", state.cfg.activeModel || muted("none")],
     ["mode", style(state.mode, modeColor(state.mode))],
     ["reasoning", infoText(state.cfg.reasoning)],
     ["profile", state.cfg.permissionProfile ? accent(state.cfg.permissionProfile) : muted("normal")],
     ["agent", state.subagent?.name ? brand(`@${state.subagent.name}`) : muted("off")],
     ["context", state.includeContext ? successText("on") : muted("off")],
-    ["progress", state.progress ? successText("on") : muted("off")]
-  ];
-  for (const row of keyValueList(overview)) console.log(`  ${row}`);
+    ["progress", state.progress ? successText("on") : muted("off")],
+    ["stream", state.streamResponses ? successText("on") : muted("off")],
+    ["compaction", state.cfg.compaction || "trim"],
+    ["conversation", `${state.conversation.length} / ${state.maxConversationMessages} messages`]
+  ]);
+  const sections = [{ title: "session", rows: sessionRows }];
 
   if (state.cfg.activeProvider) {
     try {
       const provider = providerDiagnostics(state.cfg);
-      blank();
-      console.log(`${brand(icon("chevronRight"))} ${bold("Provider")}`);
-      const rows = [
-        ["endpoint", provider.baseUrl || muted("(custom)")],
-        ["protocol", provider.protocol],
-        ["chat path", provider.chatPath],
-        ["api key", provider.hasApiKey ? successText(`configured (${muted(provider.apiKeySource)})`) : warnText(`missing (${provider.apiKeySource})`)]
-      ];
-      for (const row of keyValueList(rows)) console.log(`  ${row}`);
+      sections.push({
+        title: "provider",
+        rows: keyValueList([
+          ["endpoint", provider.baseUrl || muted("(custom)")],
+          ["protocol", provider.protocol],
+          ["chat path", provider.chatPath],
+          ["api key", provider.hasApiKey ? successText(`configured (${muted(provider.apiKeySource)})`) : warnText(`missing (${provider.apiKeySource})`)]
+        ])
+      });
     } catch (error) {
-      console.log(`  ${warnText(icon("warn"))} ${warnText(error.message)}`);
+      sections.push({ title: "provider", rows: [`${warnText(icon("warn"))} ${warnText(error.message)}`] });
     }
+  } else {
+    sections.push({ title: "provider", rows: [warnText("No provider connected — use /login")] });
   }
 
-  const guard = gitGuard(state.cwd, state.cfg);
-  blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold("Guard")}`);
-  if (guard.ok) {
-    const rows = [
-      ["status", successText("ok")],
-      ["branch", guard.branch || muted("(none)")],
-      ["dirty", guard.dirty ? warnText("yes") : successText("no")]
-    ];
-    for (const row of keyValueList(rows)) console.log(`  ${row}`);
-    for (const warning of guard.warnings || []) console.log(`  ${warnText(icon("warn"))} ${warning}`);
-  } else {
-    for (const row of keyValueList([["status", errorText("blocked")], ["reason", guard.reason]])) console.log(`  ${row}`);
+  const guardRows = guard.ok
+    ? [
+      ...keyValueList([
+        ["status", successText("ok")],
+        ["branch", guard.branch || muted("(none)")],
+        ["dirty", guard.dirty ? warnText("yes") : successText("no")]
+      ]),
+      ...(guard.warnings || []).map((warning) => `${warnText(icon("warn"))} ${warning}`)
+    ]
+    : keyValueList([["status", errorText("blocked")], ["reason", guard.reason]]);
+  sections.push({ title: "guard", rows: guardRows });
+
+  sections.push({
+    title: "activity",
+    rows: [
+      statCells([
+        { label: "sessions", value: Object.keys(saved.sessions || {}).length, style: "info" },
+        { label: "goals", value: Object.keys(saved.goals || {}).length, style: "accent" },
+        { label: "missions", value: Object.keys(saved.missions || {}).length, style: "brand" },
+        { label: "tools", value: (saved.toolRuns || []).length, style: "muted" }
+      ])
+    ]
+  });
+
+  for (const line of statusPanel(sections, { width: W, title: "status" })) {
+    console.log(line);
   }
   blank();
 }
 
 function printSessions() {
-  const sessions = Object.entries(loadState().sessions || {}).slice(-10).reverse();
-  printRows("Sessions", sessions.map(([id, item]) => `${muted(id)}  ${item.mode || ""}  ${truncate(item.prompt || "", 60)}`));
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Sessions")}`);
+  const rows = sessionListEntries(loadState().sessions || {}, { promptLimit: 40 }).slice(0, 10);
+  for (const line of renderTable(rows, [
+    { key: "id", label: "id" },
+    { key: "mode", label: "mode" },
+    { key: "status", label: "status" },
+    { key: "steps", label: "steps" },
+    { key: "duration", label: "duration" },
+    { key: "prompt", label: "prompt" }
+  ])) console.log(`  ${line}`);
+  blank();
 }
 
 function printSession(args) {
@@ -1018,32 +1331,24 @@ function printSession(args) {
   if (format === "json") {
     console.log(JSON.stringify(session, null, 2));
   } else {
-    console.log(formatSessionTranscript(session));
+    console.log(formatSessionTranscript(session, { style: "tui" }));
   }
   blank();
 }
 
-function formatSessionTranscript(session) {
-  const lines = [];
-  for (const message of session.messages || []) {
-    if (message.role === "system") continue;
-    if (message.role === "assistant") {
-      lines.push(`${brand(icon("chevronRight"))} ${brand("assistant")}: ${message.content || ""}`);
-      for (const call of message.tool_calls || []) {
-        lines.push(`  ${muted(icon("arrow"))} ${muted(call.function?.name)} ${muted(call.function?.arguments || "{}")}`);
-      }
-    } else if (message.role === "tool") {
-      lines.push(`  ${muted(icon("bullet"))} ${muted(`tool ${message.name || ""}`.trim())}: ${String(message.content || "").slice(0, 2000)}`);
-    } else {
-      lines.push(`${muted(message.role || "message")}: ${message.content || ""}`);
-    }
-  }
-  return lines.join("\n") || muted("(empty transcript)");
-}
-
 function printToolRuns() {
-  const runs = (loadState().toolRuns || []).slice(-10).reverse();
-  printRows("Tool runs", runs.map((run) => `${muted(run.name)}  ${run.ok ? successText("ok") : errorText("failed")}  ${faint(prettyMs(run.durationMs))}  ${muted(run.sessionId)}`));
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Tool runs")}`);
+  const rows = toolRunListEntries(loadState().toolRuns || {}, { limit: 10 });
+  for (const line of renderTable(rows, [
+    { key: "at", label: "at" },
+    { key: "tool", label: "tool" },
+    { key: "summary", label: "summary" },
+    { key: "ok", label: "ok" },
+    { key: "ms", label: "ms" },
+    { key: "session", label: "session" }
+  ])) console.log(`  ${line}`);
+  blank();
 }
 
 async function printHealth(state) {
@@ -1055,14 +1360,21 @@ async function printHealth(state) {
     blank();
     return;
   }
-  for (const name of names) {
+  const results = await Promise.all(names.map(async (name) => {
     try {
       const result = await new LlmClient(state.cfg, name).listModels();
       const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
-      const active = state.cfg.activeProvider === name ? style(icon("bullet"), "success") : muted(icon("circle"));
-      console.log(`  ${active} ${name.padEnd(12)} ${successText("ok")} ${faint(`(${count} models)`)}`);
+      return { name, ok: true, count };
     } catch (error) {
-      console.log(`  ${errorText(icon("cross"))} ${name.padEnd(12)} ${errorText("failed")} ${faint(`(${error.message})`)}`);
+      return { name, ok: false, error: error.message };
+    }
+  }));
+  for (const result of results) {
+    const active = state.cfg.activeProvider === result.name ? style(icon("bullet"), "success") : muted(icon("circle"));
+    if (result.ok) {
+      console.log(`  ${active} ${result.name.padEnd(12)} ${successText("ok")} ${faint(`(${result.count} models)`)}`);
+    } else {
+      console.log(`  ${errorText(icon("cross"))} ${result.name.padEnd(12)} ${errorText("failed")} ${faint(`(${result.error})`)}`);
     }
   }
   blank();
@@ -1268,7 +1580,7 @@ async function handleModels(args, state) {
       if (result.ok) {
         console.log(`${successText(icon("check"))} ${muted("models:")} ${result.provider} ${faint("synced")} ${result.remoteCount} ${faint("remote (")}${result.totalCount}${faint(" total)")}`);
       } else {
-        console.log(`${errorText(icon("cross"))} ${muted("models:")} ${result.provider} ${faint("failed:")} ${error.message ?? result.error}`);
+        console.log(`${errorText(icon("cross"))} ${muted("models:")} ${result.provider} ${faint("failed:")} ${result.error || "sync failed"}`);
       }
     }
     return;
@@ -1415,17 +1727,38 @@ async function handleMission(args, state, rl) {
     return;
   }
   console.log(`  ${muted(icon("arrow"))} mission: running ${faint(file)}`);
-  const result = await runMission({
-    cfg: state.cfg,
-    cwd: state.cwd,
-    file,
-    confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
-    onEvent: state.progress
-      ? createAgentProgress({ log: true, onLine: (text) => console.log(muted(`  ${icon("chevronRight")} ${text}`)) })
-      : null
-  });
-  console.log(`${successText(icon("check"))} ${muted("mission:")} ${result.missionId} ${faint("completed")}`);
-  for (const step of result.outputs) console.log(`\n${brand(icon("chevronRight"))} ${bold(`step ${step.index}`)}\n${step.output}`);
+  try {
+    const result = await withAgentAbort(async (signal) => runMission({
+      cfg: state.cfg,
+      cwd: state.cwd,
+      file,
+      includeContext: state.includeContext,
+      skills: state.skills,
+      confirmTool: rl ? (question) => confirmInTui(rl, question) : null,
+      signal,
+      onEvent: state.progress
+        ? createAgentProgress({
+          maxSteps: resolveAgentMaxSteps(state.cfg),
+          style: "grok",
+          quietModelTurns: true,
+          onLine: (text) => console.log(text)
+        })
+        : null
+    }), {
+      onCancel: () => {
+        blank();
+        console.log(warnText(`  ${icon("warn")} Cancelling mission… (Ctrl+C again to exit)`));
+      }
+    });
+    console.log(`${successText(icon("check"))} ${muted("mission:")} ${result.missionId} ${faint("completed")}`);
+    for (const step of result.outputs) console.log(`\n${brand(icon("chevronRight"))} ${bold(`step ${step.index}`)}\n${step.output}`);
+  } catch (error) {
+    if (error instanceof AgentCancelledError) {
+      console.log(warnText(`${icon("warn")} mission cancelled.`));
+      return;
+    }
+    throw error;
+  }
 }
 
 function formatMissionReport(id, mission) {
@@ -1443,6 +1776,54 @@ function formatMissionReport(id, mission) {
     if (step.error) lines.push(`     error: ${step.error}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function printHooks(state) {
+  const hooks = loadHookConfig(state.cfg, state.cwd);
+  const rows = [];
+  for (const [event, handlers] of Object.entries(hooks)) {
+    if (!Array.isArray(handlers) || !handlers.length) continue;
+    for (const handler of handlers) {
+      const command = typeof handler === "string" ? handler : handler?.command;
+      if (!command) continue;
+      rows.push({ event, command: truncate(command, 72) });
+    }
+  }
+  if (!rows.length) {
+    printRows("Hooks", [
+      "No hook handlers configured.",
+      `Global: ${path.join(azyHome(), "hooks.json")}`,
+      `Project: ${path.join(state.cwd, ".azycode", "hooks.json")}`
+    ]);
+    return;
+  }
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Hooks")}`);
+  for (const line of renderTable(rows, [
+    { key: "event", label: "event" },
+    { key: "command", label: "command" }
+  ])) console.log(`  ${line}`);
+  blank();
+}
+
+function printCustomCommands(state) {
+  const commands = loadCustomCommands(state.cwd);
+  if (!commands.length) {
+    printRows("Custom commands", [
+      "No custom commands found.",
+      `Global: ${path.join(azyHome(), "commands")}`,
+      `Project: ${path.join(state.cwd, ".azycode", "commands")}`
+    ]);
+    return;
+  }
+  blank();
+  console.log(`${brand(icon("chevronRight"))} ${bold("Custom commands")}`);
+  const width = commands.reduce((max, item) => Math.max(max, `/${item.name}`.length), 0);
+  for (const item of commands) {
+    const summary = item.description ? muted(item.description) : muted("(no description)");
+    console.log(`  ${`/${item.name}`.padEnd(width)}  ${summary}`);
+  }
+  blank();
 }
 
 function printAgents(state) {
@@ -1662,8 +2043,11 @@ async function selectFromList({ title, items, active = null, rl, format = (item)
 
 function printRows(label, rows) {
   blank();
-  console.log(`${brand(icon("chevronRight"))} ${bold(label)}`);
-  if (!rows.length) console.log(`  ${muted(icon("circle"))} (none)`);
-  else for (const row of rows) console.log(`  ${row}`);
+  const body = rows.length
+    ? rows.map((row) => `${muted(icon("bullet"))} ${row}`)
+    : [`${muted(icon("circle"))} (none)`];
+  for (const line of listPanel(label.toLowerCase(), body, { width: tuiWidth() })) {
+    console.log(line);
+  }
   blank();
 }

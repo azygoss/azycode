@@ -4,6 +4,7 @@ import { info } from "./logger.js";
 export function createModeRuntime(initialMode, { cfg = null, onModeChange = null } = {}) {
   let current = normalizeMode(initialMode);
   let dirty = false;
+  let lastChange = null;
 
   return {
     getMode() {
@@ -12,7 +13,9 @@ export function createModeRuntime(initialMode, { cfg = null, onModeChange = null
     consumeModeChange() {
       if (!dirty) return null;
       dirty = false;
-      return current;
+      const change = lastChange || { mode: current, previous: current, reason: "", persist: false };
+      lastChange = null;
+      return change;
     },
     setMode(nextMode, { persist = false, reason = "" } = {}) {
       const next = normalizeMode(nextMode);
@@ -28,6 +31,7 @@ export function createModeRuntime(initialMode, { cfg = null, onModeChange = null
       }
       info(`Mode switched from ${previous} to ${next}${persist ? " (persisted)" : ""}${reason ? `: ${reason}` : ""}`);
       const payload = { mode: next, previous, persist: Boolean(persist), reason: reason ? String(reason) : "" };
+      lastChange = payload;
       if (onModeChange) onModeChange(payload);
       return payload;
     }

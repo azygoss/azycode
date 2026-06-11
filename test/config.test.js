@@ -20,9 +20,12 @@ test("config saves and redacts independent home", async () => {
 
 test("mode and reasoning rotation are stable", async () => {
   const mod = await import(`../src/config.js?y=${Date.now()}`);
-  assert.equal(mod.rotateMode("plan"), "always-approve");
+  assert.equal(mod.rotateMode("plan"), "build");
+  assert.equal(mod.rotateMode("build"), "always-approve");
   assert.equal(mod.rotateMode("review"), "plan");
+  assert.equal(mod.DEFAULT_MODE, "build");
   assert.equal(mod.normalizeMode("approve"), "always-approve");
+  assert.equal(mod.normalizeMode("normal"), "build");
   assert.equal(mod.rotateReasoning("minimal"), "low");
   assert.equal(mod.rotateReasoning("high"), "minimal");
 });
@@ -47,7 +50,11 @@ test("loadConfig merges new default tool policies into old config files", async 
   assert.match(cfg.subagents.planner.system, /Do not modify files/);
   assert.match(cfg.subagents.reviewer.system, /Lead with actionable findings/);
   assert.match(cfg.subagents.implementer.system, /bounded read\/search/);
+  assert.match(cfg.subagents.explorer.system, /read-only tools/);
   assert(cfg.subagents.custom);
+  assert.equal(cfg.compaction, "trim");
+  assert.equal(cfg.toolPolicy.spawn_subagents, "ask");
+  assert.equal(cfg.toolPolicy.git_worktree, "ask");
 });
 
 test("resolveAgentMaxSteps is unlimited by default and optional when set", async () => {
@@ -71,6 +78,14 @@ test("permission profiles rewrite effective tool policy", async () => {
   assert.equal(cfg.toolPolicy.shell, "deny");
 });
 
+test("validateConfig migrates legacy normal mode to build", async () => {
+  const mod = await import(`../src/config.js?legacy=${Date.now()}`);
+  const cfg = mod.defaultConfig();
+  cfg.mode = "normal";
+  mod.validateConfig(cfg);
+  assert.equal(cfg.mode, "build");
+});
+
 test("validateConfig normalizes invalid mode and reasoning", async () => {
   const mod = await import(`../src/config.js?v=${Date.now()}`);
   const cfg = mod.defaultConfig();
@@ -79,7 +94,7 @@ test("validateConfig normalizes invalid mode and reasoning", async () => {
   cfg.permissionProfile = "unknown";
   cfg.toolPolicy = { shell: "block", unknown_tool: "auto" };
   mod.validateConfig(cfg);
-  assert.equal(cfg.mode, "plan");
+  assert.equal(cfg.mode, "build");
   assert.equal(cfg.reasoning, "medium");
   assert.equal(cfg.permissionProfile, "normal");
   assert.equal(cfg.toolPolicy.shell, "ask");

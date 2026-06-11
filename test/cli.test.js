@@ -251,7 +251,7 @@ test("chat slash commands work with piped stdin", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const stdout = await runWithInput(["chat"], "/status\n/context\n/progress\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /azycode chat/);
-  assert.match(stdout, /mode=plan/);
+  assert.match(stdout, /mode=build/);
   assert.match(stdout, /context=true/);
   assert.match(stdout, /progress=true/);
 });
@@ -262,14 +262,14 @@ test("default command launches the interactive tui", async () => {
   const plain = stripAnsi(stdout);
   assert.match(plain, /azycode/);
   assert.match(plain, /azycode/);
-  assert.match(plain, /type a task[^\n]*\/help commands[^\n]*Tab reasoning[^\n]*Shift\+Tab mode/);
-  assert.match(plain, /no provider\/no model/);
+  assert.match(plain, /azycode[\s\S]*What should we work on[\s\S]*\/help/);
+  assert.match(plain, /not connected/);
   assert.match(plain, /model: no configured provider/);
-  assert.match(plain, /Status[\s\S]*provider\s+no provider[\s\S]*model\s+no model[\s\S]*mode\s+goal[\s\S]*reasoning\s+high[\s\S]*profile\s+read-only/);
+  assert.match(plain, /status[\s\S]*provider[\s\S]*model[\s\S]*mode[\s\S]*goal[\s\S]*reasoning[\s\S]*high[\s\S]*profile[\s\S]*read-only/);
   assert.match(plain, /policy: auto \d+\s+ask \d+\s+deny \d+/);
   assert.match(plain, /conversation: 0 -> 0 messages/);
   assert.match(plain, /conversation: cleared/);
-  assert.match(plain, /Dashboard/);
+  assert.match(plain, /dashboard/);
   assert.match(plain, /Interactive login requires a terminal/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeModel, null);
@@ -288,10 +288,10 @@ test("tui can inspect sessions tools goals and missions", async () => {
     missions: { mis_test: { status: "done", name: "release" } }
   }));
   const stdout = await runWithInput([], "/sessions\n/tools\n/goals\n/missions\n/exit\n", { AZYCODE_HOME: home });
-  assert.match(stdout, /Sessions[\s\S]*ses_test\s+goal\s+ship it/);
-  assert.match(stdout, /Tool runs[\s\S]*read_file\s+ok\s+3ms\s+ses_test/);
-  assert.match(stdout, /Goals[\s\S]*goal_test\s+running\s+ship it/);
-  assert.match(stdout, /Missions[\s\S]*mis_test\s+done\s+release/);
+  assert.match(stdout, /Sessions[\s\S]*ses_test[\s\S]*goal[\s\S]*ship it/i);
+  assert.match(stdout, /Tool runs[\s\S]*read_file[\s\S]*ok[\s\S]*ses_test/i);
+  assert.match(stdout, /goals[\s\S]*goal_test\s+running\s+ship it/);
+  assert.match(stdout, /missions[\s\S]*mis_test\s+done\s+release/);
 });
 
 test("tui review prints a clean summary when there are no actionable findings", async () => {
@@ -328,9 +328,9 @@ test("tui can list and select subagents", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const stdout = await runWithInput([], "/agents\n/agent planner\n/status\n/dashboard\n/agent off\n/exit\n", { AZYCODE_HOME: home });
   const plain = stripAnsi(stdout);
-  assert.match(plain, /Subagents[\s\S]*planner\s+high/);
+  assert.match(plain, /subagents[\s\S]*planner\s+high/);
   assert.match(plain, /agent: @planner/);
-  assert.match(plain, /Status[\s\S]*agent\s+@planner/);
+  assert.match(plain, /status[\s\S]*agent[\s\S]*@planner/);
   assert.match(plain, /agent\s+@planner/);
   assert.match(plain, /agent: off/);
 });
@@ -433,7 +433,7 @@ test("tui model command lists and preserves provider models", async () => {
   }));
   const stdout = await runWithInput([], "/model\n/model candidate\n/exit\n", { AZYCODE_HOME: home });
   const plain = stripAnsi(stdout);
-  assert.match(plain, /Models[\s\S]*byok[\s\S]*●\s+old[\s\S]*candidate/);
+  assert.match(plain, /models[\s\S]*byok[\s\S]*●\s+old[\s\S]*candidate/);
   assert.match(plain, /openai \(not configured\)/);
   assert.match(plain, /model: byok\/candidate/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
@@ -453,9 +453,9 @@ test("tui model command can switch provider and model together", async () => {
   }));
   const stdout = await runWithInput([], "/help model\n/model\n/model openai/gpt-test\n/status\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /Help: model[\s\S]*\/model <provider\/model>/);
-  assert.match(stdout, /Models[\s\S]*byok[\s\S]*local-a[\s\S]*openai[\s\S]*gpt-test/);
+  assert.match(stdout, /models[\s\S]*byok[\s\S]*local-a[\s\S]*openai[\s\S]*gpt-test/);
   assert.match(stdout, /model: openai\/gpt-test/);
-  assert.match(stdout, /Status[\s\S]*provider\s+openai[\s\S]*model\s+gpt-test/);
+  assert.match(stdout, /status[\s\S]*provider[\s\S]*openai[\s\S]*model[\s\S]*gpt-test/);
   const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
   assert.equal(cfg.activeProvider, "openai");
   assert.equal(cfg.activeModel, "gpt-test");
@@ -505,7 +505,7 @@ test("tui slash by itself opens the command palette", async () => {
   const plain = stripAnsi(stdout);
   assert.match(plain, /Status[\s\S]*\/status\s+active model, provider, guard/);
   assert.match(plain, /\/login\s+connect a provider/);
-  assert.match(plain, /active: no provider\/no model/);
+  assert.match(plain, /active[^\n]*no provider\/no model/);
 });
 
 test("tui sends follow-up messages with conversation context", async () => {
@@ -527,8 +527,8 @@ test("tui sends follow-up messages with conversation context", async () => {
     const { port } = server.address();
     run(["login", "byok", "--base-url", `http://127.0.0.1:${port}/v1`, "--model", "mock", "--api-key", "sk-test"], { AZYCODE_HOME: home });
     const stdout = await runWithInput([], "first question\nsecond question\n/exit\n", { AZYCODE_HOME: home });
-    assert.match(stdout, /assistant\s+first answer/);
-    assert.match(stdout, /assistant\s+second answer/);
+    assert.match(stdout, /first answer/);
+    assert.match(stdout, /second answer/);
     assert.equal(requests.length, 2);
     assert(requests[1].messages.some((message) => message.role === "assistant" && message.content === "first answer"));
   } finally {
@@ -541,12 +541,12 @@ test("tui can manage persistent memory notes", async () => {
   const added = await runWithInput([], "/memory add keep patches small\n/memory patches\n/exit\n", { AZYCODE_HOME: home });
   const addedPlain = stripAnsi(added);
   assert.match(addedPlain, /memory: added mem_/);
-  assert.match(addedPlain, /Memory[\s\S]*keep patches small/);
+  assert.match(addedPlain, /memory[\s\S]*keep patches small/);
   const memory = JSON.parse(fs.readFileSync(path.join(home, "memory.json"), "utf8"));
   const removed = await runWithInput([], `/memory remove ${memory.notes[0].id}\n/memory\n/exit\n`, { AZYCODE_HOME: home });
   const removedPlain = stripAnsi(removed);
   assert.match(removedPlain, /memory: removed/);
-  assert.match(removedPlain, /Memory[\s\S]*\(none\)/);
+  assert.match(removedPlain, /memory[\s\S]*\(none\)/);
 });
 
 test("tui can preview bounded context", async () => {
@@ -588,13 +588,13 @@ test("tui can create inspect and stop goals", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const created = await runWithInput([], "/goal create ship cleaner tui\n/goals\n/exit\n", { AZYCODE_HOME: home });
   assert.match(created, /goal: goal_\d+ created/);
-  assert.match(created, /Goals[\s\S]*created\s+ship cleaner tui/);
+  assert.match(created, /goals[\s\S]*created\s+ship cleaner tui/);
   const state = JSON.parse(fs.readFileSync(path.join(home, "state.json"), "utf8"));
   const id = Object.keys(state.goals)[0];
   const stopped = await runWithInput([], `/goal status ${id}\n/goal stop ${id}\n/goal status ${id}\n/exit\n`, { AZYCODE_HOME: home });
-  assert.match(stopped, new RegExp(`Goal ${id}[\\s\\S]*status\\s+created`));
+  assert.match(stopped, new RegExp(`goal ${id}[\\s\\S]*status\\s+created`));
   assert.match(stopped, new RegExp(`goal: ${id} stopped`));
-  assert.match(stopped, new RegExp(`Goal ${id}[\\s\\S]*status\\s+stopped`));
+  assert.match(stopped, new RegExp(`goal ${id}[\\s\\S]*status\\s+stopped`));
 });
 
 test("plan --save writes an artifact using a configured mock provider", async () => {
@@ -663,7 +663,7 @@ test("session transcript and tools log commands format state", () => {
   assert.match(run(["session", "transcript", "ses_test"], { AZYCODE_HOME: home }), /assistant: hi/);
   const log = run(["tools", "log"], { AZYCODE_HOME: home });
   assert.match(log, /Tool Runs/);
-  assert.match(log, /read_file\s+true/);
+  assert.match(log, /read_file[\s\S]*ok[\s\S]*3/);
 });
 
 test("help groups commands into a compact interface", () => {
@@ -748,7 +748,7 @@ test("session and subagent lists use compact tables", () => {
     goals: {},
     missions: {}
   }));
-  assert.match(run(["session", "list"], { AZYCODE_HOME: home }), /ses_test\s+now\s+plan\s+inspect repo/);
+  assert.match(run(["session", "list"], { AZYCODE_HOME: home }), /ses_test\s+now\s+plan\s+ok\s+0\s+0\s+0\s+inspect repo/);
   assert.match(run(["subagent", "list"], { AZYCODE_HOME: home }), /planner\s+high\s+\(active\)/);
 });
 

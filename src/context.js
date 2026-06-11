@@ -101,7 +101,57 @@ function listConfigFiles(root) {
   return names.filter((name) => fs.existsSync(path.join(root, name)));
 }
 
+let _contextCacheKey = "";
+let _contextCacheValue = null;
+
+function fileMtime(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function contextCacheKey(cwd, options = {}) {
+  const root = path.resolve(cwd);
+  const maxFiles = Number(options.maxFiles) || 40;
+  const maxBytes = Number(options.maxBytes) || 80000;
+  const parts = [
+    root,
+    String(maxFiles),
+    String(maxBytes),
+    fileMtime(path.join(root, ".azyignore")),
+    fileMtime(path.join(root, "package.json")),
+    fileMtime(path.join(root, "README.md")),
+    fileMtime(path.join(root, "AGENTS.md"))
+  ];
+  try {
+    const head = path.join(root, ".git", "HEAD");
+    parts.push(String(fileMtime(head)));
+    const ref = fs.readFileSync(head, "utf8").trim();
+    if (ref.startsWith("ref: ")) {
+      parts.push(String(fileMtime(path.join(root, ".git", ref.slice(5)))));
+    }
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    parts.push(status.slice(0, 4000));
+  } catch {
+    // non-git workspace
+  }
+  return parts.join("|");
+}
+
+export function clearContextPackCache() {
+  _contextCacheKey = "";
+  _contextCacheValue = null;
+}
+
 export async function contextPack(cwd = process.cwd(), options = {}) {
+  const cacheKey = contextCacheKey(cwd, options);
+  if (_contextCacheKey === cacheKey) return _contextCacheValue;
   const root = path.resolve(cwd);
   const maxFiles = Number(options.maxFiles) || 40;
   const maxBytes = Number(options.maxBytes) || 80000;
@@ -120,7 +170,10 @@ export async function contextPack(cwd = process.cwd(), options = {}) {
     selected.push({ file, content });
     usedBytes += stat.size;
   }
-  return { root, files: selected, usedBytes, ignored: ignore };
+  const pack = { root, files: selected, usedBytes, ignored: ignore };
+  _contextCacheKey = cacheKey;
+  _contextCacheValue = pack;
+  return pack;
 }
 
 export function formatContextPack(pack) {

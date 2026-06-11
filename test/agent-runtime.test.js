@@ -22,7 +22,9 @@ test("createModeRuntime switches mode and can persist to config", () => {
   assert.equal(result.mode, "plan");
   assert.equal(result.previous, "always-approve");
   assert.equal(runtime.getMode(), "plan");
-  assert.equal(runtime.consumeModeChange(), "plan");
+  const change = runtime.consumeModeChange();
+  assert.equal(change.mode, "plan");
+  assert.equal(change.previous, "always-approve");
   assert.equal(runtime.consumeModeChange(), null);
   assert.equal(loadConfig().mode, "plan");
   assert.equal(events.length, 1);

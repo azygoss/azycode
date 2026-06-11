@@ -2,7 +2,7 @@
 // Dependency-free terminal rendering: colors, boxes, badges, tables, spinners, status pills.
 // All helpers degrade to plain text when the terminal does not advertise color.
 
-import { stdout, env } from "node:process";
+import { stdout, stderr, env } from "node:process";
 
 // ---------------------------------------------------------------------------
 // Color capability detection
@@ -51,18 +51,21 @@ const ANSI = {
   brightMagenta: "\x1b[95m",
   brightCyan: "\x1b[96m",
   brightWhite: "\x1b[97m",
-  // 256-color helpers (semantic)
-  muted: "\x1b[38;5;245m",
-  subtle: "\x1b[38;5;240m",
-  faint: "\x1b[38;5;238m",
-  accent: "\x1b[38;5;215m",
-  success: "\x1b[38;5;108m",
+  // 256-color helpers (semantic) — tuned for readable dark terminals
+  muted: "\x1b[38;5;251m",
+  subtle: "\x1b[38;5;249m",
+  faint: "\x1b[38;5;244m",
+  accent: "\x1b[38;5;214m",
+  success: "\x1b[38;5;114m",
   warn: "\x1b[38;5;179m",
-  error: "\x1b[38;5;167m",
-  info: "\x1b[38;5;110m",
-  brand: "\x1b[38;5;141m",
-  panel: "\x1b[38;5;67m",
-  rule: "\x1b[38;5;239m"
+  error: "\x1b[38;5;203m",
+  info: "\x1b[38;5;117m",
+  brand: "\x1b[38;5;183m",
+  panel: "\x1b[38;5;59m",
+  border: "\x1b[38;5;60m",
+  borderSoft: "\x1b[38;5;245m",
+  glow: "\x1b[38;5;183m",
+  rule: "\x1b[38;5;243m"
 };
 
 const namedColors = {
@@ -98,7 +101,26 @@ const namedColors = {
   info: ANSI.info,
   brand: ANSI.brand,
   panel: ANSI.panel,
+  border: ANSI.border,
+  borderSoft: ANSI.borderSoft,
+  glow: ANSI.glow,
   rule: ANSI.rule
+};
+
+const PANEL_TITLE_ICONS = {
+  task: "chevronRight",
+  assistant: "sparkle",
+  "run complete": "check",
+  ready: "diamond",
+  setup: "warn",
+  status: "info",
+  dashboard: "mission",
+  confirm: "warn",
+  shell: "terminal",
+  help: "info",
+  commands: "chevron",
+  preview: "file",
+  diff: "edit"
 };
 
 // ---------------------------------------------------------------------------
@@ -191,6 +213,78 @@ function stripAnsi(value) {
 
 export { stripAnsi };
 
+function sliceVisible(text, maxVisible) {
+  const out = [];
+  let len = 0;
+  let inEscape = false;
+  for (const ch of String(text ?? "")) {
+    if (inEscape) {
+      out.push(ch);
+      if (/[a-zA-Z]/.test(ch)) inEscape = false;
+      continue;
+    }
+    if (ch === "\x1b") {
+      inEscape = true;
+      out.push(ch);
+      continue;
+    }
+    if (len >= maxVisible) break;
+    out.push(ch);
+    len += 1;
+  }
+  return out.join("");
+}
+
+function skipVisible(text, count) {
+  let skipped = 0;
+  let inEscape = false;
+  let index = 0;
+  const value = String(text ?? "");
+  while (index < value.length && skipped < count) {
+    const ch = value[index];
+    if (inEscape) {
+      index += 1;
+      if (/[a-zA-Z]/.test(ch)) inEscape = false;
+      continue;
+    }
+    if (ch === "\x1b") {
+      inEscape = true;
+      index += 1;
+      continue;
+    }
+    skipped += 1;
+    index += 1;
+  }
+  return value.slice(index);
+}
+
+export function wrapText(value, maxWidth) {
+  const width = Math.max(1, Number(maxWidth) || 1);
+  const text = String(value ?? "");
+  if (!text) return [""];
+  const lines = [];
+  for (const paragraph of text.split("\n")) {
+    let remaining = paragraph;
+    if (!remaining) {
+      lines.push("");
+      continue;
+    }
+    while (visibleLength(remaining) > width) {
+      const chunk = sliceVisible(remaining, width);
+      const plain = stripAnsi(chunk);
+      let breakAt = plain.length;
+      const space = plain.lastIndexOf(" ");
+      if (space > 0) breakAt = space;
+      const head = sliceVisible(remaining, breakAt);
+      lines.push(head.trimEnd());
+      remaining = skipVisible(remaining, breakAt).trimStart();
+      if (!remaining) break;
+    }
+    if (remaining) lines.push(remaining);
+  }
+  return lines.length ? lines : [""];
+}
+
 // ---------------------------------------------------------------------------
 // Time + numeric formatting
 // ---------------------------------------------------------------------------
@@ -248,7 +342,19 @@ const ICONS = {
   spike: "⏵",
   info: "ℹ",
   link: "↗",
-  prompt: "›"
+  prompt: "›",
+  terminal: "⎕",
+  file: "◇",
+  search: "⌕",
+  edit: "✎",
+  git: "⎇",
+  agent: "◎",
+  mission: "◈",
+  stream: "≋",
+  paperclip: "⧉",
+  plus: "+",
+  minus: "−",
+  sparkle: "✦"
 };
 
 export function icon(name) {
@@ -316,18 +422,35 @@ export function statusBar(segments) {
     .join(style(" │ ", "subtle"));
 }
 
-export function promptStatus({ mode, reasoning, agent = null, profile = null, guard = "ok" }) {
+export function promptStatus({
+  mode,
+  reasoning,
+  agent = null,
+  profile = null,
+  guard = "ok",
+  messages = 0,
+  maxMessages = null,
+  tokens = null
+} = {}) {
   const parts = [];
   parts.push(mode ? style(mode, modeColor(mode)) : style("—", "muted"));
   parts.push(reasoning ? style(reasoning, "info") : style("—", "muted"));
   if (agent) parts.push(style(`@${agent}`, "brand"));
   if (profile && profile !== "normal") parts.push(style(profile, "accent"));
+  if (messages > 0) {
+    const label = maxMessages ? `${messages}/${maxMessages}` : String(messages);
+    const ratio = maxMessages ? messages / maxMessages : 0;
+    const color = ratio >= 0.9 ? "warn" : ratio >= 0.7 ? "accent" : "muted";
+    parts.push(style(`${label} msg`, color));
+  }
+  if (tokens) parts.push(style(`${tokens} tok`, "faint"));
   if (guard && guard !== "ok") parts.push(style(guard, guard === "blocked" ? "error" : "warn"));
   return parts.join(style(" │ ", "subtle"));
 }
 
 function modeColor(mode) {
   if (mode === "plan") return "info";
+  if (mode === "build") return "success";
   if (mode === "always-approve") return "warn";
   if (mode === "goal") return "brand";
   if (mode === "review") return "accent";
@@ -373,23 +496,37 @@ export function frame(styleName = "rounded") {
   return FRAME[styleName] || FRAME.rounded;
 }
 
-export function box(rows, { width, frame: frameName = "rounded", color = "panel", title = null, padding = 1, align = "left" } = {}) {
+export function box(rows, {
+  width,
+  frame: frameName = "rounded",
+  color = "border",
+  title = null,
+  titleTone = "brand",
+  titleIcon = null,
+  padding = 1,
+  align = "left"
+} = {}) {
   const f = frame(frameName);
   const w = Math.max(20, width || maxContentWidth(rows, padding));
-  const lines = rows.map((row) => renderBoxRow(row, w - 2, padding, align));
-  const top = f.tl + f.h.repeat(w - 2) + f.tr;
-  const bottom = f.bl + f.h.repeat(w - 2) + f.br;
-  const bordered = lines.map((line) => `${style(f.v, color)} ${line} ${style(f.v, color)}`);
-  if (title) {
-    const label = ` ${title} `;
-    const remaining = w - 2 - visibleLength(label) - 2;
-    if (remaining > 0) {
-      const left = 1;
-      const right = Math.max(0, remaining - left);
-      bordered[0] = `${style(f.v, color)} ${style(f.tl + f.h.repeat(left) + label + f.h.repeat(right) + f.tr, color)}`;
-    }
+  const inner = Math.max(1, w - 2 - padding * 2);
+  const expanded = [];
+  for (const row of rows) {
+    expanded.push(...wrapText(String(row ?? ""), inner));
   }
-  return [style(top, color), ...bordered, style(bottom, color)];
+  const lines = expanded.map((row) => renderBoxRow(row, w - 2, padding, align));
+  const bottom = style(`${f.bl}${f.h.repeat(w - 2)}${f.br}`, color);
+  const bordered = lines.map((line) => `${style(f.v, color)} ${line} ${style(f.v, color)}`);
+  let top;
+  if (title) {
+    const label = ` ${panelTitle(title, { tone: titleTone, icon: titleIcon })} `;
+    const remaining = w - 2 - visibleLength(label);
+    const left = 1;
+    const right = Math.max(0, remaining - left);
+    top = `${style(f.tl, color)}${style(f.h.repeat(left), color)}${label}${style(f.h.repeat(right), color)}${style(f.tr, color)}`;
+  } else {
+    top = style(`${f.tl}${f.h.repeat(w - 2)}${f.tr}`, color);
+  }
+  return [top, ...bordered, bottom];
 }
 
 function renderBoxRow(row, innerWidth, padding, align) {
@@ -397,7 +534,7 @@ function renderBoxRow(row, innerWidth, padding, align) {
   const padded = padding > 0 ? " ".repeat(padding) + value + " ".repeat(padding) : value;
   const totalWidth = innerWidth;
   const len = visibleLength(padded);
-  if (len >= totalWidth) return truncate(padded, totalWidth);
+  if (len > totalWidth) return truncate(padded, totalWidth);
   if (align === "right") return " ".repeat(totalWidth - len) + padded;
   if (align === "center") {
     const left = Math.floor((totalWidth - len) / 2);
@@ -542,7 +679,7 @@ let activeSpinner = null;
 let activeTimer = null;
 let activeStart = 0;
 
-export function startSpinner({ label = "working", stream = stdout, isTTY = stream?.isTTY, interval = 80 } = {}) {
+export function startSpinner({ label = "working", stream = stderr, isTTY = stream?.isTTY, interval = 80 } = {}) {
   if (activeSpinner) stopSpinner();
   if (!colorsEnabled || !isTTY) {
     activeSpinner = { label, frame: 0, stream, isTTY: false, tty: false };
@@ -618,4 +755,550 @@ export function blank() {
 export function header(text) {
   const w = Math.max(40, visibleLength(text) + 8);
   return rule(w, { label: text, color: "panel", labelColor: "info" });
+}
+
+// ---------------------------------------------------------------------------
+// Rich TUI layout helpers (welcome, timeline, run summary, response blocks)
+// ---------------------------------------------------------------------------
+
+export function contentWidth(columns = stdout?.columns, { min = 60, max = 96, padding = 4 } = {}) {
+  const cols = Number(columns) || max;
+  const usable = Math.max(20, cols - padding);
+  if (cols < min) return usable;
+  return Math.min(usable, max);
+}
+
+export function chip(text, tone = "muted") {
+  const value = String(text ?? "");
+  return `${subtle("[")}${style(value, tone)}${subtle("]")}`;
+}
+
+export function paletteHintLine(hints = []) {
+  return `  ${hints.map(({ key, label }) => `${bold(key)} ${muted(label)}`).join("  ")}`;
+}
+
+function grokWorkspaceLabel(workspace = "workspace", branch = null) {
+  const name = String(workspace);
+  const hideRepo = name.toLowerCase() === "azycode";
+  if (branch && branch !== "unknown") {
+    return hideRepo ? info(branch) : `${muted(name)}${subtle("/")}${info(branch)}`;
+  }
+  return accent(name);
+}
+
+export function panelTitle(title, { tone = "brand", icon: iconName = null } = {}) {
+  const key = String(title ?? "").toLowerCase();
+  const glyph = iconName || PANEL_TITLE_ICONS[key];
+  const prefix = glyph ? `${style(icon(glyph), tone)} ` : "";
+  return `${prefix}${style(String(title ?? ""), tone)}`;
+}
+
+export function progressBar(current, max, width = 24, { tone = null } = {}) {
+  const value = Math.max(0, Number(current) || 0);
+  const cap = Math.max(1, Number(max) || 1);
+  const inner = Math.max(4, width - 2);
+  const filled = Math.min(inner, Math.round((value / cap) * inner));
+  const empty = inner - filled;
+  const ratio = value / cap;
+  const fillTone = tone || (ratio >= 0.92 ? "error" : ratio >= 0.75 ? "warn" : "brand");
+  const bar = `${style("█".repeat(filled), fillTone)}${style("░".repeat(empty), "faint")}`;
+  return `[${bar}] ${muted(`${value}/${cap}`)}`;
+}
+
+export function budgetProgressBar(current, max, width = 24) {
+  return progressBar(current, max, width);
+}
+
+export function wordmark({ version = "v0.1", tagline = "interactive coding harness", connected = null } = {}) {
+  const mark = `${brand(icon("diamond"))} ${bold(brand("azycode"))} ${faint("·")} ${muted(tagline)}`;
+  const status = connected == null
+    ? muted("local agent")
+    : chip(connected ? "online" : "offline", connected ? "success" : "warn");
+  const meta = `${chip(version, "faint")}  ${status}`;
+  return [mark, meta];
+}
+
+export function welcomeHero({ repo = "workspace", branch = null, connected = false } = {}) {
+  const [mark, tagline] = wordmark({ connected });
+  return [
+    mark,
+    tagline,
+    "",
+    statCells([
+      { value: connected ? "online" : "offline", style: connected ? "success" : "warn" },
+      { value: repo, style: "accent" },
+      branch ? { value: branch, style: branch === "unknown" ? "muted" : "info" } : null
+    ].filter(Boolean))
+  ];
+}
+
+export function quoteBlock(text, { width = 80 } = {}) {
+  const inner = Math.max(16, width - 6);
+  const lines = wrapText(String(text ?? "").trim(), inner);
+  if (!lines.length || (lines.length === 1 && !lines[0])) return [muted("(empty)")];
+  return lines.map((line, index) => {
+    const lead = index === 0 ? brand(icon("prompt")) : faint("  ");
+    const body = index === 0 ? bold(accent(line)) : muted(line);
+    return `${lead} ${body}`;
+  });
+}
+
+function renderInlineMarkdown(text) {
+  let value = String(text ?? "");
+  value = value.replace(/\*\*([^*]+)\*\*/g, (_, inner) => bold(accent(inner)));
+  value = value.replace(/\*([^*]+)\*/g, (_, inner) => style(inner, "italic"));
+  value = value.replace(/`([^`]+)`/g, (_, inner) => code(inner));
+  return value;
+}
+
+export function formatMarkdownLine(line) {
+  const text = String(line ?? "");
+  if (/^#{1,3}\s/.test(text)) return bold(brand(text.replace(/^#+\s*/, "")));
+  if (/^```/.test(text)) return faint(text);
+  if (/^[-*•]\s/.test(text)) return `  ${success(icon("bullet"))} ${renderInlineMarkdown(text.replace(/^[-*•]\s/, ""))}`;
+  if (/^\d+\.\s/.test(text)) return `  ${muted(text.match(/^\d+/)[0] + ".")} ${renderInlineMarkdown(text.replace(/^\d+\.\s/, ""))}`;
+  if (/\*\*|`|^\*[^*]/.test(text)) return renderInlineMarkdown(text);
+  return text;
+}
+
+export function highlightTerms(text, terms = []) {
+  const value = String(text ?? "");
+  const normalized = terms.map((term) => term.toLowerCase()).filter(Boolean);
+  if (!normalized.length || !colorsEnabled) return value;
+  const lower = value.toLowerCase();
+  let best = null;
+  for (const term of normalized) {
+    const index = lower.indexOf(term);
+    if (index === -1) continue;
+    if (!best || index < best.index) best = { index, term };
+  }
+  if (!best) return value;
+  const before = value.slice(0, best.index);
+  const match = value.slice(best.index, best.index + best.term.length);
+  const after = value.slice(best.index + best.term.length);
+  return `${before}${style(match, "brand")}${after}`;
+}
+
+export function brandBanner(rows, { width, frame: frameName = "rounded", color = "border", title = null, titleTone = "brand" } = {}) {
+  return box(rows, { width, frame: frameName, color, title, titleTone, padding: 2 });
+}
+
+export function taskPanel(rows, { width, title = "task" } = {}) {
+  return box(rows, { width, title, titleTone: "brand", color: "border", padding: 2 });
+}
+
+export function assistantPanel(content, { width, title = "assistant" } = {}) {
+  return responsePanel(content, { width, title });
+}
+
+export function timelineRow({
+  glyph = icon("bullet"),
+  glyphStyle = "muted",
+  label = "",
+  detail = "",
+  meta = "",
+  status = null,
+  indent = 0,
+  branch = null
+} = {}) {
+  const pad = " ".repeat(Math.max(0, indent * 2));
+  const branchText = branch === "last"
+    ? style("╰─", "faint")
+    : branch === "mid"
+      ? style("├─", "faint")
+      : branch === "cont"
+        ? style("│ ", "faint")
+        : "";
+  const iconText = style(glyph, glyphStyle);
+  const statusText = status
+    ? ` ${status === "ok" || status === true ? success(icon("check")) : status === "warn" ? warn(icon("warn")) : error(icon("cross"))}`
+    : "";
+  const detailText = detail ? ` ${typeof detail === "string" && !detail.includes("\x1b") ? muted(detail) : detail}` : "";
+  const metaText = meta ? ` ${typeof meta === "string" && !meta.includes("\x1b") ? faint(meta) : meta}` : "";
+  const spacer = branchText ? `${branchText} ` : "";
+  return `${pad}${spacer}${iconText}  ${label}${detailText}${metaText}${statusText}`;
+}
+
+export function activityHeader(title = "activity", { width = 60 } = {}) {
+  const head = `${brand(icon("stream"))} ${bold(style(title, "brand"))}`;
+  const lineWidth = Math.max(8, width - visibleLength(head) - 1);
+  return `${head} ${rule(lineWidth, { char: "─", color: "faint" })}`;
+}
+
+export function statCells(stats, { separator = null } = {}) {
+  const sep = separator ?? style(" │ ", "subtle");
+  return stats
+    .filter((item) => item && item.value != null && item.value !== "")
+    .map((item) => {
+      const label = item.label ? muted(`${item.label} `) : "";
+      const value = item.style ? style(String(item.value), item.style) : bold(String(item.value));
+      return `${label}${value}`;
+    })
+    .join(sep);
+}
+
+export function runSummaryPanel(stats, { width, title = "run complete" } = {}) {
+  const statusTone = stats.status === "ok" ? "success" : stats.status === "error" ? "error" : "warn";
+  const headline = [
+    stats.status === "ok" ? success(icon("check")) : stats.status === "error" ? error(icon("cross")) : warn(icon("warn")),
+    bold(style(stats.status || "done", statusTone)),
+    stats.steps != null ? chip(`${stats.steps} step${stats.steps === 1 ? "" : "s"}`, "info") : null,
+    stats.toolCalls != null ? chip(`${stats.toolCalls} tool${stats.toolCalls === 1 ? "" : "s"}`, "accent") : null,
+    stats.toolFailures ? chip(`${stats.toolFailures} failed`, "error") : null,
+    stats.duration ? chip(stats.duration, "muted") : null,
+    stats.tokens ? chip(`${stats.tokens} tok`, "faint") : null
+  ].filter(Boolean).join(` ${faint("·")} `);
+  const timing = statCells([
+    stats.modelMs ? { label: "model", value: stats.modelMs, style: "info" } : null,
+    stats.toolMs ? { label: "tools", value: stats.toolMs, style: "accent" } : null,
+    stats.steps && stats.maxSteps ? { label: "budget", value: `${stats.steps}/${stats.maxSteps}`, style: "muted" } : null
+  ].filter(Boolean));
+  const rows = [];
+  if (headline) rows.push(headline);
+  if (timing) rows.push(faint(timing));
+  if (!rows.length) rows.push(muted("no activity"));
+  return box(rows, { width, title, titleTone: "success", frame: "rounded", color: "borderSoft", padding: 1 });
+}
+
+export function responsePanel(content, { width, title = "assistant", frame: frameName = "rounded" } = {}) {
+  const text = String(content ?? "").trim();
+  if (!text) return box([muted("(no response)")], { width, title, titleTone: "info", frame: frameName, color: "border", padding: 2 });
+  const lines = [];
+  const blocks = text.split(/\n{2,}/);
+  for (const [index, block] of blocks.entries()) {
+    if (index > 0) lines.push("");
+    lines.push(...block.split("\n").map((line) => formatMarkdownLine(line)));
+  }
+  return box(lines, { width, title, titleTone: "info", frame: frameName, color: "border", padding: 2 });
+}
+
+export function miniPanel(rows, { width = 60, title = null, frame: frameName = "rounded" } = {}) {
+  const body = (rows || []).filter(Boolean);
+  if (!body.length) return [];
+  return box(body, {
+    width: Math.min(width, 72),
+    title: title || "preview",
+    titleTone: "accent",
+    frame: frameName,
+    color: "borderSoft",
+    padding: 1
+  });
+}
+
+export function palettePanel(groups, { width, footer = null, highlight = [] } = {}) {
+  const rows = [];
+  const terms = Array.isArray(highlight) ? highlight : [];
+  for (const group of groups) {
+    if (!group.items?.length) continue;
+    rows.push(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
+    const commandWidth = group.items.reduce((max, [command]) => Math.max(max, String(command).length), 0);
+    for (const [command, summary] of group.items) {
+      const cmd = highlightTerms(style(String(command), "brightWhite"), terms);
+      const desc = highlightTerms(muted(summary), terms);
+      rows.push(`${padEnd(cmd, commandWidth + 2)}${muted(desc)}`);
+    }
+    rows.push("");
+  }
+  if (footer) rows.push(footer);
+  while (rows.length && rows[rows.length - 1] === "") rows.pop();
+  return box(rows, { width, title: "commands", titleTone: "brand", frame: "rounded", color: "border", padding: 2 });
+}
+
+export function helpPanel(groups, { width, footer = null } = {}) {
+  const rows = [];
+  for (const group of groups) {
+    rows.push(`${brand(icon("chevronRight"))} ${bold(group.title)}`);
+    const commandWidth = group.items.reduce((max, [command]) => Math.max(max, String(command).length), 0);
+    for (const [command, summary] of group.items) {
+      rows.push(`${padEnd(style(String(command), "brightWhite"), commandWidth + 2)}${muted(summary)}`);
+    }
+    rows.push("");
+  }
+  if (footer) rows.push(footer);
+  while (rows.length && rows[rows.length - 1] === "") rows.pop();
+  return box(rows, { width, title: "help", titleTone: "brand", frame: "rounded", color: "border", padding: 2 });
+}
+
+export function listPanel(title, rows, { width, empty = "(none)" } = {}) {
+  const body = rows?.length ? rows : [muted(empty)];
+  return box(body, { width, title, titleTone: "brand", frame: "rounded", color: "border", padding: 1 });
+}
+
+export function shellPanel(command, text, { width, title = "shell" } = {}) {
+  const rows = [
+    `${muted(icon("terminal"))} ${code(command)}`,
+    "",
+    ...(String(text ?? "").trim() ? String(text).trim().split("\n").map((line) => faint(line)) : [muted("(no output)")])
+  ];
+  return box(rows, { width, title, titleTone: "accent", frame: "rounded", color: "border", padding: 2 });
+}
+
+export function approvalPanel(question, { width, defaultAnswer = "n" } = {}) {
+  return box([
+    `${warnText(icon("warn"))} ${bold("Approval required")}`,
+    "",
+    question,
+    "",
+    `${muted("Press")} ${chip(defaultAnswer === "y" ? "y" : "n", "warn")} ${muted("or")} ${chip(defaultAnswer === "y" ? "n" : "y", "muted")} ${muted("to continue")}`
+  ], { width, title: "confirm", titleTone: "warn", frame: "rounded", color: "warn", padding: 2 });
+}
+
+export function diffLine(line) {
+  const text = String(line ?? "");
+  if (text.startsWith("+++") || text.startsWith("---") || text.startsWith("@@")) return faint(text);
+  if (text.startsWith("+")) return success(text);
+  if (text.startsWith("-")) return error(text);
+  return muted(text);
+}
+
+export function diffBlock(text, { maxLines = 5, indent = 4, width, gutter = true } = {}) {
+  const lines = String(text ?? "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => /^[+-]/.test(line) && !/^[+-]{3}/.test(line))
+    .slice(0, maxLines);
+  if (!lines.length) return [];
+  const pad = " ".repeat(indent);
+  const pipe = gutter ? `${style("│", "faint")} ` : "";
+  return lines.map((line) => {
+    const rendered = diffLine(line);
+    const clipped = width ? truncate(rendered, Math.max(12, width - indent - 4)) : rendered;
+    return `${pad}${pipe}${clipped}`;
+  });
+}
+
+export function fileChangeBadge({ file, added = 0, removed = 0, action = "changed" } = {}) {
+  const bits = [];
+  if (file) bits.push(accent(file));
+  if (added) bits.push(success(`+${added}`));
+  if (removed) bits.push(error(`-${removed}`));
+  if (!added && !removed && action) bits.push(muted(action));
+  return bits.join(" ");
+}
+
+export function statusPanel(sections, { width, title = "status", frame: frameName = "rounded" } = {}) {
+  const rows = [];
+  for (const [index, section] of sections.entries()) {
+    if (!section?.rows?.length) continue;
+    if (index > 0) rows.push(rule(Math.max(20, (width || 60) - 6), { char: "·", color: "faint" }));
+    if (section.title) rows.push(bold(brand(section.title)));
+    rows.push(...section.rows);
+  }
+  if (!rows.length) rows.push(muted("(empty)"));
+  return box(rows, { width, title, titleTone: "brand", frame: frameName, color: "border", padding: 2 });
+}
+
+export function spinnerRunLabel({ step = 0, maxSteps = null, tool = null, width = 16 } = {}) {
+  const bar = maxSteps ? progressBar(step, maxSteps, width) : null;
+  const phase = tool ? truncate(tool, 24) : "thinking";
+  return [bar, phase].filter(Boolean).join("  ");
+}
+
+export function createStreamPanel({
+  width,
+  title = "assistant · streaming",
+  stream = stdout,
+  color = "border",
+  onLine = null
+} = {}) {
+  const f = frame("rounded");
+  const w = Math.max(24, width || 60);
+  const inner = Math.max(8, w - 4);
+  const margin = style(`${f.v} `, color);
+  const emit = onLine || ((line) => {
+    if (stream?.write) stream.write(`${line}\n`);
+    else console.log(line);
+  });
+  let open = false;
+  let buffer = "";
+
+  function topLine() {
+    const label = ` ${panelTitle(title, { tone: "info", icon: "stream" })} `;
+    const remaining = w - 2 - visibleLength(label);
+    const left = 1;
+    const right = Math.max(0, remaining - left);
+    return `${style(f.tl, color)}${style(f.h.repeat(left), color)}${label}${style(f.h.repeat(right), color)}${style(f.tr, color)}`;
+  }
+
+  function bottomLine() {
+    return style(`${f.bl}${f.h.repeat(w - 2)}${f.br}`, color);
+  }
+
+  function emitContentLine(line) {
+    for (const wrapped of wrapText(line, inner)) {
+      emit(`${margin}${wrapped}`);
+    }
+  }
+
+  function flushBuffer(final = false) {
+    const parts = buffer.split("\n");
+    if (!final) {
+      buffer = parts.pop() ?? "";
+      for (const part of parts) emitContentLine(part);
+      return;
+    }
+    for (const part of parts) {
+      if (part) emitContentLine(part);
+    }
+    buffer = "";
+  }
+
+  function openPanel() {
+    if (open) return;
+    open = true;
+    emit(topLine());
+  }
+
+  function write(delta) {
+    const text = String(delta ?? "");
+    if (!text) return;
+    openPanel();
+    buffer += text;
+    flushBuffer(false);
+  }
+
+  function close() {
+    if (!open) return;
+    flushBuffer(true);
+    emit(bottomLine());
+    open = false;
+  }
+
+  return { write, close, open: openPanel, isOpen: () => open };
+}
+
+// ---------------------------------------------------------------------------
+// Grok Build-style stream layout (minimal chrome, diamond actions, flowing text)
+// ---------------------------------------------------------------------------
+
+export function grokTimeLabel(date = new Date()) {
+  return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+export function grokActionRow(label, detail = "", { meta = null, timestamp = null, width = stdout?.columns } = {}) {
+  const glyph = style(icon("diamond"), "brand");
+  const head = typeof label === "string" && !label.includes("\x1b") ? bold(label) : label;
+  const target = detail
+    ? ` ${typeof detail === "string" && !detail.includes("\x1b") ? subtle(detail) : detail}`
+    : "";
+  const metaText = meta
+    ? ` ${typeof meta === "string" && !meta.includes("\x1b") ? muted(meta) : meta}`
+    : "";
+  const left = `${glyph} ${head}${target}${metaText}`;
+  if (!timestamp) return left;
+  const cols = Math.max(40, Number(width) || 80);
+  const ts = muted(timestamp);
+  const gap = cols - visibleLength(left) - visibleLength(ts);
+  return gap > 2 ? `${left}${" ".repeat(gap)}${ts}` : `${left}  ${ts}`;
+}
+
+export function grokUserBar(prompt, { width = stdout?.columns, timestamp = grokTimeLabel() } = {}) {
+  const cols = Math.max(40, Number(width) || 80);
+  const text = truncate(String(prompt ?? "").trim(), Math.max(24, cols - 14));
+  const left = `${brand("›")} ${bold(style(text, "brightWhite"))}`;
+  const ts = muted(timestamp);
+  const gap = cols - visibleLength(left) - visibleLength(ts);
+  return gap > 2 ? `${left}${" ".repeat(gap)}${ts}` : `${left}  ${ts}`;
+}
+
+export function grokComposerLine({
+  model = null,
+  mode = null,
+  reasoning = null,
+  agent = null,
+  messages = null,
+  maxMessages = null,
+  width = stdout?.columns
+} = {}) {
+  const bits = [
+    model ? brand(truncate(model, 40)) : null,
+    mode ? chip(mode, "accent") : null,
+    reasoning ? chip(reasoning, "info") : null,
+    agent ? chip(`@${agent}`, "brand") : null,
+    messages != null && maxMessages != null ? chip(`${messages}/${maxMessages} msg`, "muted") : null
+  ].filter(Boolean);
+  if (!bits.length) return "";
+  const right = bits.join(`  ${subtle("·")}  `);
+  const cols = Math.max(40, Number(width) || 80);
+  const gap = cols - visibleLength(right);
+  return gap > 0 ? `${" ".repeat(gap)}${right}` : right;
+}
+
+export function grokShortcutLine() {
+  return [
+    `${subtle("keys")}`,
+    `${bold("Shift+Tab")} ${muted("mode")}`,
+    `${bold("Tab")} ${muted("reasoning")}`,
+    `${bold("/")} ${muted("commands")}`,
+    `${bold("↑↓")} ${muted("pick")}`,
+    `${bold("!")} ${muted("shell")}`
+  ].join(`  ${subtle("·")}  `);
+}
+
+export function grokWelcomeScreen({
+  connected = false,
+  workspace = "workspace",
+  branch = null,
+  width = stdout?.columns
+} = {}) {
+  const lines = [];
+  const pulse = connected ? success("●") : warn("●");
+  const statusWord = connected ? success("ready") : warn("setup");
+  const place = grokWorkspaceLabel(workspace, branch);
+  lines.push(`  ${brand(icon("diamond"))} ${bold(brand("azycode"))}  ${pulse} ${statusWord}  ${place}`);
+  lines.push(`  ${muted("What should we work on?")}  ${subtle("/help for commands")}`);
+  if (!connected) lines.push(`  ${warn(`${icon("warn")} connect with /login`)}`);
+  return lines;
+}
+
+export function grokComposerDock({
+  model = null,
+  mode = null,
+  reasoning = null,
+  agent = null,
+  messages = null,
+  maxMessages = null,
+  width = stdout?.columns
+} = {}) {
+  const W = Math.max(48, Number(width) || 80);
+  const lines = [];
+  const composer = grokComposerLine({ model, mode, reasoning, agent, messages, maxMessages, width: W });
+  if (composer) {
+    lines.push(subtle("  " + "─".repeat(Math.max(0, W - 4))));
+    lines.push(composer);
+  }
+  lines.push(`  ${grokShortcutLine()}`);
+  return lines;
+}
+
+export function grokRunMeta(stats = {}) {
+  const bits = [];
+  if (stats.duration) bits.push(stats.duration);
+  if (stats.steps != null) bits.push(`${stats.steps} step${stats.steps === 1 ? "" : "s"}`);
+  if (stats.toolCalls != null) bits.push(`${stats.toolCalls} tool${stats.toolCalls === 1 ? "" : "s"}`);
+  if (stats.tokens) bits.push(`${stats.tokens} tok`);
+  if (!bits.length) return "";
+  return grokActionRow("Done", "", { meta: bits.join(" · ") });
+}
+
+export function renderGrokResponse(content, { width = stdout?.columns } = {}) {
+  const text = String(content ?? "").trim();
+  if (!text) return [muted("(no response)")];
+  const inner = Math.max(40, (Number(width) || 80) - 4);
+  const lines = [];
+  for (const block of text.split(/\n{2,}/)) {
+    if (lines.length) lines.push("");
+    for (const raw of block.split("\n")) {
+      for (const wrapped of wrapText(formatMarkdownLine(raw), inner)) {
+        const body = wrapped.includes("\x1b") ? wrapped : style(wrapped, "brightWhite");
+        lines.push(`  ${body}`);
+      }
+    }
+  }
+  return lines;
+}
+
+export function grokPreviewLines(rows, { indent = 4 } = {}) {
+  const pad = " ".repeat(indent);
+  return (rows || []).filter(Boolean).map((line) => `${pad}${typeof line === "string" && !line.includes("\x1b") ? muted(line) : line}`);
 }
