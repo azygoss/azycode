@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { defaultSubagents } from "./prompts.js";
+import { applyPermissionProfile as applyProfile, PERMISSION_PROFILES } from "./permissions.js";
+import { defaultSandboxConfig } from "./execution-policy.js";
 
 export const DEFAULT_MODE = "build";
 export const MODES = ["plan", "build", "always-approve", "goal", "review"];
@@ -80,10 +82,24 @@ export function defaultConfig() {
     mcpServers: {},
     hooks: {},
     gitGuard: {
-      enabled: false,
+      enabled: true,
       blockBranches: ["main", "master"],
       requireClean: false
     },
+    pathGuard: {
+      allowLockfiles: false,
+      allowEnv: false,
+      allowCiWorkflows: false,
+      autoApproveProtected: false,
+      protected: []
+    },
+    shellPolicy: {
+      allowDestructive: false,
+      autoNetwork: false,
+      autoBuildTest: true,
+      redactSecrets: true
+    },
+    sandbox: defaultSandboxConfig(),
     toolPolicy: {
       read_file: "auto",
       read_many_files: "auto",
@@ -123,7 +139,7 @@ const KNOWN_TOOL_NAMES = new Set([
   "apply_patch", "git_diff", "git_status", "git_log", "git_show", "git_checkout", "git_commit",
   "web_fetch", "spawn_subagents", "git_worktree", "shell", "todo", "set_mode"
 ]);
-const KNOWN_PROFILES = new Set(["normal", "read-only", "safe-write", "full-auto"]);
+const KNOWN_PROFILES = new Set(PERMISSION_PROFILES);
 
 let _configCache = null;
 let _configMtime = 0;
@@ -188,6 +204,9 @@ export function validateConfig(cfg) {
   cfg.subagents ||= {};
   cfg.skills ||= {};
   cfg.gitGuard ||= { ...defaults.gitGuard };
+  cfg.pathGuard = { ...defaults.pathGuard, ...(cfg.pathGuard || {}) };
+  cfg.shellPolicy = { ...defaults.shellPolicy, ...(cfg.shellPolicy || {}) };
+  cfg.sandbox = { ...defaults.sandbox, ...(cfg.sandbox || {}) };
   return cfg;
 }
 
@@ -205,10 +224,22 @@ export function loadConfig() {
   cfg.subagents = { ...defaults.subagents, ...(saved.subagents || {}) };
   cfg.skills = { ...defaults.skills, ...(saved.skills || {}) };
   cfg.gitGuard = { ...defaults.gitGuard, ...(saved.gitGuard || {}) };
-  cfg.toolPolicy = { ...defaults.toolPolicy, ...(saved.toolPolicy || {}) };
+  if (saved.gitGuard && Object.prototype.hasOwnProperty.call(saved.gitGuard, "enabled")) {
+    cfg.gitGuard.enabled = saved.gitGuard.enabled;
+  }
+  cfg.pathGuard = { ...defaults.pathGuard, ...(saved.pathGuard || {}) };
+  cfg.shellPolicy = { ...defaults.shellPolicy, ...(saved.shellPolicy || {}) };
+  cfg.sandbox = { ...defaults.sandbox, ...(saved.sandbox || {}) };
+  const savedToolPolicy = saved.toolPolicy || {};
+  cfg.toolPolicy = { ...defaults.toolPolicy };
   cfg.mcpServers = { ...defaults.mcpServers, ...(saved.mcpServers || {}) };
   validateConfig(cfg);
   applyPermissionProfile(cfg);
+  cfg.toolPolicy = { ...cfg.toolPolicy, ...savedToolPolicy };
+  for (const key of Object.keys(cfg.toolPolicy)) {
+    if (!KNOWN_TOOL_NAMES.has(key)) delete cfg.toolPolicy[key];
+    else if (!["auto", "ask", "deny"].includes(cfg.toolPolicy[key])) cfg.toolPolicy[key] = "ask";
+  }
   _configCache = cfg;
   _configMtime = mtime;
   return typeof structuredClone === "function" ? structuredClone(cfg) : JSON.parse(JSON.stringify(cfg));
@@ -327,13 +358,5 @@ export function rotateReasoning(current) {
 }
 
 export function applyPermissionProfile(cfg) {
-  const profile = cfg.permissionProfile || "normal";
-  if (profile === "read-only") {
-    cfg.toolPolicy = { ...cfg.toolPolicy, write_file: "deny", edit_file: "deny", apply_patch: "deny", shell: "deny" };
-  } else if (profile === "safe-write") {
-    cfg.toolPolicy = { ...cfg.toolPolicy, write_file: "ask", edit_file: "ask", apply_patch: "ask", shell: "ask" };
-  } else if (profile === "full-auto") {
-    cfg.toolPolicy = { ...cfg.toolPolicy, write_file: "auto", edit_file: "auto", apply_patch: "auto", shell: "auto" };
-  }
-  return cfg;
+  return applyProfile(cfg);
 }

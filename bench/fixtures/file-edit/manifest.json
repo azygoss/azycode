@@ -1,0 +1,6 @@
+{
+  "name": "File edit fixture",
+  "type": "file-edit",
+  "targetFile": "src/example.js",
+  "expectedPattern": "export function example"
+}

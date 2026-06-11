@@ -11,7 +11,8 @@ test("apply_patch tool applies a unified diff inside workspace", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
   fs.writeFileSync(path.join(dir, "hello.txt"), "old\n", "utf8");
-  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {} } });
+  execFileSync("git", ["checkout", "-b", "feature/patch"], { cwd: dir, stdio: "ignore" });
+  const tools = createTools({ cwd: dir, cfg: { alwaysApprove: true, toolPolicy: {}, gitGuard: { enabled: true, blockBranches: ["main"] } } });
   const applyPatch = tools.find((tool) => tool.name === "apply_patch");
   const patch = [
     "diff --git a/hello.txt b/hello.txt",

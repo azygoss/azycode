@@ -54,5 +54,5 @@ test("contextPack respects .azyignore and formats selected files", async () => {
   assert(pack.files.some((item) => item.file === "README.md"));
   assert(pack.files.some((item) => item.file === "src/index.js"));
   assert(!pack.files.some((item) => item.file === "secret.txt"));
-  assert.match(formatContextPack(pack), /Context Pack/);
+  assert.match(formatContextPack(pack), /<context-pack>/);
 });

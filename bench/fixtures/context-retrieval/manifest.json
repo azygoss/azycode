@@ -1,0 +1,6 @@
+{
+  "name": "Context retrieval ranking",
+  "type": "context-retrieval",
+  "prompt": "Fix the bug in src/utils.js and add a test",
+  "expectedFiles": ["src/utils.js", "README.md"]
+}

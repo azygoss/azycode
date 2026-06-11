@@ -8,6 +8,11 @@ import { runTodoAction } from "./todos.js";
 import { execFileCancellable } from "./exec.js";
 import { clearContextPackCache } from "./context.js";
 import { listMcpToolCatalog } from "./mcp.js";
+import { resolveToolPermission } from "./permissions.js";
+import { evaluateShellPolicy } from "./shell-risk.js";
+import { assertWritePathAllowed, evaluateWritePath } from "./path-guard.js";
+import { resolveShellInvocation } from "./execution-policy.js";
+import { debug } from "./logger.js";
 
 const GIT_TIMEOUT_MS = 20_000;
 
@@ -59,6 +64,17 @@ export function createTools({
   const policySource = resolveCfg || (() => cfg);
   const policy = () => policySource().toolPolicy || {};
   const readCache = new Map();
+  const sessionApprovals = new Set();
+
+  function guardWritePath(requested, options = {}) {
+    const activeCfg = policySource();
+    const result = evaluateWritePath(root, requested, activeCfg, options);
+    if (result.allowed === false) throw new Error(result.reason);
+    if (result.allowed === null && !options.approved) {
+      throw new Error(`Write to protected path blocked: ${result.path} — ${result.reason}`);
+    }
+    return result;
+  }
 
   async function readTextFile(target, limit) {
     const cacheKey = `${target}:${limit}`;
@@ -229,6 +245,7 @@ export function createTools({
       required: ["dir"]
     }, async ({ dir }) => {
       assertGuard(root, policySource(), "make_dir");
+      guardWritePath(dir);
       const target = safePath(root, dir);
       fs.mkdirSync(target, { recursive: true });
       invalidateWorkspaceCaches();
@@ -240,6 +257,7 @@ export function createTools({
       required: ["file", "content"]
     }, async ({ file, content }) => {
       assertGuard(root, policySource(), "write_file");
+      guardWritePath(file);
       const target = safePath(root, file);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, content, "utf8");
@@ -257,6 +275,7 @@ export function createTools({
       required: ["file", "search", "replace"]
     }, async ({ file, search, replace, replaceAll = false }) => {
       assertGuard(root, policySource(), "edit_file");
+      guardWritePath(file);
       const target = safePath(root, file);
       const original = fs.readFileSync(target, "utf8");
       if (!original.includes(search)) throw new Error(`Search text not found in ${file}`);
@@ -272,6 +291,7 @@ export function createTools({
       required: ["from", "to"]
     }, async ({ from, to }) => {
       assertGuard(root, policySource(), "copy_path");
+      guardWritePath(to);
       const source = safePath(root, from);
       const target = safePath(root, to);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -285,6 +305,8 @@ export function createTools({
       required: ["from", "to"]
     }, async ({ from, to }) => {
       assertGuard(root, policySource(), "move_path");
+      guardWritePath(from);
+      guardWritePath(to);
       const source = safePath(root, from);
       const target = safePath(root, to);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -298,6 +320,7 @@ export function createTools({
       required: ["path"]
     }, async ({ path: requested, recursive = false }) => {
       assertGuard(root, policySource(), "delete_path");
+      guardWritePath(requested);
       const target = safePath(root, requested);
       if (target === root) throw new Error("Refusing to delete workspace root.");
       fs.rmSync(target, { recursive: Boolean(recursive), force: false });
@@ -401,11 +424,35 @@ export function createTools({
       required: ["command"]
     }, async ({ command, timeoutMs = 60000 }, runOptions = {}) => {
       assertGuard(root, policySource(), "shell");
+      const activeCfg = policySource();
+      const shellEval = evaluateShellPolicy(command, activeCfg);
+      if (shellEval.decision === "deny") {
+        throw new Error(`Shell command blocked (${shellEval.level}): ${shellEval.reason}`);
+      }
+      if (shellEval.decision === "ask" && !runOptions.shellApproved) {
+        const key = `shell:${command}`;
+        if (!sessionApprovals.has(key)) {
+          onApproval?.({ type: "approval_requested", tool: "shell", args: { command, risk: shellEval.level, reason: shellEval.reason } });
+          const question = `Approve shell [${shellEval.level}]: ${command.slice(0, 160)}`;
+          const ok = confirmTool ? await confirmTool(question) : await confirm(question);
+          onApproval?.({ type: ok ? "approval_granted" : "approval_denied", tool: "shell", args: { command } });
+          if (!ok) return "Tool call rejected by user.";
+          sessionApprovals.add(key);
+        }
+      }
+      const invocation = resolveShellInvocation(command, activeCfg, root);
+      if (invocation.blocked) throw new Error(invocation.reason);
+      debug(`shell exec risk=${shellEval.level} cmd=${invocation.logCommand}`);
+      const timeout = Math.max(1, Number(timeoutMs) || invocation.timeout || 60000);
       try {
-        const { stdout, stderr } = await execFileCancellable(process.env.SHELL || "sh", ["-lc", command], {
-          cwd: root,
-          timeout: Math.max(1, Number(timeoutMs) || 60000),
-          maxBuffer: 1024 * 1024 * 8,
+        const runner = invocation.useContainer
+          ? { file: invocation.container.binary, args: invocation.container.args }
+          : { file: invocation.file, args: invocation.args };
+        const { stdout, stderr } = await execFileCancellable(runner.file, runner.args, {
+          cwd: invocation.cwd,
+          env: invocation.env,
+          timeout,
+          maxBuffer: invocation.maxBuffer,
           signal: runOptions.signal
         });
         return [stdout, stderr].filter(Boolean).join("\n") || "(no output)";
@@ -414,7 +461,7 @@ export function createTools({
         const parts = [`exit code: ${error.code ?? "unknown"}`];
         if (error.stdout) parts.push(`stdout:\n${String(error.stdout).slice(0, 4000)}`);
         if (error.stderr) parts.push(`stderr:\n${String(error.stderr).slice(0, 4000)}`);
-        if (error.killed) parts.push(`signal: process timed out or was killed`);
+        if (error.killed) parts.push("signal: process timed out or was killed");
         else if (error.message && !String(error.message).startsWith("Command failed")) parts.push(error.message);
         throw new Error(parts.join("\n"));
       }
@@ -519,9 +566,27 @@ export function createTools({
     ...entry,
     run: async (args, runOptions = {}) => {
       const activeCfg = policySource();
-      const allowed = await approved(entry.name, args, policy(), activeCfg, confirmTool, onApproval);
-      if (!allowed) return "Tool call rejected by user.";
-      return entry.run(args, runOptions);
+      const permission = resolveToolPermission(activeCfg, entry.name, {
+        sessionApproval: sessionApprovals.has(entry.name)
+      });
+      if (permission.allowed === false) {
+        onApproval?.({ type: "approval_denied", tool: entry.name, reason: permission.reason });
+        return `Tool ${entry.name} denied by policy: ${permission.reason}`;
+      }
+      if (permission.allowed === null) {
+        const allowed = await approved(entry.name, args, policy(), activeCfg, confirmTool, onApproval, permission);
+        if (!allowed) return "Tool call rejected by user.";
+        sessionApprovals.add(entry.name);
+        if (["write_file", "edit_file", "apply_patch", "delete_path", "copy_path", "move_path", "make_dir"].includes(entry.name)) {
+          const pathArg = args.file || args.path || args.to || args.dir;
+          if (pathArg) guardWritePath(pathArg, { approved: true });
+        }
+      }
+      const shellKey = entry.name === "shell" && args.command ? `shell:${args.command}` : null;
+      const shellApproved = permission.allowed === true
+        || (entry.name === "shell" && sessionApprovals.has("shell"))
+        || (shellKey && sessionApprovals.has(shellKey));
+      return entry.run(args, { ...runOptions, shellApproved });
     }
   }));
 }
@@ -563,16 +628,17 @@ function tool(name, description, parameters, run) {
   };
 }
 
-async function approved(name, args, policy, cfg, confirmTool, onApproval = null) {
+async function approved(name, args, policy, cfg, confirmTool, onApproval = null, permission = null) {
   if (cfg.alwaysApprove) return true;
   const rule = policy[name] || "ask";
   if (rule === "auto") return true;
   if (rule === "deny") {
-    onApproval?.({ type: "approval_denied", tool: name, reason: "policy" });
+    onApproval?.({ type: "approval_denied", tool: name, reason: permission?.reason || "policy" });
     return false;
   }
-  onApproval?.({ type: "approval_requested", tool: name, args });
-  const question = `Approve tool ${name} ${JSON.stringify(args).slice(0, 180)}`;
+  onApproval?.({ type: "approval_requested", tool: name, args, policyReason: permission?.reason });
+  const reasonBit = permission?.reason ? ` (${permission.reason})` : "";
+  const question = `Approve tool ${name}${reasonBit} ${JSON.stringify(args).slice(0, 160)}`;
   const ok = confirmTool ? await confirmTool(question) : await confirm(question);
   onApproval?.({ type: ok ? "approval_granted" : "approval_denied", tool: name, args });
   return ok;

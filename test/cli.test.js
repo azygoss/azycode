@@ -552,7 +552,7 @@ test("tui can manage persistent memory notes", async () => {
 test("tui can preview bounded context", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const stdout = await runWithInput([], "/context show\n/exit\n", { AZYCODE_HOME: home });
-  assert.match(stdout, /Context Pack/);
+  assert.match(stdout, /<context-pack>/);
   assert.match(stdout, /files:/);
 });
 

@@ -1,0 +1,12 @@
+{
+  "name": "Path guard protections",
+  "type": "path-guard",
+  "paths": [
+    { "path": ".git/config", "protected": true },
+    { "path": ".env", "protected": true },
+    { "path": "node_modules/pkg/index.js", "protected": true },
+    { "path": "package-lock.json", "protected": true },
+    { "path": ".github/workflows/ci.yml", "protected": true },
+    { "path": "src/index.js", "protected": false }
+  ]
+}
