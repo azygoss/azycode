@@ -24,6 +24,12 @@ test("runBenchmark prompt-injection passes", async () => {
   assert.equal(result.ok, true);
 });
 
+test("runBenchmark context-retrieval passes with v3 sections", async () => {
+  const result = await runBenchmark("context-retrieval", { mock: true });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.missing, []);
+});
+
 test("runAllBenchmarks produces summary", async () => {
   const report = await runAllBenchmarks({ mock: true });
   assert.ok(report.total >= 4);

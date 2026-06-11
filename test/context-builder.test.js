@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ContextBuilder, clearContextPackCache, contextPack, formatContextPack } from "../src/context.js";
+import {
+  ContextBuilder,
+  SECTION_BUDGETS,
+  classifyContextSection,
+  clearContextPackCache,
+  contextPack,
+  extractJsSymbols,
+  formatContextPack,
+  getContextMutationGeneration,
+  notifyContextWorkspaceMutation,
+  shouldInvalidateContextForShell
+} from "../src/context.js";
 
 test("ContextBuilder ranks prompt-mentioned files highly", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-"));
@@ -63,4 +74,90 @@ test("adversarial source file is tagged as untrusted included-file", async () =>
   const formatted = formatContextPack(pack);
   assert.match(formatted, /<included-file path="src\/evil.js"/);
   assert.match(formatted, /<untrusted-data>/);
+});
+
+test("classifyContextSection maps reasons to section buckets", () => {
+  assert.equal(classifyContextSection({ reason: "config file" }), "instructions");
+  assert.equal(classifyContextSection({ reason: "git diff touched" }), "changed");
+  assert.equal(classifyContextSection({ reason: "prompt file mention" }), "promptMentions");
+  assert.equal(classifyContextSection({ reason: "import neighbor of src/a.js" }), "neighbors");
+  assert.equal(classifyContextSection({ reason: "test for src/a.js" }), "tests");
+  assert.equal(classifyContextSection({ reason: "keyword search: auth" }), "search");
+  assert.equal(classifyContextSection({ reason: "recent mtime" }), "recent");
+  assert.equal(classifyContextSection({ reason: "repo scan" }), "general");
+});
+
+test("shouldInvalidateContextForShell detects mutating commands", () => {
+  assert.equal(shouldInvalidateContextForShell("npm test"), true);
+  assert.equal(shouldInvalidateContextForShell("npm run build"), true);
+  assert.equal(shouldInvalidateContextForShell("git commit -m fix"), true);
+  assert.equal(shouldInvalidateContextForShell("ls -la"), false);
+  assert.equal(shouldInvalidateContextForShell("cat README.md"), false);
+});
+
+test("notifyContextWorkspaceMutation invalidates cached context packs", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-mut-"));
+  fs.writeFileSync(path.join(dir, "README.md"), "stable\n");
+  clearContextPackCache();
+  const before = getContextMutationGeneration();
+  const first = await contextPack(dir, { maxFiles: 3, maxBytes: 2000 });
+  const second = await contextPack(dir, { maxFiles: 3, maxBytes: 2000 });
+  assert.strictEqual(first, second);
+  notifyContextWorkspaceMutation("write", "README.md");
+  assert.ok(getContextMutationGeneration() > before);
+  const third = await contextPack(dir, { maxFiles: 3, maxBytes: 2000 });
+  assert.notStrictEqual(second, third);
+  assert.equal(third.mutationGeneration, getContextMutationGeneration());
+});
+
+test("contextPack emits v3 shape with section budgets and grouping", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-v3-"));
+  fs.writeFileSync(path.join(dir, "README.md"), "# demo\n");
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "demo" }));
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "main.js"), "export function run() { return 1; }\n");
+  fs.writeFileSync(path.join(dir, "src", "main.test.js"), "import { run } from './main.js';\n");
+  clearContextPackCache();
+  const pack = await contextPack(dir, {
+    prompt: "fix src/main.js",
+    maxFiles: 10,
+    maxBytes: 20000,
+    sectionBudgets: { ...SECTION_BUDGETS, general: 500 }
+  });
+  assert.equal(pack.format, "context-pack-v3");
+  assert.ok(pack.sections);
+  assert.ok(pack.sectionUsed);
+  assert.ok(pack.files.every((item) => item.section));
+  const formatted = formatContextPack(pack);
+  assert.match(formatted, /<section name="instructions"/);
+  assert.match(formatted, /<section name="promptMentions"/);
+  assert.match(formatted, /<context-meta format="context-pack-v3"/);
+});
+
+test("extractJsSymbols finds exports and re-exports", () => {
+  const content = [
+    "export function alpha() {}",
+    "export const beta = 1;",
+    "export { gamma, delta as renamed }"
+  ].join("\n");
+  const symbols = extractJsSymbols(content);
+  assert.ok(symbols.includes("alpha"));
+  assert.ok(symbols.includes("beta"));
+  assert.ok(symbols.includes("gamma"));
+  assert.ok(symbols.includes("delta"));
+});
+
+test("ContextBuilder discovers import neighbors and related tests", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-neigh-"));
+  fs.mkdirSync(path.join(dir, "src"));
+  fs.writeFileSync(path.join(dir, "src", "helper.js"), "export const helper = 1;\n");
+  fs.writeFileSync(path.join(dir, "src", "app.js"), "import { helper } from './helper.js';\nexport function app() { return helper; }\n");
+  fs.writeFileSync(path.join(dir, "src", "app.test.js"), "import { app } from './app.js';\n");
+  const builder = new ContextBuilder(dir, { prompt: "fix src/app.js" });
+  const ranked = await builder.build();
+  const files = ranked.map((item) => item.file);
+  assert.ok(files.includes("src/helper.js"));
+  assert.ok(files.includes("src/app.test.js"));
+  const helper = ranked.find((item) => item.file === "src/helper.js");
+  assert.equal(helper.section, "neighbors");
 });

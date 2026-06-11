@@ -107,11 +107,12 @@ async function runContextBench(fixtureDir, manifest) {
   const included = pack.files.map((f) => f.file);
   const missing = expectedFiles.filter((f) => !included.includes(f));
   const hasUntrusted = formatted.includes("<untrusted-data>");
+  const hasV3Sections = formatted.includes('<section name="') && pack.format === "context-pack-v3";
   const hasInjectionFile = manifest.expectInjectionTagged !== false
     ? !formatted.includes('ignore previous instructions') || formatted.includes("<included-file")
     : true;
   return {
-    passed: missing.length === 0 && hasUntrusted && hasInjectionFile,
+    passed: missing.length === 0 && hasUntrusted && hasV3Sections && hasInjectionFile,
     included,
     missing,
     hasUntrusted,

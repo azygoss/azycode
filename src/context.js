@@ -559,7 +559,7 @@ export function formatContextPack(pack) {
   ];
 
   const sectionOrder = ["instructions", "changed", "promptMentions", "neighbors", "tests", "search", "recent", "general"];
-  const grouped = Object.groupBy(pack.files, (item) => item.section || classifyContextSection(item));
+  const grouped = groupBySection(pack.files);
 
   for (const sectionName of sectionOrder) {
     const items = grouped[sectionName];
@@ -591,6 +591,16 @@ export function formatContextPack(pack) {
 
 function escapeAttr(value) {
   return String(value || "").replace(/"/g, "'");
+}
+
+function groupBySection(files) {
+  const grouped = {};
+  for (const item of files) {
+    const key = item.section || classifyContextSection(item);
+    grouped[key] ||= [];
+    grouped[key].push(item);
+  }
+  return grouped;
 }
 
 function collectPackFiles(root, dir, ignore, out) {
