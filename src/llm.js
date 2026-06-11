@@ -66,6 +66,20 @@ function jitterDelay(baseMs, attempt) {
   return exponential + Math.random() * baseMs;
 }
 
+export function parseRetryAfterMs(response) {
+  const header = response?.headers?.get?.("retry-after");
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(Math.round(seconds * 1000), 120_000);
+  }
+  const dateMs = Date.parse(header);
+  if (Number.isFinite(dateMs)) {
+    return Math.min(Math.max(0, dateMs - Date.now()), 120_000);
+  }
+  return null;
+}
+
 async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = MAX_RETRIES, signal = null } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -73,7 +87,8 @@ async function fetchWithRetry(url, init, { timeoutMs = DEFAULT_TIMEOUT_MS, maxRe
     try {
       const response = await fetchWithTimeout(url, init, timeoutMs, signal);
       if (!response.ok && isRetryableStatus(response.status) && attempt < maxRetries) {
-        const delay = Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
+        const retryAfter = parseRetryAfterMs(response);
+        const delay = retryAfter ?? Math.round(jitterDelay(RETRY_DELAY_BASE_MS, attempt));
         warn(`LLM request HTTP ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
         await sleep(delay);
         continue;

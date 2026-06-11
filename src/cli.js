@@ -8,7 +8,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent.js";
 import { applyPermissionProfile, COMPACTION_MODES, defaultConfig, loadConfig, resolveAgentMaxSteps, saveConfig, loadState, saveState, updateState, maskSecret, MODES, REASONING_LEVELS, rotateMode, rotateReasoning, normalizeMode } from "./config.js";
 import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
-import { compactConversationWithModel } from "./compaction.js";
+import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
+import { clearAllTodos, clearCompletedTodos, formatActiveTodos, formatTodoList, listActiveTodos, listTodos } from "./todos.js";
 import { loadHookConfig } from "./hooks.js";
 import { trimConversation } from "./conversation.js";
 import { AgentCancelledError, AgentRunError, AgentStepLimitError } from "./agent-errors.js";
@@ -41,7 +42,7 @@ const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
-  "dashboard", "tools", "guard", "session", "memory", "context", "audit", "report", "completion", "config",
+  "dashboard", "tools", "guard", "session", "memory", "context", "todo", "audit", "report", "completion", "config",
   "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox"
 ];
 
@@ -100,6 +101,7 @@ export async function main(argv) {
     case "session": return session(args);
     case "memory": return memory(args);
     case "context": return await contextCmd(args);
+    case "todo": return todoCmd(args);
     case "audit": return audit();
     case "report": return report(args);
     case "completion": return completion(args);
@@ -237,7 +239,8 @@ function commandHelp(topic) {
         "azycode config set reasoning <minimal|low|medium|high>",
         "azycode config set profile <normal|read-only|plan-only|safe-write|trusted-workspace|full-auto>",
         "azycode config set guard enabled <true|false>",
-        "azycode config set compaction <trim|llm>",
+        "azycode config set compaction <trim|deterministic|llm>",
+        "azycode todo list|active|clear [--json]",
         "azycode config export [file]"
       ],
       notes: ["Set AZYCODE_HOME to isolate credentials and state."]
@@ -1222,6 +1225,35 @@ async function memory(args) {
   throw new Error("Usage: azycode memory add|list|remove");
 }
 
+function todoCmd(args) {
+  const flags = parseFlags(args);
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const action = positional[0] || "list";
+  const cwd = process.cwd();
+
+  if (action === "list") {
+    const status = flags.status ? (Array.isArray(flags.status) ? flags.status : [flags.status]) : null;
+    const items = status ? listTodos(cwd, { status }) : listTodos(cwd);
+    if (flags.json) console.log(JSON.stringify(items, null, 2));
+    else console.log(formatTodoList(items));
+    return;
+  }
+  if (action === "active") {
+    const items = listActiveTodos(cwd);
+    if (flags.json) console.log(JSON.stringify(items, null, 2));
+    else console.log(formatActiveTodos(cwd) || "No active todos.");
+    return;
+  }
+  if (action === "clear") {
+    const removed = flags.completed ? clearCompletedTodos(cwd) : clearAllTodos(cwd);
+    console.log(flags.completed
+      ? `Cleared ${removed} completed/cancelled todo(s).`
+      : `Cleared ${removed} todo(s).`);
+    return;
+  }
+  throw new Error("Usage: azycode todo list|active|clear [--json] [--completed] [--status <status>]");
+}
+
 async function contextCmd(args) {
   if (args[0] === "pack") {
     const flags = parseFlags(args.slice(1));
@@ -1903,6 +1935,13 @@ async function handleChatCommand(line, state) {
         state.setConversation(trimConversation(state.getConversation(), keepRecent));
         console.log(`llm compact failed (${error.message}); trimmed to ${state.getConversation().length}`);
       }
+    } else if (state.cfg.compaction === "deterministic") {
+      const compacted = compactConversationDeterministic(state.getConversation(), {
+        keepRecent,
+        todoState: formatActiveTodos(state.cwd)
+      });
+      state.setConversation(compacted);
+      console.log(`conversation: ${before} -> ${compacted.length} messages (deterministic)`);
     } else {
       state.setConversation(trimConversation(state.getConversation(), keepRecent));
       console.log(`conversation: ${before} -> ${state.getConversation().length} messages`);

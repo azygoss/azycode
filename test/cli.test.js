@@ -780,6 +780,41 @@ test("session and subagent lists use compact tables", () => {
   assert.match(run(["subagent", "list"], { AZYCODE_HOME: home }), /planner\s+high\s+\(active\)/);
 });
 
+test("todo command lists active items and clears workspace todos", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-todo-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-todo-work-"));
+  const env = { ...process.env, AZYCODE_HOME: home };
+  const runInWorkspace = (args) => execFileSync(process.execPath, [bin, ...args], {
+    cwd,
+    env,
+    encoding: "utf8",
+    timeout: 10000
+  });
+
+  assert.match(runInWorkspace(["todo", "active"]), /No active todos/);
+
+  const todosPath = path.join(home, "todos.json");
+  const key = fs.realpathSync.native(cwd);
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(todosPath, JSON.stringify({
+    [key]: {
+      items: [
+        {
+          id: "todo_test",
+          text: "Ship CLI todo command",
+          status: "pending",
+          tags: [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        }
+      ]
+    }
+  }, null, 2));
+
+  assert.match(runInWorkspace(["todo", "active"]), /Ship CLI todo command/);
+  assert.match(runInWorkspace(["todo", "clear"]), /Cleared 1 todo/);
+});
+
 function runWithInput(args, inputText, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, ...args], {

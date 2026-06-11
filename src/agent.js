@@ -15,27 +15,16 @@ import { getSkillText } from "./skills.js";
 import { discoverProjectInstructions } from "./instructions.js";
 import { createMcpTools } from "./mcp.js";
 import { runHooks, loadHookConfig } from "./hooks.js";
-import { compactConversationWithModel } from "./compaction.js";
+import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
+import { appendOpenTodosNotice } from "./agent-report.js";
+import { formatToolResultForModel, normalizeToolResult } from "./tool-result.js";
+import { applyDuplicateFailurePolicy, resolveToolRetryPolicy, shouldRetryTransient } from "./tool-retry.js";
 import { formatSubagentResults, runSubagentsParallel } from "./subagents.js";
 import { mergeAbortSignals } from "./exec.js";
 import { debug, warn, error as logError } from "./logger.js";
 import { systemForMode } from "./prompts.js";
 
 export { systemForMode };
-
-function classifyToolResult(name, content) {
-  const text = String(content ?? "");
-  if (text.startsWith("Unknown tool:")) return { ok: false, code: "unknown_tool" };
-  if (text === "Tool call rejected by user.") return { ok: false, code: "rejected" };
-  if (text.startsWith(`Tool ${name} blocked by hook:`)) return { ok: false, code: "rejected" };
-  if (text.startsWith("Tool arguments were invalid JSON:")) return { ok: false, code: "invalid_args" };
-  if (text.startsWith(`Tool ${name} failed:`) && /timed out after/.test(text)) return { ok: false, code: "timeout" };
-  if (text.startsWith(`Tool ${name} failed:`) && /Aborted/i.test(text)) return { ok: false, code: "cancelled" };
-  if (text.startsWith(`Tool ${name} failed:`)) return { ok: false, code: "error" };
-  if (name === "read_many_files" && /\nERROR:/.test(text)) return { ok: false, code: "partial_error" };
-  if (text.startsWith("exit code:")) return { ok: false, code: "error" };
-  return { ok: true, code: "ok" };
-}
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 const MAX_SESSIONS = 50;
@@ -76,7 +65,8 @@ export async function runAgent({
   const relevantMemory = loadRelevantMemory(prompt);
   const contextPackStr = includeContext ? await loadContextPack(cwd) : "";
   if (includeContext) debug(`Context pack loaded: ${contextPackStr.length} chars`);
-  let activeTodos = formatActiveTodos(cwd);
+  const sessionId = id("ses");
+  let activeTodos = formatActiveTodos(cwd, { sessionId });
 
   const buildSystemContent = () => [
     subagent?.system || systemForMode(modeRuntime.getMode(), { cwd, cfg, stepLimit }),
@@ -92,7 +82,6 @@ export async function runAgent({
     ...conversation.filter((message) => message.role !== "system"),
     { role: "user", content: prompt }
   ];
-  const sessionId = id("ses");
   const events = [];
   const runStartedAt = Date.now();
   let lastStep = 0;
@@ -150,9 +139,16 @@ export async function runAgent({
   let sessionRecorded = false;
   let stoppedReason = null;
   const recentFailures = new Map();
+  const toolRetryPolicy = resolveToolRetryPolicy(cfg);
 
   function recordToolRun(run) {
-    pendingToolRuns.push({ ...run, at: new Date().toISOString(), content: String(run.content).slice(0, 2000) });
+    pendingToolRuns.push({
+      ...run,
+      at: new Date().toISOString(),
+      content: String(run.content).slice(0, 2000),
+      code: run.code || (run.ok ? "ok" : "error"),
+      metadata: run.metadata || {}
+    });
   }
 
   function recordSession(sessionId, session) {
@@ -264,48 +260,69 @@ export async function runAgent({
     const selected = toolMap[effectiveName];
     emit({ type: "tool_start", step, maxSteps: stepLimit, tool: effectiveName, summary: effectiveSummary });
     const startedAt = Date.now();
-    let content;
+    let structured;
     let timer = null;
     const toolAbort = new AbortController();
     const onAgentAbort = () => toolAbort.abort();
     activeSignal?.addEventListener("abort", onAgentAbort, { once: true });
+    let transientAttempt = 0;
     try {
-      assertNotCancelled(activeSignal);
-      const timeout = toolTimeoutMs();
-      const runner = selected
-        ? selected.run(effectiveArgs, { signal: mergeAbortSignals([toolAbort.signal, activeSignal]) })
-        : Promise.resolve(`Unknown tool: ${effectiveName}`);
-      content = await Promise.race([
-        runner,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => {
-            toolAbort.abort();
-            reject(new Error(`Tool ${effectiveName} timed out after ${timeout}ms`));
-          }, timeout);
-        })
-      ]);
-    } catch (error) {
-      if (activeSignal?.aborted || signal?.aborted || toolAbort.signal.aborted) {
-        throw new AgentCancelledError({ events, style: progressStyle });
+      while (true) {
+        let rawContent;
+        timer = null;
+        try {
+          assertNotCancelled(activeSignal);
+          const timeout = toolTimeoutMs();
+          const runner = selected
+            ? selected.run(effectiveArgs, { signal: mergeAbortSignals([toolAbort.signal, activeSignal]), sessionId })
+            : Promise.resolve(`Unknown tool: ${effectiveName}`);
+          rawContent = await Promise.race([
+            runner,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => {
+                toolAbort.abort();
+                reject(new Error(`Tool ${effectiveName} timed out after ${timeout}ms`));
+              }, timeout);
+            })
+          ]);
+        } catch (error) {
+          if (activeSignal?.aborted || signal?.aborted || toolAbort.signal.aborted) {
+            throw new AgentCancelledError({ events, style: progressStyle });
+          }
+          rawContent = error.message?.includes("timed out after")
+            ? `Tool ${effectiveName} failed: ${error.message}`
+            : `Tool ${effectiveName} failed: ${error.message}`;
+          warn(`Tool ${effectiveName} failed at step ${step}: ${error.message}`);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+
+        structured = normalizeToolResult(effectiveName, rawContent);
+        if (shouldRetryTransient({
+          tool: effectiveName,
+          code: structured.code,
+          attempt: transientAttempt,
+          policy: toolRetryPolicy
+        })) {
+          transientAttempt += 1;
+          structured.metadata = { ...structured.metadata, retries: transientAttempt };
+          continue;
+        }
+        break;
       }
-      content = error.message?.includes("timed out after")
-        ? `Tool ${effectiveName} failed: ${error.message}`
-        : `Tool ${effectiveName} failed: ${error.message}`;
-      warn(`Tool ${effectiveName} failed at step ${step}: ${error.message}`);
     } finally {
-      if (timer) clearTimeout(timer);
       activeSignal?.removeEventListener("abort", onAgentAbort);
       if (!toolAbort.signal.aborted) toolAbort.abort();
     }
-    const outcome = classifyToolResult(effectiveName, content);
-    if (!outcome.ok) {
-      const key = `${effectiveName}:${JSON.stringify(effectiveArgs)}`;
-      const count = (recentFailures.get(key) || 0) + 1;
-      recentFailures.set(key, count);
-      if (count >= 3) {
-        content = `${content}\n\nThis identical tool call has failed ${count} times. Change approach, arguments, or tools.`;
-      }
-    }
+
+    structured = applyDuplicateFailurePolicy(structured, {
+      tool: effectiveName,
+      args: effectiveArgs,
+      failures: recentFailures,
+      policy: toolRetryPolicy
+    });
+    const content = formatToolResultForModel(structured);
+    const outcome = { ok: structured.ok, code: structured.code };
     const durationMs = Date.now() - startedAt;
     emit({
       type: "tool_end",
@@ -320,7 +337,17 @@ export async function runAgent({
       preview: outcome.ok ? extractToolPreview(effectiveName, effectiveArgs, content) : null,
       errorPreview: outcome.ok ? "" : String(content).slice(0, 120)
     });
-    recordToolRun({ sessionId, step, name: effectiveName, ok: outcome.ok, durationMs, args: effectiveArgs, content });
+    recordToolRun({
+      sessionId,
+      step,
+      name: effectiveName,
+      ok: outcome.ok,
+      code: outcome.code,
+      durationMs,
+      args: effectiveArgs,
+      content,
+      metadata: structured.metadata
+    });
     await runHooks("post_tool", {
       tool: effectiveName,
       args: effectiveArgs,
@@ -416,6 +443,12 @@ export async function runAgent({
         trimmed = trimConversation(nonSystem, maxMessages);
         emit({ type: "context_trim", step, maxSteps: stepLimit, before, after: trimmed.length });
       }
+    } else if (cfg.compaction === "deterministic") {
+      trimmed = compactConversationDeterministic(nonSystem, {
+        keepRecent: Math.max(8, Math.floor(maxMessages * 0.4)),
+        todoState: formatActiveTodos(cwd, { sessionId })
+      });
+      emit({ type: "context_compact", step, maxSteps: stepLimit, before, after: trimmed.length, method: "deterministic" });
     } else {
       trimmed = trimConversation(nonSystem, maxMessages);
       emit({ type: "context_trim", step, maxSteps: stepLimit, before, after: trimmed.length });
@@ -503,12 +536,13 @@ export async function runAgent({
   }
 
   function finishRun(content, step, status = "ok") {
+    const finalContent = appendOpenTodosNotice(content, cwd);
     stoppedReason = status;
     emit({ type: "final", step, maxSteps: stepLimit });
     emit({ type: "agent_run_end", step, maxSteps: stepLimit, status, durationMs: Date.now() - runStartedAt });
     recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: status });
     flushState();
-    return returnSession ? { content, sessionId, messages, events } : content;
+    return returnSession ? { content: finalContent, sessionId, messages, events } : finalContent;
   }
 
   debug(`Agent run start: mode=${modeRuntime.getMode()} model=${activeModel} steps=${stepLimit ?? "unlimited"}`);
@@ -540,7 +574,7 @@ export async function runAgent({
       const hadTodo = calls.some((call) => call.function?.name === "todo");
       const modeChange = modeRuntime.consumeModeChange();
       if (modeChange || hadTodo) {
-        if (hadTodo) activeTodos = formatActiveTodos(cwd);
+        if (hadTodo) activeTodos = formatActiveTodos(cwd, { sessionId });
         messages[0] = { role: "system", content: buildSystemContent() };
         if (modeChange) {
           emit({
@@ -580,7 +614,7 @@ export async function runAgent({
     stoppedReason = "step_limit";
     recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: "step_limit" });
     flushState();
-    throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent, style: progressStyle });
+    throw new AgentStepLimitError({ maxSteps: stepLimit, events, partialContent, style: progressStyle, cwd });
   } catch (error) {
     if (!(error instanceof AgentStepLimitError)) {
       const cancelled = error instanceof AgentCancelledError || signal?.aborted;

@@ -1,10 +1,16 @@
+import fs from "node:fs";
 import path from "node:path";
 import { id, loadTodos, saveTodos } from "./config.js";
 
 export const TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 
 function workspaceKey(cwd) {
-  return path.resolve(cwd || process.cwd());
+  const resolved = path.resolve(cwd || process.cwd());
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 function bucket(cwd) {
@@ -30,7 +36,7 @@ export function formatTodoList(items) {
   }).join("\n");
 }
 
-export function addTodo(cwd, text, { status = "pending", tags = [] } = {}) {
+export function addTodo(cwd, text, { status = "pending", tags = [], sessionId = null } = {}) {
   const trimmed = String(text || "").trim();
   if (!trimmed) throw new Error("Todo text is required.");
   const nextStatus = normalizeTodoStatus(status);
@@ -40,6 +46,7 @@ export function addTodo(cwd, text, { status = "pending", tags = [] } = {}) {
     text: trimmed,
     status: nextStatus,
     tags: Array.isArray(tags) ? tags.map(String) : [],
+    sessionId: sessionId ? String(sessionId) : null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -86,8 +93,24 @@ export function clearCompletedTodos(cwd) {
   return removed;
 }
 
-export function formatActiveTodos(cwd) {
-  const items = listTodos(cwd, { status: ["pending", "in_progress"] });
+export function listActiveTodos(cwd, { sessionId = null } = {}) {
+  let items = listTodos(cwd, { status: ["pending", "in_progress"] });
+  if (sessionId) {
+    items = items.filter((item) => !item.sessionId || item.sessionId === sessionId);
+  }
+  return items;
+}
+
+export function clearAllTodos(cwd) {
+  const { todos, bucket: store } = bucket(cwd);
+  const removed = store.items.length;
+  store.items = [];
+  saveTodos(todos);
+  return removed;
+}
+
+export function formatActiveTodos(cwd, { sessionId = null } = {}) {
+  const items = listActiveTodos(cwd, { sessionId });
   if (!items.length) return "";
   return `Workspace todos:\n${formatTodoList(items)}`;
 }

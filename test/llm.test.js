@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { LlmClient, formatProviderHttpError, fromAnthropicMessage, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
+import { LlmClient, formatProviderHttpError, fromAnthropicMessage, parseRetryAfterMs, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
 
 test("converts OpenAI tool schema to Anthropic tool schema", () => {
   const tool = toAnthropicTool({
@@ -126,6 +126,49 @@ test("LlmClient streams Anthropic messages when stream is enabled", async () => 
     });
     assert.equal(response.choices[0].message.content, "Hello");
     assert.deepEqual(deltas, ["Hel", "lo"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("parseRetryAfterMs honors numeric and date Retry-After headers", () => {
+  const secondsResponse = { headers: { get: (name) => (name === "retry-after" ? "2" : null) } };
+  assert.equal(parseRetryAfterMs(secondsResponse), 2000);
+
+  const future = new Date(Date.now() + 1500).toUTCString();
+  const dateResponse = { headers: { get: (name) => (name === "retry-after" ? future : null) } };
+  const delay = parseRetryAfterMs(dateResponse);
+  assert.ok(delay >= 500 && delay <= 3000);
+});
+
+test("LlmClient retries 429 responses using Retry-After", async () => {
+  let attempts = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === "/v1/chat/completions") {
+      attempts += 1;
+      if (attempts === 1) {
+        res.writeHead(429, { "retry-after": "0", "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok-after-retry" } }] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const client = new LlmClient({
+      activeProvider: "byok",
+      activeModel: "mock",
+      providers: { byok: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "sk-test", model: "mock" } }
+    });
+    const response = await client.chat({ messages: [{ role: "user", content: "hello" }] });
+    assert.equal(response.choices[0].message.content, "ok-after-retry");
+    assert.equal(attempts, 2);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

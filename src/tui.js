@@ -9,7 +9,7 @@ import { runAgent } from "./agent.js";
 import { LlmClient } from "./llm.js";
 import { applyPermissionProfile, azyHome, configPath, formatAgentStepLimit, loadConfig, loadState, maskSecret, resolveAgentMaxSteps, saveConfig, saveState, MODES, REASONING_LEVELS, normalizeMode, rotateMode, rotateReasoning } from "./config.js";
 import { loadCustomCommands, resolveCustomCommand } from "./commands.js";
-import { compactConversationWithModel } from "./compaction.js";
+import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
 import { loadHookConfig } from "./hooks.js";
 import { AgentCancelledError, AgentStepLimitError } from "./agent-errors.js";
 import { formatLocalReview, localReview } from "./local-review.js";
@@ -96,7 +96,7 @@ import { trimConversation } from "./conversation.js";
 import { discoverProjectInstructions, listInstructionSources } from "./instructions.js";
 import { expandFileReferences } from "./prompt-expand.js";
 import { execFileCancellable } from "./exec.js";
-import { formatTodoList, listTodos, runTodoAction } from "./todos.js";
+import { formatActiveTodos, formatTodoList, listTodos, runTodoAction } from "./todos.js";
 import { readComposerLine } from "./composer-input.js";
 import { fitTerminalWidth, maxBottomPaneRows, terminalRows, writeInBottomPane } from "./screen.js";
 import { createPromptSession, normalizeTabKey, syncTuiPrompt } from "./terminal-input.js";
@@ -686,6 +686,12 @@ async function handleCommand(line, state, rl = null, promptSession = null) {
         state.conversation = trimConversation(state.conversation, keepRecent);
         console.log(`${warnText(icon("warn"))} llm compact failed (${error.message}); trimmed to ${state.conversation.length}`);
       }
+    } else if (state.cfg.compaction === "deterministic") {
+      state.conversation = compactConversationDeterministic(state.conversation, {
+        keepRecent,
+        todoState: formatActiveTodos(state.cwd)
+      });
+      console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages (deterministic)`);
     } else {
       state.conversation = trimConversation(state.conversation, keepRecent);
       console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages`);

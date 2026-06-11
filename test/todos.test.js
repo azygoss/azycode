@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   addTodo,
+  clearAllTodos,
   clearCompletedTodos,
   completeTodo,
   formatActiveTodos,
+  listActiveTodos,
   listTodos,
   runTodoAction,
   updateTodo
@@ -33,6 +35,29 @@ test("todo actions manage workspace-scoped items", () => {
 
   const removed = clearCompletedTodos(cwd);
   assert.equal(removed, 1);
+  assert.equal(listTodos(cwd).length, 0);
+});
+
+test("todos can be scoped to a session id", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-todos-session-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-session-"));
+  process.env.AZYCODE_HOME = home;
+
+  addTodo(cwd, "Session task", { sessionId: "ses_a" });
+  addTodo(cwd, "Other task", { sessionId: "ses_b" });
+
+  assert.equal(listActiveTodos(cwd, { sessionId: "ses_a" }).length, 1);
+  assert.match(formatActiveTodos(cwd, { sessionId: "ses_a" }), /Session task/);
+  assert.doesNotMatch(formatActiveTodos(cwd, { sessionId: "ses_a" }), /Other task/);
+});
+
+test("clearAllTodos removes every workspace item", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-todos-clear-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-clear-"));
+  process.env.AZYCODE_HOME = home;
+  addTodo(cwd, "One");
+  addTodo(cwd, "Two");
+  assert.equal(clearAllTodos(cwd), 2);
   assert.equal(listTodos(cwd).length, 0);
 });
 

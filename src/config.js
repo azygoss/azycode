@@ -129,7 +129,7 @@ export function defaultConfig() {
   };
 }
 
-export const COMPACTION_MODES = ["trim", "llm"];
+export const COMPACTION_MODES = ["trim", "deterministic", "llm"];
 
 export { defaultSubagents };
 

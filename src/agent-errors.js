@@ -1,3 +1,4 @@
+import { buildStepLimitReport } from "./agent-report.js";
 import { formatAgentRunReport } from "./harness.js";
 
 export class AgentRunError extends Error {
@@ -11,17 +12,9 @@ export class AgentRunError extends Error {
 }
 
 export class AgentStepLimitError extends AgentRunError {
-  constructor({ maxSteps, events = [], partialContent = "", style = "tui" } = {}) {
-    const report = formatAgentRunReport(events, { maxSteps, style });
-    const body = [
-      `Agent stopped after ${maxSteps} steps without a final answer.`,
-      "The model kept requesting tools instead of returning a closing message.",
-      "",
-      "Steps in this run:",
-      report || "  (no steps recorded)",
-      "",
-      "Try: simplify the task, use /compact, or remove agentMaxSteps from config for unlimited runs."
-    ].join("\n");
+  constructor({ maxSteps, events = [], partialContent = "", style = "tui", cwd = process.cwd() } = {}) {
+    const body = buildStepLimitReport({ maxSteps, events, partialContent, cwd, style });
+    const report = body.split("\n").slice(3).join("\n");
     super(body, { events, report, style });
     this.name = "AgentStepLimitError";
     this.maxSteps = maxSteps;
