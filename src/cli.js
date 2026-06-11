@@ -90,11 +90,11 @@ export async function main(argv) {
     case "init": return init();
     case "doctor": return doctor(args);
     case "login": return login(args);
-    case "status": return status();
+    case "status": return status(args);
     case "model": return modelCmd(args);
     case "models": return models(args);
     case "provider": return providerCmd(args);
-    case "health": return health();
+    case "health": return health(args);
     case "dashboard": return dashboard();
     case "tools": return toolsCmd(args);
     case "guard": return guard(args);
@@ -240,6 +240,9 @@ function commandHelp(topic) {
         "azycode config set profile <normal|read-only|plan-only|safe-write|trusted-workspace|full-auto>",
         "azycode config set guard enabled <true|false>",
         "azycode config set compaction <trim|deterministic|llm>",
+        "azycode config set api-mode <chat|responses>",
+        "azycode status --json",
+        "azycode health --json",
         "azycode todo list|active|clear [--json]",
         "azycode config export [file]"
       ],
@@ -725,8 +728,37 @@ async function benchCmd(args) {
   throw new Error("Usage: azycode bench <list|run> [--mock] [--json]");
 }
 
-async function status() {
+async function status(args = []) {
+  const flags = parseFlags(args);
   const cfg = loadConfig();
+  let remote = null;
+  if (cfg.activeProvider) {
+    try {
+      const client = new LlmClient(cfg);
+      const models = await client.listModels();
+      const count = Array.isArray(models) ? models.length : Object.keys(models || {}).length;
+      remote = { ok: true, modelCount: count };
+    } catch (error) {
+      remote = { ok: false, error: error.message };
+    }
+  }
+  const diagnostics = cfg.activeProvider
+    ? providerDiagnostics(cfg, cfg.activeProvider, cfg.activeModel)
+    : null;
+  if (flags.json) {
+    console.log(JSON.stringify({
+      mode: cfg.mode,
+      reasoning: cfg.reasoning,
+      alwaysApprove: Boolean(cfg.alwaysApprove || cfg.mode === "always-approve"),
+      compaction: cfg.compaction || "trim",
+      activeProvider: cfg.activeProvider || null,
+      activeModel: cfg.activeModel || null,
+      providers: Object.keys(cfg.providers || {}),
+      remote,
+      diagnostics
+    }, null, 2));
+    return;
+  }
   console.log("");
   console.log(`${bold("Status")}`);
   console.log(rule(64, { char: "─", color: "rule" }));
@@ -739,6 +771,22 @@ async function status() {
     ["active model", cfg.activeModel || "(none)"]
   ];
   for (const row of keyValueList(overview)) console.log(`  ${row}`);
+  if (diagnostics) {
+    console.log("");
+    console.log(`${brand(icon("chevronRight"))} ${bold("Active model capabilities")}`);
+    const capRows = [
+      ["api mode", diagnostics.apiMode],
+      ["protocol", diagnostics.protocol],
+      ["path", diagnostics.activePath],
+      ["tools", diagnostics.supportsTools ? badge("ok") : badge("off")],
+      ["streaming", diagnostics.supportsStreaming ? badge("ok") : badge("off")],
+      ["reasoning", diagnostics.supportsReasoningEffort ? badge("ok") : badge("off")]
+    ];
+    for (const row of keyValueList(capRows)) console.log(`  ${row}`);
+    if (diagnostics.lastFailure) {
+      console.log(`  ${warnText("last failure")}: ${faint(diagnostics.lastFailure.message)}`);
+    }
+  }
   const providerRows = Object.entries(cfg.providers || {}).map(([name, p]) => {
     const preset = providerPreset(name);
     return {
@@ -766,17 +814,14 @@ async function status() {
   if (cfg.activeProvider) {
     console.log("");
     console.log(`${brand(icon("chevronRight"))} ${bold("Remote")}`);
-    try {
-      const client = new LlmClient(cfg);
-      const models = await client.listModels();
-      const count = Array.isArray(models) ? models.length : Object.keys(models || {}).length;
-      const remote = [["status", `${statusDot("ok")} ${successText("ok")} ${faint(`(${count} models visible)`)}`]];
+    if (remote?.ok) {
+      const remoteRows = [["status", `${statusDot("ok")} ${successText("ok")} ${faint(`(${remote.modelCount} models visible)`)}`]];
       const preset = providerPreset(cfg.activeProvider);
-      remote.push(["limits", preset.quota || "provider-specific quota endpoints are not standardized."]);
-      for (const row of keyValueList(remote)) console.log(`  ${row}`);
-    } catch (error) {
-      const remote = [["status", `${statusDot("error")} ${errorText("failed")} ${faint(error.message)}`]];
-      for (const row of keyValueList(remote)) console.log(`  ${row}`);
+      remoteRows.push(["limits", preset.quota || "provider-specific quota endpoints are not standardized."]);
+      for (const row of keyValueList(remoteRows)) console.log(`  ${row}`);
+    } else if (remote) {
+      const remoteRows = [["status", `${statusDot("error")} ${errorText("failed")} ${faint(remote.error)}`]];
+      for (const row of keyValueList(remoteRows)) console.log(`  ${row}`);
     }
   }
   console.log("");
@@ -912,23 +957,53 @@ function providerCmd(args = []) {
   throw new Error("Usage: azycode provider current");
 }
 
-async function health() {
+async function health(args = []) {
+  const flags = parseFlags(args);
   const cfg = loadConfig();
   const names = Object.keys(cfg.providers || {});
   if (!names.length) {
-    console.log("No providers configured. Run 'azycode login <provider>'.");
+    if (flags.json) console.log(JSON.stringify({ providers: [], ok: false, error: "No providers configured." }, null, 2));
+    else console.log("No providers configured. Run 'azycode login <provider>'.");
     return;
   }
   const results = await Promise.all(names.map(async (name) => {
+    const diagnostics = providerDiagnostics(cfg, name);
     try {
       const client = new LlmClient(cfg, name);
       const result = await client.listModels();
       const count = Array.isArray(result) ? result.length : Object.keys(result || {}).length;
-      return { name, ok: true, count, active: cfg.activeProvider === name };
+      return {
+        name,
+        ok: true,
+        count,
+        active: cfg.activeProvider === name,
+        diagnostics,
+        model: diagnostics.model,
+        protocol: diagnostics.protocol,
+        apiMode: diagnostics.apiMode,
+        supportsTools: diagnostics.supportsTools,
+        supportsStreaming: diagnostics.supportsStreaming
+      };
     } catch (error) {
-      return { name, ok: false, error: error.message, active: cfg.activeProvider === name };
+      return {
+        name,
+        ok: false,
+        error: error.message,
+        active: cfg.activeProvider === name,
+        diagnostics,
+        lastFailure: diagnostics.lastFailure
+      };
     }
   }));
+  if (flags.json) {
+    console.log(JSON.stringify({
+      ok: results.every((result) => result.ok),
+      activeProvider: cfg.activeProvider || null,
+      providers: results
+    }, null, 2));
+    if (results.some((result) => !result.ok)) process.exitCode = 1;
+    return;
+  }
   for (const line of renderTable(results.map((result) => ({
     provider: result.active ? `${result.name} *` : result.name,
     status: result.ok ? badge("ok") : badge("failed"),
@@ -978,6 +1053,15 @@ async function configCmd(args) {
       throw new Error(`Compaction must be one of: ${COMPACTION_MODES.join(", ")}`);
     }
     cfg.compaction = mode;
+  } else if (args[0] === "set" && (args[1] === "api-mode" || args[1] === "apiMode")) {
+    const mode = args[2];
+    if (!["chat", "responses"].includes(mode)) {
+      throw new Error("API mode must be one of: chat, responses");
+    }
+    if (!cfg.activeProvider) throw new Error("No active provider. Run 'azycode login <provider>'.");
+    cfg.providers ||= {};
+    cfg.providers[cfg.activeProvider] ||= {};
+    cfg.providers[cfg.activeProvider].apiMode = mode;
   } else if (args[0] === "set" && args[1] === "sandbox") {
     const key = args[2];
     const value = args[3];

@@ -1,4 +1,15 @@
-import { chatPathFor, providerConfig, resolveProtocol } from "./providers.js";
+import { activeApiPath, chatPathFor, providerConfig, resolveProtocol, responsesPathFor } from "./providers.js";
+import { buildOpenAiChatPayload, buildResponsesPayload, resolveProviderCapabilities } from "./provider-capabilities.js";
+import { recordProviderFailure } from "./provider-errors.js";
+import {
+  applyAnthropicStreamEvent,
+  createAnthropicStreamState,
+  createOpenAiStreamState,
+  finalizeAnthropicStream,
+  finalizeOpenAiStream,
+  parseAnthropicSseChunk,
+  applyOpenAiStreamChunk
+} from "./stream-parse.js";
 import { debug, warn } from "./logger.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -125,31 +136,46 @@ export class LlmClient {
 
   async chat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
     const selectedModel = model || this.provider.model;
-    const protocol = resolveProtocol(this.provider, selectedModel);
-    if (protocol === "anthropic-messages") {
-      return this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta });
+    const capabilities = resolveProviderCapabilities(this.provider, selectedModel);
+    if (capabilities.supportsAnthropicMessages) {
+      return this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
     }
-    return this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta });
+    if (capabilities.apiMode === "responses" && capabilities.supportsResponsesAPI) {
+      return this.openaiResponses({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+    }
+    return this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
   }
 
-  async openaiChat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
-    const body = {
-      model,
-      messages,
-      stream: Boolean(stream),
-      tools: tools.length ? tools.map((tool) => tool.schema) : undefined,
-      tool_choice: tools.length ? "auto" : undefined
-    };
-    applyReasoning(body, reasoning);
-    if (stream) {
-      return this.openaiChatStream(chatPathFor(this.provider, model), body, signal, onDelta);
+  async openaiChat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null, capabilities = null }) {
+    const caps = capabilities || resolveProviderCapabilities(this.provider, model);
+    const body = buildOpenAiChatPayload({ messages, tools, model, reasoning, capabilities: caps });
+    body.stream = Boolean(stream);
+    const path = chatPathFor(this.provider, model);
+    if (stream && caps.supportsStreaming) {
+      return this.openaiChatStream(path, body, signal, onDelta);
     }
-    const response = await this.request(chatPathFor(this.provider, model), {
+    const response = await this.request(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
     }, signal);
     return response.json();
+  }
+
+  async openaiResponses({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null, capabilities = null }) {
+    const caps = capabilities || resolveProviderCapabilities(this.provider, model);
+    const body = buildResponsesPayload({ messages, tools, model, reasoning, capabilities: caps });
+    const path = responsesPathFor(this.provider);
+    if (stream && caps.supportsStreaming) {
+      return this.openaiResponsesStream(path, body, signal, onDelta);
+    }
+    const response = await this.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }, signal);
+    const raw = await response.json();
+    return fromResponsesPayload(raw);
   }
 
   async openaiChatStream(path, body, signal = null, onDelta = null) {
@@ -162,13 +188,7 @@ export class LlmClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    const message = {
-      role: "assistant",
-      content: "",
-      tool_calls: []
-    };
-    let usage = null;
-    let finishReason = null;
+    let state = createOpenAiStreamState();
 
     while (true) {
       const { value, done } = await reader.read();
@@ -185,53 +205,90 @@ export class LlmClient {
         try {
           chunk = JSON.parse(payload);
         } catch {
+          state = { ...state, malformedChunks: (state.malformedChunks || 0) + 1 };
           continue;
         }
-        usage = chunk.usage || usage;
-        const choice = chunk.choices?.[0];
-        if (!choice) continue;
-        finishReason = choice.finish_reason || finishReason;
-        const delta = choice.delta || {};
-        if (delta.content) {
-          message.content += delta.content;
-          onDelta?.({ content: delta.content });
+        const delta = chunk.choices?.[0]?.delta || {};
+        if (delta.content) onDelta?.({ content: delta.content });
+        state = applyOpenAiStreamChunk(state, chunk);
+      }
+    }
+
+    return finalizeOpenAiStream(state);
+  }
+
+  async openaiResponsesStream(path, body, signal = null, onDelta = null) {
+    const response = await this.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ ...body, stream: true })
+    }, signal);
+    if (!response.body) throw new Error("Streaming response missing body.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    const toolCalls = [];
+    let finishReason = null;
+    let usage = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let lineBreak;
+      while ((lineBreak = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, lineBreak).trim();
+        buffer = buffer.slice(lineBreak + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let event;
+        try {
+          event = JSON.parse(payload);
+        } catch {
+          continue;
         }
-        for (const call of delta.tool_calls || []) {
-          const index = call.index ?? message.tool_calls.length;
-          if (!message.tool_calls[index]) {
-            message.tool_calls[index] = {
-              id: call.id || "",
-              type: "function",
-              function: { name: call.function?.name || "", arguments: "" }
-            };
+        usage = event.response?.usage || event.usage || usage;
+        finishReason = event.response?.status || event.type || finishReason;
+        for (const item of event.response?.output || event.output || []) {
+          if (item.type === "message" && item.content) {
+            for (const part of item.content) {
+              if (part.type === "output_text" && part.text) {
+                text += part.text;
+                onDelta?.({ content: part.text });
+              }
+            }
           }
-          const target = message.tool_calls[index];
-          if (call.id) target.id = call.id;
-          if (call.function?.name) target.function.name = call.function.name;
-          if (call.function?.arguments) target.function.arguments += call.function.arguments;
+          if (item.type === "function_call") {
+            toolCalls.push({
+              id: item.call_id || item.id || `call_${toolCalls.length}`,
+              type: "function",
+              function: {
+                name: item.name,
+                arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {})
+              }
+            });
+          }
         }
       }
     }
 
-    if (message.tool_calls.length) {
-      message.tool_calls = message.tool_calls.filter(Boolean);
-    } else {
-      delete message.tool_calls;
-    }
-
+    const message = {
+      role: "assistant",
+      content: text,
+      tool_calls: toolCalls.length ? toolCalls : undefined
+    };
+    if (!message.tool_calls) delete message.tool_calls;
     return {
       id: "stream",
       object: "chat.completion",
-      choices: [{
-        index: 0,
-        finish_reason: finishReason,
-        message
-      }],
+      choices: [{ index: 0, finish_reason: finishReason, message }],
       usage
     };
   }
 
-  async anthropicMessages({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
+  async anthropicMessages({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null, capabilities = null }) {
     const { system, anthropicMessages } = toAnthropicMessages(messages);
     const body = {
       model,
@@ -241,9 +298,10 @@ export class LlmClient {
       messages: anthropicMessages,
       tools: tools.length ? tools.map((tool) => toAnthropicTool(tool.schema)) : undefined
     };
-    applyReasoning(body, reasoning);
+    const caps = capabilities || resolveProviderCapabilities(this.provider, model);
+    if (caps.supportsReasoningEffort && reasoning) applyReasoning(body, reasoning);
     const path = chatPathFor(this.provider, model);
-    if (stream) {
+    if (stream && caps.supportsStreaming) {
       return this.anthropicMessagesStream(path, body, signal, onDelta);
     }
     const response = await this.request(path, {
@@ -272,11 +330,7 @@ export class LlmClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let messageId = "stream";
-    let text = "";
-    const toolBlocks = new Map();
-    let finishReason = null;
-    let usage = null;
+    let state = createAnthropicStreamState();
 
     while (true) {
       const { value, done } = await reader.read();
@@ -286,70 +340,23 @@ export class LlmClient {
       while ((eventEnd = buffer.indexOf("\n\n")) >= 0) {
         const chunk = buffer.slice(0, eventEnd);
         buffer = buffer.slice(eventEnd + 2);
-        let data = "";
-        for (const line of chunk.split("\n")) {
-          if (line.startsWith("data:")) data = line.slice(5).trim();
-        }
-        if (!data) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          continue;
-        }
-        if (parsed.type === "message_start") {
-          messageId = parsed.message?.id || messageId;
-        } else if (parsed.type === "content_block_start") {
-          const block = parsed.content_block;
-          if (block?.type === "tool_use") {
-            toolBlocks.set(parsed.index, {
-              id: block.id || "",
-              name: block.name || "",
-              arguments: ""
-            });
+        const parsed = parseAnthropicSseChunk(chunk, state);
+        state = parsed.state;
+        const dataLine = chunk.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+        if (dataLine) {
+          try {
+            const event = JSON.parse(dataLine);
+            if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+              onDelta?.({ content: event.delta.text });
+            }
+          } catch {
+            // ignore malformed chunk
           }
-        } else if (parsed.type === "content_block_delta") {
-          const delta = parsed.delta;
-          if (delta?.type === "text_delta" && delta.text) {
-            text += delta.text;
-            onDelta?.({ content: delta.text });
-          } else if (delta?.type === "input_json_delta" && delta.partial_json) {
-            const block = toolBlocks.get(parsed.index);
-            if (block) block.arguments += delta.partial_json;
-          }
-        } else if (parsed.type === "message_delta") {
-          finishReason = parsed.delta?.stop_reason || finishReason;
-          usage = parsed.usage || usage;
         }
       }
     }
 
-    const toolCalls = [...toolBlocks.entries()]
-      .sort((left, right) => left[0] - right[0])
-      .map(([, block]) => ({
-        id: block.id,
-        type: "function",
-        function: {
-          name: block.name,
-          arguments: block.arguments || "{}"
-        }
-      }));
-    const message = {
-      role: "assistant",
-      content: text,
-      tool_calls: toolCalls.length ? toolCalls : undefined
-    };
-    if (!message.tool_calls) delete message.tool_calls;
-    return {
-      id: messageId,
-      object: "chat.completion",
-      choices: [{
-        index: 0,
-        finish_reason: finishReason,
-        message
-      }],
-      usage
-    };
+    return finalizeAnthropicStream(state);
   }
 
   async request(path, init, signal = null) {
@@ -364,10 +371,57 @@ export class LlmClient {
     }, { signal });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(formatProviderHttpError(this.provider.name, response.status, text));
+      const message = formatProviderHttpError(this.provider.name, response.status, text);
+      recordProviderFailure({
+        provider: this.provider.name,
+        status: response.status,
+        message,
+        path
+      });
+      throw new Error(message);
     }
     return response;
   }
+}
+
+export function fromResponsesPayload(raw) {
+  const output = raw.output || raw.response?.output || [];
+  let text = "";
+  const toolCalls = [];
+  for (const item of output) {
+    if (item.type === "message") {
+      for (const part of item.content || []) {
+        if (part.type === "output_text") text += part.text || "";
+        if (part.type === "text") text += part.text || "";
+      }
+    }
+    if (item.type === "function_call" || item.type === "tool_call") {
+      toolCalls.push({
+        id: item.call_id || item.id || `call_${toolCalls.length}`,
+        type: "function",
+        function: {
+          name: item.name,
+          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || item.input || {})
+        }
+      });
+    }
+  }
+  const message = {
+    role: "assistant",
+    content: text || raw.output_text || "",
+    tool_calls: toolCalls.length ? toolCalls : undefined
+  };
+  if (!message.tool_calls) delete message.tool_calls;
+  return {
+    id: raw.id || "responses",
+    object: "chat.completion",
+    choices: [{
+      index: 0,
+      finish_reason: raw.status || raw.stop_reason || null,
+      message
+    }],
+    usage: raw.usage || raw.response?.usage || null
+  };
 }
 
 export function formatProviderHttpError(providerName, status, body = "") {
@@ -388,6 +442,8 @@ export function applyReasoning(body, reasoning) {
     thinking: reasoning === "minimal" ? false : { type: "enabled", budget: reasoning }
   };
 }
+
+
 
 export function assistantMessageFromCompletion(completion) {
   return completion?.choices?.[0]?.message || completion?.message || null;

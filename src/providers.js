@@ -1,7 +1,15 @@
+import { resolveProviderCapabilities } from "./provider-capabilities.js";
+import { getLastProviderFailure } from "./provider-errors.js";
+
 export const PROVIDERS = {
   openai: {
     label: "OpenAI API / Codex models",
     protocol: "openai-chat",
+    capabilities: {
+      supportsResponsesAPI: true,
+      supportsVision: true,
+      maxOutputTokens: 16384
+    },
     baseUrl: "https://api.openai.com/v1",
     modelsPath: "/models",
     chatPath: "/chat/completions",
@@ -122,8 +130,12 @@ export const PROVIDERS = {
     baseUrl: "",
     modelsPath: "/models",
     chatPath: "/chat/completions",
+    responsesPath: "/responses",
     defaultModel: "",
     envKey: "AZYCODE_API_KEY",
+    capabilities: {
+      supportsResponsesAPI: true
+    },
     quota: "BYOK quota depends on the custom endpoint."
   }
 };
@@ -223,19 +235,43 @@ export function chatPathFor(provider, model = provider.model) {
     : provider.chatPath || "/chat/completions";
 }
 
-export function providerDiagnostics(cfg, name = cfg.activeProvider) {
+export function responsesPathFor(provider) {
+  return provider.responsesPath || "/responses";
+}
+
+export function activeApiPath(provider, model = provider.model) {
+  const capabilities = resolveProviderCapabilities(provider, model);
+  if (capabilities.apiMode === "responses") return responsesPathFor(provider);
+  return chatPathFor(provider, model);
+}
+
+export function providerDiagnostics(cfg, name = cfg.activeProvider, model = cfg.activeModel) {
   const provider = providerConfig(cfg, name);
+  const selectedModel = model || provider.model;
+  const capabilities = resolveProviderCapabilities(provider, selectedModel);
+  const lastFailure = getLastProviderFailure();
   return {
     name: provider.name,
     label: provider.label,
     baseUrl: provider.baseUrl,
-    model: provider.model,
+    model: selectedModel,
     models: provider.models,
-    protocol: resolveProtocol(provider, provider.model),
-    chatPath: chatPathFor(provider, provider.model),
+    protocol: capabilities.protocol,
+    apiMode: capabilities.apiMode,
+    activePath: activeApiPath(provider, selectedModel),
+    chatPath: chatPathFor(provider, selectedModel),
+    responsesPath: responsesPathFor(provider),
+    capabilities,
     hasApiKey: Boolean(provider.apiKey),
-    apiKeySource: cfg.providers?.[name]?.apiKey ? "config" : provider.envKey,
+    apiKeySource: cfg.providers?.[name]?.apiKey ? "config" : (process.env[provider.envKey] ? "env" : provider.envKey),
+    supportsTools: capabilities.supportsTools,
+    supportsStreaming: capabilities.supportsStreaming,
+    supportsReasoningEffort: capabilities.supportsReasoningEffort,
+    supportsVision: capabilities.supportsVision,
+    maxInputTokens: capabilities.maxInputTokens,
+    maxOutputTokens: capabilities.maxOutputTokens,
     quota: provider.quota || null,
-    note: provider.note || null
+    note: provider.note || null,
+    lastFailure: lastFailure && lastFailure.provider === name ? lastFailure : null
   };
 }

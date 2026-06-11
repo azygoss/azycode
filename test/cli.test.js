@@ -780,6 +780,39 @@ test("session and subagent lists use compact tables", () => {
   assert.match(run(["subagent", "list"], { AZYCODE_HOME: home }), /planner\s+high\s+\(active\)/);
 });
 
+test("status and health support json output", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-json-"));
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({
+    activeProvider: "byok",
+    activeModel: "mock",
+    mode: "build",
+    reasoning: "medium",
+    providers: {
+      byok: {
+        baseUrl: "http://127.0.0.1:9/v1",
+        apiKey: "sk-test",
+        model: "mock"
+      }
+    }
+  }, null, 2));
+  const statusJson = JSON.parse(run(["status", "--json"], { AZYCODE_HOME: home }));
+  assert.equal(statusJson.activeProvider, "byok");
+  assert.equal(statusJson.diagnostics.model, "mock");
+  assert.equal(statusJson.diagnostics.supportsTools, true);
+
+  let healthStdout = "";
+  try {
+    healthStdout = run(["health", "--json"], { AZYCODE_HOME: home });
+  } catch (error) {
+    healthStdout = error.stdout || "";
+  }
+  const healthJson = JSON.parse(healthStdout);
+  assert.equal(healthJson.activeProvider, "byok");
+  assert.equal(healthJson.providers.length, 1);
+  assert.equal(healthJson.providers[0].name, "byok");
+  assert.equal(healthJson.providers[0].diagnostics.supportsStreaming, true);
+});
+
 test("todo command lists active items and clears workspace todos", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-todo-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-todo-work-"));

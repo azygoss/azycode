@@ -32,6 +32,9 @@ test("providerDiagnostics reports protocol and key source", () => {
   assert.equal(diag.protocol, "anthropic-messages");
   assert.equal(diag.chatPath, "/messages");
   assert.equal(diag.apiKeySource, "config");
+  assert.equal(diag.supportsTools, true);
+  assert.equal(diag.supportsStreaming, true);
+  assert.ok(diag.capabilities);
 });
 
 test("providerModelList merges saved and preset models without duplicates", () => {

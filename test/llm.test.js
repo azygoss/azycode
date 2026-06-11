@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { LlmClient, formatProviderHttpError, fromAnthropicMessage, parseRetryAfterMs, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
+import { LlmClient, formatProviderHttpError, fromAnthropicMessage, fromResponsesPayload, parseRetryAfterMs, toAnthropicMessages, toAnthropicTool } from "../src/llm.js";
+import { getLastProviderFailure } from "../src/provider-errors.js";
 
 test("converts OpenAI tool schema to Anthropic tool schema", () => {
   const tool = toAnthropicTool({
@@ -169,6 +170,95 @@ test("LlmClient retries 429 responses using Retry-After", async () => {
     const response = await client.chat({ messages: [{ role: "user", content: "hello" }] });
     assert.equal(response.choices[0].message.content, "ok-after-retry");
     assert.equal(attempts, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("fromResponsesPayload normalizes function calls to chat completion shape", () => {
+  const normalized = fromResponsesPayload({
+    id: "resp_1",
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        content: [{ type: "output_text", text: "Use a tool" }]
+      },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "read_file",
+        arguments: "{\"file\":\"README.md\"}"
+      }
+    ],
+    usage: { input_tokens: 3, output_tokens: 5 }
+  });
+  const message = normalized.choices[0].message;
+  assert.equal(message.content, "Use a tool");
+  assert.equal(message.tool_calls[0].function.name, "read_file");
+});
+
+test("LlmClient uses responses endpoint when apiMode is responses", async () => {
+  const seen = {};
+  const server = http.createServer((req, res) => {
+    if (req.url === "/v1/responses") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        seen.path = req.url;
+        seen.body = JSON.parse(body);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({
+          id: "resp_1",
+          status: "completed",
+          output: [{ type: "message", content: [{ type: "output_text", text: "via responses" }] }]
+        }));
+      });
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const client = new LlmClient({
+      activeProvider: "byok",
+      activeModel: "mock",
+      providers: {
+        byok: {
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          apiKey: "sk-test",
+          model: "mock",
+          apiMode: "responses"
+        }
+      }
+    });
+    const response = await client.chat({ messages: [{ role: "user", content: "hello" }] });
+    assert.equal(seen.path, "/v1/responses");
+    assert.equal(response.choices[0].message.content, "via responses");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("LlmClient records last provider failure on HTTP errors", async () => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "bad key" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const client = new LlmClient({
+      activeProvider: "byok",
+      activeModel: "mock",
+      providers: { byok: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "sk-bad", model: "mock" } }
+    });
+    await assert.rejects(() => client.chat({ messages: [{ role: "user", content: "hello" }] }), /authentication failed/);
+    const failure = getLastProviderFailure();
+    assert.equal(failure.provider, "byok");
+    assert.equal(failure.status, 401);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
