@@ -378,19 +378,27 @@ function buildRepoSummary(root, builder) {
 async function readFileExcerpt(fullPath, candidate, options = {}) {
   const stat = fs.statSync(fullPath);
   const maxPerFile = Math.min(Number(options.maxBytesPerFile) || 12000, 120000);
-  const buffer = (await fs.promises.readFile(fullPath)).subarray(0, maxPerFile);
-  if (buffer.includes(0)) {
-    return { content: `[binary file ${stat.size} bytes]`, lines: "0-0", truncated: false };
+  const readLen = Math.min(maxPerFile, stat.size);
+  const fd = await fs.promises.open(fullPath, "r");
+  try {
+    const buffer = Buffer.alloc(readLen);
+    const { bytesRead } = await fd.read(buffer, 0, readLen, 0);
+    const slice = buffer.subarray(0, bytesRead);
+    if (slice.includes(0)) {
+      return { content: `[binary file ${stat.size} bytes]`, lines: "0-0", truncated: false };
+    }
+    const text = slice.toString("utf8");
+    const lines = text.split("\n");
+    const truncated = stat.size > maxPerFile;
+    const numbered = lines.map((line, i) => `${String(i + 1).padStart(4)} ${line}`).join("\n");
+    return {
+      content: numbered,
+      lines: `1-${lines.length}`,
+      truncated
+    };
+  } finally {
+    await fd.close();
   }
-  const text = buffer.toString("utf8");
-  const lines = text.split("\n");
-  const truncated = stat.size > maxPerFile || text.length < stat.size;
-  const numbered = lines.map((line, i) => `${String(i + 1).padStart(4)} ${line}`).join("\n");
-  return {
-    content: numbered,
-    lines: `1-${lines.length}`,
-    truncated
-  };
 }
 
 function summarizeFile(file, content) {

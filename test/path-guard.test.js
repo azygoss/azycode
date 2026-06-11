@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTools } from "../src/tools.js";
-import { evaluateWritePath, isProtectedWritePath } from "../src/path-guard.js";
+import { evaluateWritePath, extractUnifiedDiffPaths, isProtectedWritePath } from "../src/path-guard.js";
 import { defaultConfig } from "../src/config.js";
 
 test("isProtectedWritePath blocks sensitive paths", () => {
@@ -40,6 +40,17 @@ test("write_file blocks protected .env path", async () => {
     () => writeFile.run({ file: ".env", content: "SECRET=1\n" }),
     /protected path blocked/i
   );
+});
+
+test("extractUnifiedDiffPaths collects b/ destinations from patch", () => {
+  const patch = [
+    "diff --git a/.env b/.env",
+    "--- /dev/null",
+    "+++ b/.env",
+    "@@ -0,0 +1 @@",
+    "+SECRET=1"
+  ].join("\n");
+  assert.deepEqual(extractUnifiedDiffPaths(patch), [".env"]);
 });
 
 test("write_file works on non-protected path on feature branch", async () => {

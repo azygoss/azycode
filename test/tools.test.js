@@ -7,6 +7,27 @@ import { execFileSync } from "node:child_process";
 import { createTools } from "../src/tools.js";
 import { createModeRuntime } from "../src/agent-runtime.js";
 
+test("apply_patch blocks patches targeting protected paths", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature/patch"], { cwd: dir, stdio: "ignore" });
+  const tools = createTools({
+    cwd: dir,
+    cfg: { alwaysApprove: true, toolPolicy: {}, gitGuard: { enabled: true, blockBranches: ["main"] } }
+  });
+  const applyPatch = tools.find((tool) => tool.name === "apply_patch");
+  const patch = [
+    "diff --git a/.env b/.env",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/.env",
+    "@@ -0,0 +1 @@",
+    "+SECRET=bad",
+    ""
+  ].join("\n");
+  await assert.rejects(() => applyPatch.run({ patch }), /protected path blocked/i);
+});
+
 test("apply_patch tool applies a unified diff inside workspace", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

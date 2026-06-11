@@ -10,7 +10,7 @@ import { clearContextPackCache } from "./context.js";
 import { listMcpToolCatalog } from "./mcp.js";
 import { resolveToolPermission } from "./permissions.js";
 import { evaluateShellPolicy } from "./shell-risk.js";
-import { assertWritePathAllowed, evaluateWritePath } from "./path-guard.js";
+import { assertPatchPathsAllowed, assertWritePathAllowed, evaluateWritePath } from "./path-guard.js";
 import { resolveShellInvocation } from "./execution-policy.js";
 import { debug } from "./logger.js";
 
@@ -216,7 +216,7 @@ export function createTools({
           try {
             const { stdout } = await execFileCancellable(
               "git",
-              ["grep", "-n", "-I", "--line-number", query, "--", "."],
+              ["grep", "-n", "-I", "--line-number", "-e", query, "--", "."],
               { ...execOpts, cwd: base }
             );
             return limitLines(stdout || "(no matches)", limit);
@@ -224,9 +224,9 @@ export function createTools({
             if (gitError.message === "Aborted" || runOptions.signal?.aborted) throw gitError;
             if (gitError.stdout) return limitLines(gitError.stdout, limit);
             try {
-              const grepArgs = ["-rn"];
+              const grepArgs = ["-rn", "-e", query];
               for (const excluded of SEARCH_EXCLUDE_DIRS) grepArgs.push(`--exclude-dir=${excluded}`);
-              grepArgs.push(query, base);
+              grepArgs.push(base);
               const { stdout } = await execFileCancellable("grep", grepArgs, execOpts);
               return limitLines(stdout || "(no matches)", limit);
             } catch (grepError) {
@@ -335,7 +335,11 @@ export function createTools({
       },
       required: ["patch"]
     }, async ({ patch, checkOnly = false }, runOptions = {}) => {
-      if (!checkOnly) assertGuard(root, policySource(), "apply_patch");
+      const activeCfg = policySource();
+      if (!checkOnly) {
+        assertGuard(root, activeCfg, "apply_patch");
+        assertPatchPathsAllowed(root, patch, activeCfg);
+      }
       const temp = path.join(os.tmpdir(), `azycode-patch-${process.pid}-${Date.now()}.diff`);
       fs.writeFileSync(temp, patch, "utf8");
       try {
@@ -577,7 +581,7 @@ export function createTools({
         const allowed = await approved(entry.name, args, policy(), activeCfg, confirmTool, onApproval, permission);
         if (!allowed) return "Tool call rejected by user.";
         sessionApprovals.add(entry.name);
-        if (["write_file", "edit_file", "apply_patch", "delete_path", "copy_path", "move_path", "make_dir"].includes(entry.name)) {
+        if (["write_file", "edit_file", "delete_path", "copy_path", "move_path", "make_dir"].includes(entry.name)) {
           const pathArg = args.file || args.path || args.to || args.dir;
           if (pathArg) guardWritePath(pathArg, { approved: true });
         }

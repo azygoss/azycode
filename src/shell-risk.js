@@ -146,10 +146,13 @@ export function evaluateShellPolicy(command, cfg = {}) {
     if (shellPolicy === "deny") {
       return { decision: "deny", level, reason: "Network command denied by shell tool policy.", classification };
     }
-    if (shellPolicy === "auto" || autoNetwork || profile === "full-auto") {
-      return { decision: "auto", level, reason: "Network command auto-approved by policy.", classification };
+    if (autoNetwork) {
+      return { decision: "auto", level, reason: "Network command auto-approved by shellPolicy.autoNetwork.", classification };
     }
-    return { decision: "ask", level, reason: "Network command requires approval.", classification };
+    if (profile === "full-auto" && shellPolicy === "auto") {
+      return { decision: "auto", level, reason: "Network command auto-approved in full-auto profile.", classification };
+    }
+    return { decision: "ask", level, reason: "Network command requires approval (shell auto does not imply network auto).", classification };
   }
   if (level === "build-test") {
     if (shellPolicy === "deny") {

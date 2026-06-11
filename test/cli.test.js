@@ -66,6 +66,18 @@ test("tool policy command updates config", () => {
   assert.match(search, /parameters\s+query, dir, maxResults, contextLines/);
 });
 
+test("config set profile accepts plan-only and trusted-workspace", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
+  run(["config", "set", "profile", "plan-only"], { AZYCODE_HOME: home });
+  let cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.permissionProfile, "plan-only");
+  assert.equal(cfg.toolPolicy.shell, "deny");
+  run(["config", "set", "profile", "trusted-workspace"], { AZYCODE_HOME: home });
+  cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  assert.equal(cfg.permissionProfile, "trusted-workspace");
+  assert.equal(cfg.toolPolicy.write_file, "auto");
+});
+
 test("health reports no configured providers", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-"));
   const out = run(["health"], { AZYCODE_HOME: home });

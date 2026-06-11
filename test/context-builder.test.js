@@ -42,6 +42,18 @@ test("contextPack includes prompt hash in cache invalidation", async () => {
   assert.notStrictEqual(first, second);
 });
 
+test("readFileExcerpt bounds reads for large files", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-"));
+  const big = "x".repeat(500_000);
+  fs.writeFileSync(path.join(dir, "big.json"), `{"data":"${big}"}\n`);
+  clearContextPackCache();
+  const pack = await contextPack(dir, { maxFiles: 5, maxBytes: 200_000, maxBytesPerFile: 4096 });
+  const item = pack.files.find((f) => f.file === "big.json");
+  assert.ok(item);
+  assert.ok(item.content.length < 20_000);
+  assert.equal(item.truncated, true);
+});
+
 test("adversarial source file is tagged as untrusted included-file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-ctx-"));
   fs.mkdirSync(path.join(dir, "src"));

@@ -935,8 +935,8 @@ async function configCmd(args) {
     cfg.toolPolicy[tool] = mode;
   } else if (args[0] === "set" && args[1] === "profile") {
     const profile = args[2];
-    if (!["normal", "read-only", "safe-write", "full-auto"].includes(profile)) {
-      throw new Error("Profile must be one of: normal, read-only, safe-write, full-auto");
+    if (!PERMISSION_PROFILES.includes(profile)) {
+      throw new Error(`Profile must be one of: ${PERMISSION_PROFILES.join(", ")}`);
     }
     cfg.permissionProfile = profile;
     applyPermissionProfile(cfg);

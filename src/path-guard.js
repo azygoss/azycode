@@ -89,3 +89,26 @@ export function listProtectedPathPatterns(cfg = {}) {
     active: true
   }));
 }
+
+/** Extract destination paths from a unified diff (b/ side). */
+export function extractUnifiedDiffPaths(patch) {
+  const paths = new Set();
+  for (const line of String(patch || "").split(/\r?\n/)) {
+    const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (gitMatch) {
+      if (gitMatch[2] !== "/dev/null") paths.add(gitMatch[2]);
+      continue;
+    }
+    const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (plusMatch && plusMatch[1] !== "/dev/null") paths.add(plusMatch[1]);
+  }
+  return [...paths];
+}
+
+export function assertPatchPathsAllowed(root, patch, cfg, options = {}) {
+  const paths = extractUnifiedDiffPaths(patch);
+  for (const relPath of paths) {
+    assertWritePathAllowed(root, relPath, cfg, options);
+  }
+  return paths;
+}

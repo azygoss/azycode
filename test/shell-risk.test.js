@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyShellCommand, evaluateShellPolicy } from "../src/shell-risk.js";
 import { defaultConfig } from "../src/config.js";
+import { applyPermissionProfile as applyProfile } from "../src/permissions.js";
 
 test("classifyShellCommand detects safe-read commands", () => {
   assert.equal(classifyShellCommand("git status").level, "safe-read");
@@ -42,6 +43,23 @@ test("evaluateShellPolicy always asks for secret-risk", () => {
   cfg.toolPolicy.shell = "auto";
   const result = evaluateShellPolicy("printenv", cfg);
   assert.equal(result.decision, "ask");
+});
+
+test("trusted-workspace asks for network shell despite shell auto", () => {
+  const cfg = defaultConfig();
+  cfg.permissionProfile = "trusted-workspace";
+  applyProfile(cfg);
+  assert.equal(cfg.toolPolicy.shell, "auto");
+  const result = evaluateShellPolicy("curl https://example.com", cfg);
+  assert.equal(result.decision, "ask");
+});
+
+test("full-auto still auto-approves network shell", () => {
+  const cfg = defaultConfig();
+  cfg.permissionProfile = "full-auto";
+  applyProfile(cfg);
+  const result = evaluateShellPolicy("curl https://example.com", cfg);
+  assert.equal(result.decision, "auto");
 });
 
 test("destructive allowed only with explicit config in full-auto", () => {
