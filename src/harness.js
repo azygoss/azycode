@@ -23,7 +23,15 @@ import {
   success as successText,
   timelineRow,
   updateSpinnerLabel,
-  warn as warnText
+  warn as warnText,
+  toolCard,
+  thinkingBlock,
+  liveMetricsBar,
+  costDisplay,
+  estimateCost,
+  toastMessage,
+  richDiffBlock,
+  breadcrumb
 } from "./ui.js";
 
 export const AGENT_EVENT_TYPES = [
@@ -405,9 +413,32 @@ function formatAgentStepLineGrok(event, { maxSteps = null, width = null } = {}) 
   const cols = width || process.stdout.columns || 80;
 
   if (event.type === "model_end" && event.durationMs != null) {
+    if (typeof thinkingBlock === "function") {
+      const lines = thinkingBlock({
+        duration: prettyMs(event.durationMs),
+        tokens: event.usage?.total_tokens || null,
+        model: event.model || null,
+        width: cols
+      });
+      return lines.join("\n");
+    }
     return grokActionRow(`Thought for ${prettyMs(event.durationMs)}`, "", { timestamp: ts, width: cols });
   }
   if (event.type === "tool_end") {
+    if (typeof toolCard === "function") {
+      const verb = grokToolVerb(event.tool);
+      const lines = toolCard({
+        tool: verb,
+        status: event.ok ? "ok" : (formatToolStatus(event) || "failed"),
+        duration: event.durationMs != null ? prettyMs(event.durationMs) : null,
+        summary: event.summary || "",
+        preview: event.preview || null,
+        step: event.step,
+        maxSteps,
+        width: cols
+      });
+      return lines.join("\n");
+    }
     const verb = grokToolVerb(event.tool);
     const detail = event.summary || "";
     const status = formatToolStatus(event);
@@ -918,21 +949,37 @@ export function formatAgentRunSummary(events = [], { style = "cli" } = {}) {
 }
 
 export function formatAgentRunStats(events = [], { maxSteps = null } = {}) {
-  const stats = summarizeAgentRun(events);
+  const runStats = summarizeAgentRun(events);
   const cap = maxSteps
     || events.find((event) => event.maxSteps)?.maxSteps
     || null;
-  return {
-    status: stats.status,
-    steps: stats.steps || null,
+  const usage = extractUsageFromEvents(events);
+  const result = {
+    status: runStats.status,
+    steps: runStats.steps || null,
     maxSteps: cap,
-    toolCalls: stats.toolCalls || null,
-    toolFailures: stats.toolFailures || null,
-    duration: stats.durationMs ? prettyMs(stats.durationMs) : null,
-    tokens: stats.tokens || null,
-    modelMs: stats.totalModelMs ? prettyMs(stats.totalModelMs) : null,
-    toolMs: stats.totalToolMs ? prettyMs(stats.totalToolMs) : null
+    toolCalls: runStats.toolCalls || null,
+    toolFailures: runStats.toolFailures || null,
+    duration: runStats.durationMs ? prettyMs(runStats.durationMs) : null,
+    tokens: runStats.tokens || null,
+    modelMs: runStats.totalModelMs ? prettyMs(runStats.totalModelMs) : null,
+    toolMs: runStats.totalToolMs ? prettyMs(runStats.totalToolMs) : null,
+    model: usage.model || null,
+    inputTokens: usage.inputTokens || null,
+    outputTokens: usage.outputTokens || null
   };
+  if (result.model && typeof estimateCost === "function") {
+    const cost = estimateCost(
+      result.model,
+      result.inputTokens || 0,
+      result.outputTokens || 0
+    );
+    if (cost) {
+      result.cost = `$${cost.totalCost.toFixed(4)}`;
+      result.costValue = cost.totalCost;
+    }
+  }
+  return result;
 }
 
 export function formatSessionEvents(events, { maxSteps = null, style = "cli" } = {}) {
@@ -1134,6 +1181,20 @@ export function toolRunListEntries(toolRuns = [], { limit = 20 } = {}) {
     ok: run.ok ? "ok" : "failed",
     ms: run.durationMs ?? ""
   }));
+}
+
+export function extractUsageFromEvents(events = []) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let model = null;
+  for (const event of events) {
+    if (event.type === "model_end" && event.usage) {
+      inputTokens += event.usage.prompt_tokens || event.usage.input_tokens || 0;
+      outputTokens += event.usage.completion_tokens || event.usage.output_tokens || 0;
+      if (event.model) model = event.model;
+    }
+  }
+  return { inputTokens, outputTokens, model, totalTokens: inputTokens + outputTokens };
 }
 
 export async function withAgentAbort(fn, { onCancel = null } = {}) {

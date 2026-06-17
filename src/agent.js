@@ -23,6 +23,8 @@ import { formatSubagentResults, runSubagentsParallel } from "./subagents.js";
 import { mergeAbortSignals } from "./exec.js";
 import { debug, warn, error as logError } from "./logger.js";
 import { systemForMode } from "./prompts.js";
+import { journalChange, flushJournal } from "./change-journal.js";
+import { flushUsage } from "./usage-tracker.js";
 
 export { systemForMode };
 
@@ -123,7 +125,14 @@ export async function runAgent({
     confirmTool,
     modeRuntime,
     subagentSpawner,
-    onApproval: (event) => emit({ ...event, step: lastStep, maxSteps: stepLimit, summary: summarizeToolArgs(event.tool, event.args) })
+    onApproval: (event) => emit({ ...event, step: lastStep, maxSteps: stepLimit, summary: summarizeToolArgs(event.tool, event.args) }),
+    journalHook: (tool, files) => {
+      try {
+        journalChange(sessionId, tool, files);
+      } catch (err) {
+        debug(`Journal hook failed for ${tool}: ${err.message}`);
+      }
+    }
   });
   let mcp = { tools: [], close: async () => {} };
   try {
@@ -641,6 +650,8 @@ export async function runAgent({
       prompt
     }, hooks, { cwd, signal }).catch(() => {});
     await mcp.close().catch(() => {});
+    try { flushJournal(); } catch { /* best-effort */ }
+    try { flushUsage(); } catch { /* best-effort */ }
     if (!sessionRecorded) {
       recordSession(sessionId, { mode: modeRuntime.getMode(), prompt, messages, events, stopped: stoppedReason || "error" });
     }

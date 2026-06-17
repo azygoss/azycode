@@ -58,7 +58,8 @@ export function createTools({
   confirmTool = null,
   modeRuntime = null,
   onApproval = null,
-  subagentSpawner = null
+  subagentSpawner = null,
+  journalHook = null
 }) {
   const root = path.resolve(cwd);
   const policySource = resolveCfg || (() => cfg);
@@ -556,6 +557,30 @@ export function createTools({
     })] : [])
   ];
 
+  const WRITE_TOOLS = new Set(["write_file", "edit_file", "delete_path", "copy_path", "move_path", "make_dir", "apply_patch"]);
+
+  function collectWritePaths(toolName, args) {
+    const paths = [];
+    const addPath = (relPath) => {
+      if (!relPath || typeof relPath !== "string") return;
+      try {
+        paths.push({ path: relPath, absPath: safePath(root, relPath) });
+      } catch {
+        // path escape, skip
+      }
+    };
+    if (toolName === "write_file" || toolName === "edit_file") addPath(args.file);
+    else if (toolName === "delete_path") addPath(args.path);
+    else if (toolName === "copy_path" || toolName === "move_path") { addPath(args.from); addPath(args.to); }
+    else if (toolName === "make_dir") addPath(args.dir);
+    else if (toolName === "apply_patch" && typeof args.patch === "string") {
+      for (const m of args.patch.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) {
+        addPath(m[2]);
+      }
+    }
+    return paths;
+  }
+
   return tools.map((entry) => ({
     ...entry,
     run: async (args, runOptions = {}) => {
@@ -575,6 +600,10 @@ export function createTools({
           const pathArg = args.file || args.path || args.to || args.dir;
           if (pathArg) guardWritePath(pathArg, { approved: true });
         }
+      }
+      if (WRITE_TOOLS.has(entry.name) && journalHook && activeCfg.changeJournal !== false) {
+        const files = collectWritePaths(entry.name, args);
+        if (files.length) journalHook(entry.name, files);
       }
       const shellKey = entry.name === "shell" && args.command ? `shell:${args.command}` : null;
       const shellApproved = permission.allowed === true

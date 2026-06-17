@@ -23,7 +23,9 @@ export async function readComposerLine({
   onClearScreen,
   completeLine,
   readlineInterface = null,
-  initialRows = 8
+  initialRows = 8,
+  history = [],
+  onHistoryPush = null
 } = {}) {
   return new Promise((resolve) => {
     let line = "";
@@ -32,6 +34,8 @@ export async function readComposerLine({
     let lastPaletteKey = null;
     let layout = reserveBottomPane(initialRows, output);
     let rawModeEnabled = false;
+    let historyIndex = -1;
+    let savedLine = "";
 
     const beginInput = () => {
       readlineInterface?.pause?.();
@@ -117,6 +121,9 @@ export async function readComposerLine({
           finish(resolveSlashSubmit(line, paletteItems(), paletteSelection));
           return;
         }
+        if (line.trim() && typeof onHistoryPush === "function") {
+          onHistoryPush(line.trim());
+        }
         finish(line);
         return;
       }
@@ -157,6 +164,37 @@ export async function readComposerLine({
         onClearScreen?.();
         repaint();
         return;
+      }
+
+      // History navigation (only when NOT in slash command mode)
+      if (!line.startsWith("/") && (key.name === "up" || key.name === "down")) {
+        if (history.length) {
+          if (key.name === "up") {
+            if (historyIndex === -1) {
+              savedLine = line;
+              historyIndex = history.length - 1;
+            } else if (historyIndex > 0) {
+              historyIndex -= 1;
+            }
+            line = history[historyIndex] || "";
+            cursor = line.length;
+            repaint();
+            return;
+          }
+          if (key.name === "down") {
+            if (historyIndex === -1) return;
+            if (historyIndex < history.length - 1) {
+              historyIndex += 1;
+              line = history[historyIndex] || "";
+            } else {
+              historyIndex = -1;
+              line = savedLine;
+            }
+            cursor = line.length;
+            repaint();
+            return;
+          }
+        }
       }
 
       if (line.startsWith("/") && (key.name === "up" || key.name === "down")) {

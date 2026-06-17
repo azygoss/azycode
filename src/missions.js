@@ -735,6 +735,13 @@ function buildMissionPrompt(normalized, missionConversation = []) {
 }
 
 function parseTinyYaml(text) {
+  const parseInline = (value, lineNo) => {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      throw new Error(`Invalid inline JSON at line ${lineNo}: ${error.message}`);
+    }
+  };
   const result = {};
   let currentList = null;
   let currentObject = null;
@@ -802,7 +809,7 @@ function parseTinyYaml(text) {
           continue;
         }
         if (trimmed.startsWith("{")) {
-          nestedList.target.push(JSON.parse(trimmed));
+          nestedList.target.push(parseInline(trimmed, i + 1));
           continue;
         }
         nestedList.target.push(coerceYamlValue(trimmed));
@@ -819,7 +826,7 @@ function parseTinyYaml(text) {
         continue;
       }
       if (trimmed.startsWith("{")) {
-        result[currentList].push(JSON.parse(trimmed));
+        result[currentList].push(parseInline(trimmed, i + 1));
         continue;
       }
       const inlineObject = trimmed.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);

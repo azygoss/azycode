@@ -48,13 +48,14 @@ export function writeInBottomPane(layout, rowOffset, text, stream = defaultOutpu
 
 export function maxBottomPaneRows(stream = defaultOutput) {
   const total = terminalRows(stream);
+  // Reserve a small fixed band for the top pane (welcome screen + prompt).
   const minScroll = Math.max(3, Math.min(5, total - 5));
   return Math.max(4, total - minScroll);
 }
 
 export function reserveBottomPane(rows, stream = defaultOutput) {
   const total = terminalRows(stream);
-  const bottomRows = Math.min(Math.max(4, rows), maxBottomPaneRows(stream));
+  const bottomRows = Math.min(Math.max(1, rows), maxBottomPaneRows(stream));
   const startRow = total - bottomRows;
   const layout = { startRow, bottomRows, scrollEnd: startRow, total };
   setScrollRegion(1, startRow, stream);
@@ -63,7 +64,7 @@ export function reserveBottomPane(rows, stream = defaultOutput) {
 
 export function resizeBottomPane(layout, rows, stream = defaultOutput) {
   const total = terminalRows(stream);
-  const bottomRows = Math.min(Math.max(4, rows), maxBottomPaneRows(stream));
+  const bottomRows = Math.min(Math.max(1, rows), maxBottomPaneRows(stream));
   const startRow = total - bottomRows;
   if (layout?.bottomRows === bottomRows && layout?.startRow === startRow) return layout;
   resetScrollRegion(stream);
@@ -107,8 +108,8 @@ export function prepareTranscriptOutput(stream = defaultOutput, layout = null) {
 export function placeCursorInPane({ layout, rowOffset, column, stream = defaultOutput }) {
   if (!layout) return;
   resetScrollRegion(stream);
-  cursorTo(stream, column, layout.startRow + rowOffset);
   applyScrollRegion(layout, stream);
+  cursorTo(stream, column, layout.startRow + rowOffset);
 }
 
 export function longestCommonPrefix(values) {

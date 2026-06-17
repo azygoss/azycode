@@ -79,6 +79,8 @@ export function defaultConfig() {
     subagentMaxSteps: 8,
     subagentIsolation: "same-workspace",
     maxSubagentDepth: 2,
+    usageTracking: true,
+    changeJournal: true,
     streamResponses: false,
     mcpServers: {},
     hooks: {},
@@ -197,6 +199,8 @@ export function validateConfig(cfg) {
   if (!isolationModes.has(cfg.subagentIsolation)) {
     cfg.subagentIsolation = defaults.subagentIsolation;
   }
+  cfg.usageTracking = cfg.usageTracking !== false;
+  cfg.changeJournal = cfg.changeJournal !== false;
   const policy = cfg.toolPolicy || {};
   for (const key of Object.keys(policy)) {
     if (!KNOWN_TOOL_NAMES.has(key)) {

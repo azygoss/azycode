@@ -11,6 +11,7 @@ import {
   applyOpenAiStreamChunk
 } from "./stream-parse.js";
 import { debug, warn } from "./logger.js";
+import { recordUsage } from "./usage-tracker.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 3;
@@ -43,10 +44,16 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Merge multiple abort signals into one. Returns `{ signal, release }` so the
+ * per-source listeners can be detached on completion (otherwise a long-lived
+ * external signal accumulates leaked listeners across repeated calls).
+ */
 function mergeSignals(signals = []) {
   const active = signals.filter(Boolean);
-  if (!active.length) return null;
+  if (!active.length) return { signal: null, release: () => {} };
   const controller = new AbortController();
+  const handlers = [];
   const abort = (reason) => {
     if (!controller.signal.aborted) controller.abort(reason);
   };
@@ -55,20 +62,30 @@ function mergeSignals(signals = []) {
       abort(signal.reason || new Error("Aborted"));
       break;
     }
-    signal.addEventListener("abort", () => abort(signal.reason || new Error("Aborted")), { once: true });
+    const onAbort = () => abort(signal.reason || new Error("Aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    handlers.push({ signal, onAbort });
   }
-  return controller.signal;
+  const release = () => {
+    for (const { signal, onAbort } of handlers) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  };
+  // Self-clean if the merged signal itself fires.
+  controller.signal.addEventListener("abort", release, { once: true });
+  return { signal: controller.signal, release };
 }
 
 async function fetchWithTimeout(url, init, timeoutMs, externalSignal = null) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("TimeoutError")), timeoutMs);
-  const signal = mergeSignals([controller.signal, externalSignal]);
+  const { signal: merged, release } = mergeSignals([controller.signal, externalSignal]);
   try {
-    const response = await fetch(url, { ...init, signal: signal || controller.signal });
+    const response = await fetch(url, { ...init, signal: merged || controller.signal });
     return response;
   } finally {
     clearTimeout(timer);
+    release();
   }
 }
 
@@ -137,13 +154,18 @@ export class LlmClient {
   async chat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null }) {
     const selectedModel = model || this.provider.model;
     const capabilities = resolveProviderCapabilities(this.provider, selectedModel);
+    let completion;
     if (capabilities.supportsAnthropicMessages) {
-      return this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+      completion = await this.anthropicMessages({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+    } else if (capabilities.apiMode === "responses" && capabilities.supportsResponsesAPI) {
+      completion = await this.openaiResponses({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+    } else {
+      completion = await this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
     }
-    if (capabilities.apiMode === "responses" && capabilities.supportsResponsesAPI) {
-      return this.openaiResponses({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+    if (completion?.usage) {
+      recordUsage(this.provider.name, selectedModel, completion.usage);
     }
-    return this.openaiChat({ messages, tools, model: selectedModel, reasoning, stream, signal, onDelta, capabilities });
+    return completion;
   }
 
   async openaiChat({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null, capabilities = null }) {
@@ -190,31 +212,35 @@ export class LlmClient {
     let buffer = "";
     let state = createOpenAiStreamState();
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let lineBreak;
-      while ((lineBreak = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, lineBreak).trim();
-        buffer = buffer.slice(lineBreak + 1);
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        let chunk;
-        try {
-          chunk = JSON.parse(payload);
-        } catch {
-          state = { ...state, malformedChunks: (state.malformedChunks || 0) + 1 };
-          continue;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let lineBreak;
+        while ((lineBreak = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, lineBreak).trim();
+          buffer = buffer.slice(lineBreak + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let chunk;
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            state = { ...state, malformedChunks: (state.malformedChunks || 0) + 1 };
+            continue;
+          }
+          const delta = chunk.choices?.[0]?.delta || {};
+          if (delta.content) onDelta?.({ content: delta.content });
+          state = applyOpenAiStreamChunk(state, chunk);
         }
-        const delta = chunk.choices?.[0]?.delta || {};
-        if (delta.content) onDelta?.({ content: delta.content });
-        state = applyOpenAiStreamChunk(state, chunk);
       }
-    }
 
-    return finalizeOpenAiStream(state);
+      return finalizeOpenAiStream(state);
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
   }
 
   async openaiResponsesStream(path, body, signal = null, onDelta = null) {
@@ -232,60 +258,64 @@ export class LlmClient {
     let finishReason = null;
     let usage = null;
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let lineBreak;
-      while ((lineBreak = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, lineBreak).trim();
-        buffer = buffer.slice(lineBreak + 1);
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        let event;
-        try {
-          event = JSON.parse(payload);
-        } catch {
-          continue;
-        }
-        usage = event.response?.usage || event.usage || usage;
-        finishReason = event.response?.status || event.type || finishReason;
-        for (const item of event.response?.output || event.output || []) {
-          if (item.type === "message" && item.content) {
-            for (const part of item.content) {
-              if (part.type === "output_text" && part.text) {
-                text += part.text;
-                onDelta?.({ content: part.text });
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let lineBreak;
+        while ((lineBreak = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, lineBreak).trim();
+          buffer = buffer.slice(lineBreak + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let event;
+          try {
+            event = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          usage = event.response?.usage || event.usage || usage;
+          finishReason = event.response?.status || event.type || finishReason;
+          for (const item of event.response?.output || event.output || []) {
+            if (item.type === "message" && item.content) {
+              for (const part of item.content) {
+                if (part.type === "output_text" && part.text) {
+                  text += part.text;
+                  onDelta?.({ content: part.text });
+                }
               }
             }
-          }
-          if (item.type === "function_call") {
-            toolCalls.push({
-              id: item.call_id || item.id || `call_${toolCalls.length}`,
-              type: "function",
-              function: {
-                name: item.name,
-                arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {})
-              }
-            });
+            if (item.type === "function_call") {
+              toolCalls.push({
+                id: item.call_id || item.id || `call_${toolCalls.length}`,
+                type: "function",
+                function: {
+                  name: item.name,
+                  arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {})
+                }
+              });
+            }
           }
         }
       }
-    }
 
-    const message = {
-      role: "assistant",
-      content: text,
-      tool_calls: toolCalls.length ? toolCalls : undefined
-    };
-    if (!message.tool_calls) delete message.tool_calls;
-    return {
-      id: "stream",
-      object: "chat.completion",
-      choices: [{ index: 0, finish_reason: finishReason, message }],
-      usage
-    };
+      const message = {
+        role: "assistant",
+        content: text,
+        tool_calls: toolCalls.length ? toolCalls : undefined
+      };
+      if (!message.tool_calls) delete message.tool_calls;
+      return {
+        id: "stream",
+        object: "chat.completion",
+        choices: [{ index: 0, finish_reason: finishReason, message }],
+        usage
+      };
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
   }
 
   async anthropicMessages({ messages, tools = [], model, reasoning, stream = false, signal = null, onDelta = null, capabilities = null }) {
@@ -332,31 +362,35 @@ export class LlmClient {
     let buffer = "";
     let state = createAnthropicStreamState();
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let eventEnd;
-      while ((eventEnd = buffer.indexOf("\n\n")) >= 0) {
-        const chunk = buffer.slice(0, eventEnd);
-        buffer = buffer.slice(eventEnd + 2);
-        const parsed = parseAnthropicSseChunk(chunk, state);
-        state = parsed.state;
-        const dataLine = chunk.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
-        if (dataLine) {
-          try {
-            const event = JSON.parse(dataLine);
-            if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
-              onDelta?.({ content: event.delta.text });
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let eventEnd;
+        while ((eventEnd = buffer.indexOf("\n\n")) >= 0) {
+          const chunk = buffer.slice(0, eventEnd);
+          buffer = buffer.slice(eventEnd + 2);
+          const parsed = parseAnthropicSseChunk(chunk, state);
+          state = parsed.state;
+          const dataLine = chunk.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+          if (dataLine) {
+            try {
+              const event = JSON.parse(dataLine);
+              if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+                onDelta?.({ content: event.delta.text });
+              }
+            } catch {
+              // ignore malformed chunk
             }
-          } catch {
-            // ignore malformed chunk
           }
         }
       }
-    }
 
-    return finalizeAnthropicStream(state);
+      return finalizeAnthropicStream(state);
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
   }
 
   async request(path, init, signal = null) {
@@ -368,7 +402,7 @@ export class LlmClient {
         authorization: `Bearer ${this.provider.apiKey}`,
         ...(init.headers || {})
       }
-    }, { signal });
+    }, { timeoutMs: requestTimeoutMs(), signal });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       const message = formatProviderHttpError(this.provider.name, response.status, text);

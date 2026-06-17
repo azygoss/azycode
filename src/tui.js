@@ -83,7 +83,17 @@ import {
   visibleLength,
   warn as warnText,
   welcomeHero,
-  wordmark
+  wordmark,
+  enhancedWelcomeScreen,
+  errorPanel,
+  estimateCost,
+  randomTip,
+  costDisplay,
+  toastMessage,
+  toolCard,
+  thinkingBlock,
+  liveMetricsBar,
+  sessionCard
 } from "./ui.js";
 import { providerDiagnostics, providerModelList, providerNames, providerPreset, withProviderModels } from "./providers.js";
 import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.js";
@@ -107,11 +117,13 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const TUI_COMMANDS = [
   "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
   "session", "resume", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "stream", "instructions", "review", "skill", "todo", "new", "compact", "hooks", "commands", "clear", "reload", "exit", "quit"
+  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "stream", "instructions", "review", "skill", "todo", "new", "compact", "hooks", "commands", "cost", "clear", "reload", "exit", "quit"
 ];
 const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
 
 const AGENT_BORDER = "rounded";
+
+
 
 function tuiWidth() {
   return fitTerminalWidth(output, 2);
@@ -157,6 +169,9 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
     skills: [],
     subagent: null,
     maxConversationMessages: cfg.maxConversationMessages || MAX_CONVERSATION_MESSAGES,
+    history: [],
+    historyIndex: -1,
+    sessionCost: 0,
   };
   printWelcome(state);
   const promptSession = createPromptSession({
@@ -201,23 +216,40 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
         getPaletteItems: (value) => (value.startsWith("/") ? filterPaletteCommands(state, value.slice(1).trim()) : []),
         resolveSlashSubmit: (value, items, selection) => resolveSlashSubmit(value, items, selection),
         completeLine: (value) => completeTuiInput(value, state),
-        onShortcut: (key) => applyShortcut(key, state, { persist: true }),
+        onShortcut: (key) => applyShortcut(key, state, { 
+          persist: true,
+          notify: (msg) => console.log(`  ${msg}`)
+        }),
         onClearScreen: () => {
           output.write("\x1Bc");
           printWelcome(state);
         },
-        initialRows: composerInitialRows(state)
+        initialRows: composerInitialRows(state),
+        history: state.history
       })).trim();
       state.acceptingInput = false;
       if (!line) continue;
-      if (line.startsWith("/")) {
-        const done = await handleCommand(line, state, rl, promptSession);
-        if (rl) rl.pause();
-        if (done === "exit") break;
-      } else if (line.startsWith("!")) {
-        await runLocalShell(line.slice(1).trim(), state, rl, promptSession);
-      } else {
-        await askAgent(line, state, rl, promptSession);
+      try {
+        if (line.startsWith("/")) {
+          const done = await handleCommand(line, state, rl, promptSession);
+          if (rl) rl.pause();
+          if (done === "exit") break;
+        } else if (line.startsWith("!")) {
+          await runLocalShell(line.slice(1).trim(), state, rl, promptSession);
+        } else {
+          await askAgent(line, state, rl, promptSession);
+          if (line && !line.startsWith("/")) {
+            state.history.push(line);
+            state.historyIndex = -1;
+          }
+        }
+      } catch (error) {
+        // Isolate per-command failures so one bad command never tears down the TUI.
+        const message = error?.code === "ERR_ASSERTION" || error?.name === "AssertionError"
+          ? error.message
+          : (error?.message || String(error));
+        tuiWriteln(`${errorText("✗")} ${truncate(String(message), tuiWidth() - 4)}`);
+        try { state.acceptingInput = false; } catch { /* state already torn down */ }
       }
     }
   } finally {
@@ -230,11 +262,22 @@ function printWelcome(state) {
   const repo = path.basename(state.cwd);
   const git = gitSummary(state.cwd);
   const connected = hasActiveProvider(state.cfg);
+  const saved = loadState();
+  const sessions = Object.entries(saved.sessions || {});
+  const lastSession = sessions.length ? sessions.sort((a, b) => String(b[1]?.createdAt || '').localeCompare(String(a[1]?.createdAt || '')))[0] : null;
   blank();
-  for (const line of grokWelcomeScreen({
+  for (const line of enhancedWelcomeScreen({
     connected,
     workspace: repo,
     branch: git.branch,
+    nodeVersion: process.version,
+    platform: process.platform,
+    terminalWidth: tuiWidth(),
+    sessionCount: sessions.length,
+    lastSession: lastSession ? { id: lastSession[0], prompt: lastSession[1]?.prompt, mode: lastSession[1]?.mode } : null,
+    model: state.cfg.activeModel,
+    mode: state.mode,
+    reasoning: state.cfg.reasoning,
     width: tuiWidth()
   })) {
     console.log(line);
@@ -243,18 +286,10 @@ function printWelcome(state) {
 }
 
 function getComposerDockLines(state) {
-  const model = state.cfg.activeProvider && state.cfg.activeModel
-    ? `${state.cfg.activeProvider}/${state.cfg.activeModel}`
-    : null;
-  return grokComposerDock({
-    model,
-    mode: state.mode,
-    reasoning: state.cfg.reasoning,
-    agent: state.subagent?.name,
-    messages: (state.conversation?.length ?? 0) > 0 ? state.conversation.length : null,
-    maxMessages: state.maxConversationMessages,
-    width: tuiWidth()
-  });
+  // Model, mode, and reasoning are now displayed in the enhanced welcome screen.
+  // We return an empty array so the composer dock is completely removed,
+  // leaving just a clean prompt like Claude Code!
+  return [];
 }
 
 export function filterPaletteCommands(state, filter = "") {
@@ -337,7 +372,7 @@ export function maxComposerPaletteLines(state, { line = "" } = {}) {
   const dockRows = getComposerDockLines(state).length;
   const promptRows = Math.max(1, (String(line).match(/\n/g) || []).length + 1);
   const reserved = dockRows + promptRows + 2;
-  return Math.max(3, maxBottomPaneRows(output) - reserved);
+  return Math.min(6, Math.max(3, maxBottomPaneRows(output) - reserved));
 }
 
 export function buildComposerPaneLines(state, { line = "", paletteFilter = null, paletteSelection = 0 } = {}) {
@@ -576,6 +611,15 @@ async function askAgent(prompt, state, rl = null, promptSession = null) {
     } else {
       emitLines(renderGrokResponse(result.content, { width: W }), { tty });
     }
+    // Accumulate session cost from usage
+    if (result.usage) {
+      const runCost = estimateCost(
+        state.cfg.activeModel,
+        result.usage.prompt_tokens || result.usage.input_tokens || 0,
+        result.usage.completion_tokens || result.usage.output_tokens || 0
+      );
+      if (runCost) state.sessionCost = (state.sessionCost || 0) + runCost.totalCost;
+    }
     if (state.progress && result.events?.length) {
       const meta = grokRunMeta(formatAgentRunStats(result.events, { maxSteps }));
       if (meta) emitLine(meta, { tty });
@@ -585,21 +629,48 @@ async function askAgent(prompt, state, rl = null, promptSession = null) {
     if (spinner) stopSpinner({ finalStyle: "error", finalLabel: `error  ${truncate(prompt, 36)}` });
     streamPanel?.close();
     tuiBlank();
-    emitLine(errorText(`${icon("cross")}  ${bold("Agent stopped")}`), { tty });
     if (error instanceof AgentCancelledError) {
-      emitLine(warnText("  Run cancelled."), { tty });
+      emitLines(errorPanel({
+        title: 'Run Cancelled',
+        message: 'The agent run was cancelled by user.',
+        suggestion: 'Your conversation context is preserved. Type your next message to continue.',
+        width: tuiWidth()
+      }).lines || [warnText('  Run cancelled.')], { tty });
     } else if (error instanceof AgentStepLimitError) {
-      emitLine(warnText("  Step limit reached before a final answer."), { tty });
+      const errLines = errorPanel({
+        title: 'Step Limit Reached',
+        message: 'The agent exhausted its step budget before producing a final answer.',
+        suggestion: 'Try /compact to reduce context, or increase maxSteps in config.',
+        retryHint: 'You can also say "continue" to pick up where it left off.',
+        width: tuiWidth()
+      }).lines;
+      if (errLines) emitLines(errLines, { tty });
+      else {
+        emitLine(warnText('  Step limit reached before a final answer.'), { tty });
+      }
       if (error.report) {
-        emitLine(`  ${muted("Run steps:")}`, { tty });
-        for (const line of error.report.split("\n")) emitLine(muted(`  ${line}`), { tty });
+        emitLine(`  ${muted('Run steps:')}`, { tty });
+        for (const rline of error.report.split('\n')) emitLine(muted(`  ${rline}`), { tty });
       }
       if (error.partialContent) {
         tuiBlank();
         emitLines(renderGrokResponse(error.partialContent, { width: tuiWidth() }), { tty });
       }
     } else {
-      emitLine(errorText(`  ${error.message}`), { tty });
+      const errLines = errorPanel({
+        title: 'Agent Error',
+        message: error.message,
+        code: error.code || error.status || null,
+        suggestion: error.message.includes('rate') || error.message.includes('429')
+          ? 'Wait a moment and try again, or switch to a different model with /model.'
+          : error.message.includes('key') || error.message.includes('auth')
+            ? 'Check your API key with /credentials or reconnect with /login.'
+            : 'Try /status to check your setup, or /health to verify provider connectivity.',
+        retryHint: error.message.includes('timeout') ? 'The request timed out. Try a simpler prompt or /compact first.' : null,
+        width: tuiWidth()
+      }).lines;
+      if (errLines) emitLines(errLines, { tty });
+      else emitLine(errorText(`${icon('cross')}  ${error.message}`), { tty });
     }
     tuiBlank();
   }
@@ -655,6 +726,10 @@ async function handleCommand(line, state, rl = null, promptSession = null) {
     return;
   }
   if (command === "exit" || command === "quit") return "exit";
+  if (command === "cost") {
+    printCostSummary(state);
+    return;
+  }
   if (command === "help") {
     printHelp(args[0]);
     return;
@@ -1087,7 +1162,8 @@ function helpGroups() {
       ["/session", "show session transcript"],
       ["/tools", "recent tool activity"],
       ["/goals", "saved goals"],
-      ["/missions", "saved missions"]
+      ["/missions", "saved missions"],
+      ["/cost", "session token cost summary"]
     ]},
     { title: "Other", items: [
       ["/mission", "dry-run, run, report"],
@@ -1157,6 +1233,18 @@ function printCommandPalette(state) {
 }
 
 export { trimConversation } from "./conversation.js";
+
+function printCostSummary(state) {
+  blank();
+  for (const line of costSummaryPanel({
+    runs: [{ model: state.cfg.activeModel, cost: state.sessionCost }],
+    sessionTotal: state.sessionCost || 0,
+    width: tuiWidth()
+  })) {
+    console.log(line);
+  }
+  blank();
+}
 
 function printDashboard(state) {
   const saved = loadState();
@@ -1308,16 +1396,22 @@ function printStatus(state) {
 function printSessions() {
   blank();
   console.log(`${brand(icon("chevronRight"))} ${bold("Sessions")}`);
-  const rows = sessionListEntries(loadState().sessions || {}, { promptLimit: 40 }).slice(0, 10);
-  for (const line of renderTable(rows, [
-    { key: "id", label: "id" },
-    { key: "mode", label: "mode" },
-    { key: "status", label: "status" },
-    { key: "steps", label: "steps" },
-    { key: "duration", label: "duration" },
-    { key: "prompt", label: "prompt" }
-  ])) console.log(`  ${line}`);
   blank();
+  const rows = sessionListEntries(loadState().sessions || {}, { promptLimit: 80 }).slice(0, 10);
+  for (const row of rows) {
+    const cardLines = sessionCard({
+      id: row.id,
+      mode: row.mode,
+      status: row.status,
+      steps: row.steps,
+      duration: row.duration,
+      prompt: row.prompt,
+      cost: null, // cost isn't currently tracked per session in the list view unless parsed
+      width: tuiWidth()
+    });
+    for (const line of cardLines) console.log(`  ${line}`);
+    blank();
+  }
 }
 
 function printSession(args) {
@@ -1345,16 +1439,23 @@ function printSession(args) {
 function printToolRuns() {
   blank();
   console.log(`${brand(icon("chevronRight"))} ${bold("Tool runs")}`);
-  const rows = toolRunListEntries(loadState().toolRuns || {}, { limit: 10 });
-  for (const line of renderTable(rows, [
-    { key: "at", label: "at" },
-    { key: "tool", label: "tool" },
-    { key: "summary", label: "summary" },
-    { key: "ok", label: "ok" },
-    { key: "ms", label: "ms" },
-    { key: "session", label: "session" }
-  ])) console.log(`  ${line}`);
   blank();
+  const rows = toolRunListEntries(loadState().toolRuns || [], { limit: 10 });
+  for (const row of rows) {
+    // row fields come from toolRunListEntries: tool, summary, ok, ms, session, step, at
+    const lines = toolCard({
+      tool: row.tool,
+      status: row.ok,
+      duration: row.ms != null && row.ms !== "" ? prettyMs(Number(row.ms)) : null,
+      summary: row.summary || "",
+      width: tuiWidth()
+    });
+    for (const line of lines) console.log(`  ${line}`);
+    // Correlate the run with its session after the status, so the rendering reads
+    // tool -> ok -> session (matches the documented /tools output contract).
+    if (row.session) console.log(`  ${muted("session:")} ${row.session}`);
+    blank();
+  }
 }
 
 async function printHealth(state) {

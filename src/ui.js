@@ -1302,3 +1302,620 @@ export function grokPreviewLines(rows, { indent = 4 } = {}) {
   const pad = " ".repeat(indent);
   return (rows || []).filter(Boolean).map((line) => `${pad}${typeof line === "string" && !line.includes("\x1b") ? muted(line) : line}`);
 }
+
+// ---------------------------------------------------------------------------
+// 1. ASCII Art Logo with Gradient
+// ---------------------------------------------------------------------------
+
+export function asciiLogo({ width = 60 } = {}) {
+  // Return array of lines for a sleek ASCII art logo of 'azycode'
+  const top = "  ▄▀█ ▀█ █▄█ █▀▀ █▀█ █▀▄ █▀▀";
+  const bot = "  █▀█ █▄ ░█░ █▄▄ █▄█ █▄▀ ██▄";
+  
+  const colorsEnabled = typeof process !== "undefined" && !process.env.NO_COLOR;
+  const gradientCodes = colorsEnabled && typeof process !== "undefined" && process.stdout?.isTTY && process.env.COLORTERM === "truecolor"
+    ? [
+        "\x1b[38;2;120;140;255m",   // brand blue/purple
+        "\x1b[38;2;125;160;255m",
+        "\x1b[38;2;130;190;255m",   // info blue
+        "\x1b[38;2;120;200;240m",
+        "\x1b[38;2;130;210;200m",
+        "\x1b[38;2;180;210;140m",
+        "\x1b[38;2;214;180;100m"    // accent gold
+      ]
+    : [
+        ANSI.brand,
+        ANSI.brand,
+        ANSI.info,
+        ANSI.info,
+        ANSI.accent,
+        ANSI.accent,
+        ANSI.accent
+      ];
+
+  const applyGradient = (line) => {
+    if (!colorsEnabled) return line;
+    // Split into 7 letter blocks (each ~4 chars wide)
+    const blocks = line.match(/.{1,4}/g) || [line];
+    return blocks.map((block, i) => {
+      const code = gradientCodes[Math.min(i, gradientCodes.length - 1)];
+      return `${code}${block}${ANSI.reset}`;
+    }).join("");
+  };
+
+  const pad = width > visibleLength(top) + 4 ? Math.floor((width - visibleLength(top)) / 2) : 2;
+  const indent = " ".repeat(pad);
+  return [
+    `${indent}${applyGradient(top)}`,
+    `${indent}${applyGradient(bot)}`
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// 2. Enhanced Welcome Screen
+// ---------------------------------------------------------------------------
+
+const BUILT_IN_TIPS = [
+  "Use Tab to cycle reasoning levels",
+  "Shift+Tab to switch modes",
+  "Type ! followed by a command for quick shell access",
+  "/context to include repo context in your next prompt",
+  "/compact to reduce conversation size when running low",
+  "Use /mission dry-run to preview automation plans",
+  "/login to connect your API key",
+  "Press ↑ to recall your last prompt",
+  "Chain commands with && in shell mode",
+  "/status shows your current session stats",
+  "Use /diff to see pending changes before applying",
+  "Wrap code in backticks for inline formatting",
+  "/help shows all available commands",
+  "/clear resets the conversation context"
+];
+
+export function enhancedWelcomeScreen({
+  connected = false,
+  workspace = "workspace",
+  branch = null,
+  nodeVersion = typeof process !== "undefined" ? process.version : "",
+  platform = typeof process !== "undefined" ? process.platform : "",
+  terminalWidth = 80,
+  sessionCount = 0,
+  lastSession = null,
+  model = null,
+  mode = null,
+  reasoning = null,
+  tips = true,
+  width = 80
+} = {}) {
+  const w = Math.max(48, width);
+  const lines = [];
+
+  lines.push(...asciiLogo({ width: w - 4 }));
+
+  // Literal wordmark line so the welcome is identifiable as plain text
+  // (the ASCII-art logo alone is not machine-readable as "azycode").
+  lines.push(`  ${bold(brand("azycode"))}`);
+
+  const dot = connected ? success("●") : warn("●");
+  const connLabel = connected ? success("connected") : warn("offline");
+  const place = grokWorkspaceLabel(workspace, branch);
+  const nodeBit = nodeVersion ? faint(nodeVersion) : "";
+  const platBit = platform ? faint(platform) : "";
+  const statusParts = [`${dot} ${connLabel}`, place, nodeBit, platBit].filter(Boolean);
+  
+  lines.push(`  ${statusParts.join(style("  ·  ", "subtle"))}`);
+  
+  const modelBit = model ? `${muted("model:")} ${accent(model)}` : "";
+  const modeBit = mode ? `${muted("mode:")} ${info(mode)}` : "";
+  const reasoningBit = reasoning ? `${muted("reason:")} ${info(reasoning)}` : "";
+  const stateParts = [modelBit, modeBit, reasoningBit].filter(Boolean);
+  if (stateParts.length) {
+    lines.push(`  ${stateParts.join(style("  ·  ", "subtle"))}`);
+  }
+  
+  lines.push(`  ${style("─".repeat(Math.max(8, w - 6)), "rule")}`);
+
+  // Combine actions into just 2 lines
+  lines.push(`  ${padEnd(`${bold("Type")} ${muted("to chat")}`, 25)} ${padEnd(`${bold("/")} ${muted("commands")}`, 20)} ${bold("Tab")} ${muted("reasoning")}`);
+  lines.push(`  ${padEnd(`${bold("!")} ${muted("shell")}`, 25)} ${padEnd(`${bold("/context")} ${muted("repo")}`, 20)} ${bold("Shift+Tab")} ${muted("mode")}`);
+
+  lines.push(`  ${muted("What should we work on?")}  ${subtle("/help for commands")}`);
+
+  if (lastSession) {
+    lines.push(`  ${style("↩", "info")} ${muted("Resume:")} ${accent(truncate(String(lastSession), 30))}`);
+  } else if (tips) {
+    const tip = BUILT_IN_TIPS[Math.floor(Math.random() * BUILT_IN_TIPS.length)];
+    lines.push(`  ${style("💡", "warn")} ${faint(`Tip: ${tip}`)}`);
+  }
+
+  lines.push("");
+
+  // Wrap in rounded brand box
+  return box(lines, { width: w, frame: "rounded", color: "border", padding: 0 });
+}
+
+// ---------------------------------------------------------------------------
+// 3. Tool Execution Card
+// ---------------------------------------------------------------------------
+
+const TOOL_GLYPHS = {
+  read: { icon: "◇", style: "info" },
+  write: { icon: "✎", style: "accent" },
+  edit: { icon: "✎", style: "accent" },
+  search: { icon: "⌕", style: "info" },
+  shell: { icon: "⎕", style: "warn" },
+  run: { icon: "▸", style: "success" },
+  delete: { icon: "✗", style: "error" },
+  create: { icon: "+", style: "success" },
+  list: { icon: "◇", style: "muted" },
+  patch: { icon: "✎", style: "accent" },
+  default: { icon: "◆", style: "brand" }
+};
+
+function resolveToolGlyph(tool) {
+  const lower = String(tool ?? "").toLowerCase();
+  for (const key of Object.keys(TOOL_GLYPHS)) {
+    if (key !== "default" && lower.includes(key)) return TOOL_GLYPHS[key];
+  }
+  return TOOL_GLYPHS.default;
+}
+
+export function toolCard({
+  tool = "",
+  status = "ok",
+  duration = null,
+  summary = "",
+  preview = null,
+  step = null,
+  maxSteps = null,
+  width = 80
+} = {}) {
+  const w = Math.max(40, width);
+  const glyph = resolveToolGlyph(tool);
+  const glyphStr = style(glyph.icon, glyph.style);
+
+  // Status indicator
+  const statusIcon = status === "ok" ? success("✓") : status === "failed" ? error("✗") : warn("⚠");
+  const statusLabel = status === "ok"
+    ? success("ok")
+    : status === "failed"
+      ? error("failed")
+      : warn(status);
+
+  const durStr = duration != null ? faint(prettyMs(duration)) : "";
+  const stepStr = step != null && maxSteps != null ? faint(`${step}/${maxSteps}`) : "";
+
+  // Build right side
+  const rightParts = [statusIcon, statusLabel, durStr, stepStr].filter(Boolean);
+  const right = rightParts.join(" ");
+
+  // Build left side
+  const toolLabel = bold(String(tool));
+  const summaryStr = summary ? `  ${muted(summary)}` : "";
+  const left = `${glyphStr} ${toolLabel}${summaryStr}`;
+
+  // Combine with padding
+  const gap = Math.max(2, w - visibleLength(left) - visibleLength(right));
+  const lines = [`${left}${" ".repeat(gap)}${right}`];
+
+  // Preview / diff lines
+  if (preview) {
+    const previewLines = Array.isArray(preview) ? preview : String(preview).split("\n");
+    const pipe = `  ${style("│", "faint")} `;
+    for (const line of previewLines.slice(0, 6)) {
+      const text = String(line ?? "");
+      let rendered;
+      if (text.startsWith("+")) rendered = success(text);
+      else if (text.startsWith("-")) rendered = error(text);
+      else rendered = muted(text);
+      lines.push(`${pipe}${truncate(rendered, Math.max(16, w - 6))}`);
+    }
+    if (previewLines.length > 6) {
+      lines.push(`${pipe}${faint(`… ${previewLines.length - 6} more lines`)}`);
+    }
+  }
+
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 4. Thinking Block
+// ---------------------------------------------------------------------------
+
+export function thinkingBlock({
+  duration = null,
+  tokens = null,
+  model = null,
+  width = 80
+} = {}) {
+  const w = Math.max(30, width);
+  const glowIcon = style("⟡", "glow");
+  const label = style("Thinking", "glow");
+
+  const metaParts = [];
+  if (duration != null) metaParts.push(faint(prettyMs(duration)));
+  if (tokens != null) {
+    const tok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
+    metaParts.push(faint(`${tok} tok`));
+  }
+  if (model) metaParts.push(faint(truncate(model, 20)));
+  const meta = metaParts.join(style(" · ", "subtle"));
+
+  const leftStr = `  ${glowIcon} ${label} `;
+  const rightStr = meta ? ` ${meta}` : "";
+  const lineLen = Math.max(4, w - visibleLength(leftStr) - visibleLength(rightStr));
+  const separator = style("─".repeat(lineLen), "faint");
+
+  return [`${leftStr}${separator}${rightStr}`];
+}
+
+// ---------------------------------------------------------------------------
+// 5. Cost & Usage Display
+// ---------------------------------------------------------------------------
+
+export const MODEL_PRICING = {
+  "gpt-4o": { input: 2.5, output: 10 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  "gpt-4.1": { input: 2.0, output: 8.0 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
+  "gpt-4.1-nano": { input: 0.1, output: 0.4 },
+  "o3": { input: 2.0, output: 8.0 },
+  "o3-mini": { input: 1.1, output: 4.4 },
+  "o4-mini": { input: 1.1, output: 4.4 },
+  "claude-sonnet-4-20250514": { input: 3.0, output: 15.0 },
+  "claude-3-5-sonnet": { input: 3.0, output: 15.0 },
+  "claude-3-5-haiku": { input: 0.8, output: 4.0 },
+  "claude-opus-4-20250514": { input: 15.0, output: 75.0 },
+  "gemini-2.5-pro": { input: 1.25, output: 10.0 },
+  "gemini-2.5-flash": { input: 0.15, output: 0.6 },
+  "moonshot-v1": { input: 1.0, output: 2.0 },
+  "kimi-latest": { input: 1.0, output: 2.0 },
+  "deepseek-chat": { input: 0.14, output: 0.28 },
+  "deepseek-reasoner": { input: 0.55, output: 2.19 }
+};
+
+export function estimateCost(model, inputTokens, outputTokens) {
+  const modelName = String(model ?? "").toLowerCase();
+  let pricing = MODEL_PRICING[modelName] || null;
+  if (!pricing) {
+    // Partial match: find the first key that the model name contains
+    for (const key of Object.keys(MODEL_PRICING)) {
+      if (modelName.includes(key) || key.includes(modelName)) {
+        pricing = MODEL_PRICING[key];
+        break;
+      }
+    }
+  }
+  if (!pricing) return null;
+  const inTok = Math.max(0, Number(inputTokens) || 0);
+  const outTok = Math.max(0, Number(outputTokens) || 0);
+  const inputCost = (inTok / 1_000_000) * pricing.input;
+  const outputCost = (outTok / 1_000_000) * pricing.output;
+  return { inputCost, outputCost, totalCost: inputCost + outputCost };
+}
+
+function formatTokenCount(n) {
+  const val = Number(n) || 0;
+  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
+  if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
+  return String(val);
+}
+
+function formatUSD(amount) {
+  const val = Math.max(0, Number(amount) || 0);
+  if (val === 0) return "$0.00";
+  if (val < 0.001) return `$${val.toFixed(6)}`;
+  if (val < 0.01) return `$${val.toFixed(4)}`;
+  if (val < 1) return `$${val.toFixed(3)}`;
+  return `$${val.toFixed(2)}`;
+}
+
+function costColor(amount) {
+  if (amount < 0.01) return "success";
+  if (amount < 0.10) return "warn";
+  return "error";
+}
+
+export function costDisplay({ model, inputTokens, outputTokens, sessionTotal = null, width = 60 } = {}) {
+  const estimate = estimateCost(model, inputTokens, outputTokens);
+  if (!estimate) return muted("(pricing unavailable)");
+
+  const costStr = style(formatUSD(estimate.totalCost), costColor(estimate.totalCost));
+  const inStr = faint(`in: ${formatTokenCount(inputTokens)}`);
+  const outStr = faint(`out: ${formatTokenCount(outputTokens)}`);
+  const parts = [`${costStr} ${muted("(")}${inStr}${muted(" · ")}${outStr}${muted(")")}`];
+
+  if (sessionTotal != null) {
+    parts.push(`${muted("session:")} ${style(formatUSD(sessionTotal), costColor(sessionTotal))}`);
+  }
+
+  return parts.join(style(" · ", "subtle"));
+}
+
+export function costSummaryPanel({ runs = [], sessionTotal = 0, width = 60 } = {}) {
+  const rows = [];
+  if (runs.length) {
+    for (const [i, run] of runs.entries()) {
+      const idx = faint(`#${i + 1}`);
+      const modelLabel = run.model ? truncate(run.model, 20) : "unknown";
+      const cost = run.cost != null ? style(formatUSD(run.cost), costColor(run.cost)) : muted("—");
+      rows.push(`  ${idx}  ${padEnd(modelLabel, 22)} ${cost}`);
+    }
+    rows.push("");
+  }
+  const total = style(formatUSD(sessionTotal), costColor(sessionTotal));
+  rows.push(`  ${bold("Session total:")} ${total}`);
+  return box(rows, { width, title: "Cost Summary", titleTone: "accent", frame: "rounded", color: "borderSoft", padding: 1 });
+}
+
+// ---------------------------------------------------------------------------
+// 6. Enhanced Error Panel
+// ---------------------------------------------------------------------------
+
+export function errorPanel({
+  title = "Error",
+  message = "",
+  code = null,
+  suggestion = null,
+  retryHint = null,
+  context = null,
+  width = 80
+} = {}) {
+  const rows = [];
+
+  // Message
+  if (message) {
+    for (const line of wrapText(String(message), Math.max(20, width - 8))) {
+      rows.push(line);
+    }
+  }
+
+  // Code
+  if (code != null) {
+    rows.push("");
+    rows.push(`${muted("code:")} ${style(String(code), "warn")}`);
+  }
+
+  // Context
+  if (context) {
+    rows.push(`${muted(String(context))}`);
+  }
+
+  // Suggestion
+  if (suggestion) {
+    rows.push("");
+    rows.push(`${style("💡", "warn")} ${style("Try:", "warn")} ${suggestion}`);
+  }
+
+  // Retry hint
+  if (retryHint) {
+    rows.push(`${style("↩", "info")} ${muted(retryHint)}`);
+  }
+
+  return box(rows, {
+    width,
+    title: `${icon("cross")} ${title}`,
+    titleTone: "error",
+    frame: "rounded",
+    color: "error",
+    padding: 1
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 7. Session Card
+// ---------------------------------------------------------------------------
+
+export function sessionCard({
+  id = "",
+  mode = "",
+  status = "",
+  steps = 0,
+  duration = "",
+  prompt = "",
+  cost = null,
+  width = 60
+} = {}) {
+  const w = Math.max(40, width);
+  const rows = [];
+
+  // Header line: id + mode badge + status dot
+  const idStr = id ? faint(truncate(String(id), 10)) : faint("—");
+  const modeBadge = mode ? chip(mode, "accent") : "";
+  const statusDotStr = status ? ` ${statusDot(status)}` : "";
+  rows.push(`${idStr}  ${modeBadge}${statusDotStr}`);
+
+  // Stats line: steps, duration, cost
+  const statParts = [];
+  if (steps) statParts.push(muted(`${steps} step${steps === 1 ? "" : "s"}`));
+  if (duration) statParts.push(muted(String(duration)));
+  if (cost != null) statParts.push(style(formatUSD(cost), costColor(cost)));
+  if (statParts.length) rows.push(`  ${statParts.join(style(" · ", "subtle"))}`);
+
+  // Truncated prompt
+  if (prompt) {
+    const maxPrompt = Math.max(16, w - 8);
+    rows.push(`  ${muted("›")} ${faint(truncate(String(prompt).trim(), maxPrompt))}`);
+  }
+
+  return box(rows, {
+    width: w,
+    title: "session",
+    titleTone: "brand",
+    frame: "rounded",
+    color: "borderSoft",
+    padding: 1
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 8. File Tree View
+// ---------------------------------------------------------------------------
+
+export function fileTreeView(files, { width = 60, maxFiles = 8 } = {}) {
+  if (!files || !files.length) return [muted("  (no files)")];
+
+  // Parse into directory groups
+  const groups = {};
+  for (const entry of files) {
+    const filePath = typeof entry === "string" ? entry : entry.path || entry.file || "";
+    const parts = String(filePath).split("/");
+    const fileName = parts.pop() || filePath;
+    const dir = parts.length ? parts.join("/") + "/" : "";
+    if (!groups[dir]) groups[dir] = [];
+    groups[dir].push({
+      name: fileName,
+      added: typeof entry === "object" ? entry.added : undefined,
+      removed: typeof entry === "object" ? entry.removed : undefined
+    });
+  }
+
+  const lines = [];
+  let count = 0;
+  const dirs = Object.keys(groups).sort();
+
+  for (const dir of dirs) {
+    if (count >= maxFiles) break;
+    if (dir) lines.push(`  ${accent(dir)}`);
+    const entries = groups[dir];
+    for (let i = 0; i < entries.length && count < maxFiles; i++) {
+      const entry = entries[i];
+      const isLast = i === entries.length - 1;
+      const connector = isLast ? "└─" : "├─";
+      const changeBits = [];
+      if (entry.added != null) changeBits.push(success(`+${entry.added}`));
+      if (entry.removed != null) changeBits.push(error(`-${entry.removed}`));
+      const changeStr = changeBits.length ? ` ${muted("(")}${changeBits.join(" ")}${muted(")")}` : "";
+      lines.push(`  ${style(connector, "faint")} ${entry.name}${changeStr}`);
+      count++;
+    }
+  }
+
+  const totalFiles = files.length;
+  if (totalFiles > maxFiles) {
+    lines.push(`  ${faint(`… and ${totalFiles - maxFiles} more file${totalFiles - maxFiles === 1 ? "" : "s"}`)}`);
+  }
+
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Breadcrumb Trail
+// ---------------------------------------------------------------------------
+
+export function breadcrumb(items, { separator = " › ", width = 80 } = {}) {
+  if (!items || !items.length) return "";
+  const styles = ["brand", "info", "accent", "muted", "faint"];
+  const parts = items.map((item, i) => {
+    const label = typeof item === "string" ? item : item.label || "";
+    const itemStyle = (typeof item === "object" && item.style) || styles[Math.min(i, styles.length - 1)];
+    return style(label, itemStyle);
+  });
+  const sep = faint(separator);
+  const result = parts.join(sep);
+  return truncate(result, width);
+}
+
+// ---------------------------------------------------------------------------
+// 10. Live Metrics Bar
+// ---------------------------------------------------------------------------
+
+export function liveMetricsBar({
+  tokens = null,
+  cost = null,
+  elapsed = null,
+  step = null,
+  maxSteps = null,
+  model = null,
+  width = 80
+} = {}) {
+  const parts = [];
+  parts.push(style("⟡", "glow"));
+
+  if (tokens != null) parts.push(faint(`${formatTokenCount(tokens)} tok`));
+  if (cost != null) parts.push(style(formatUSD(cost), costColor(cost)));
+  if (elapsed != null) parts.push(faint(typeof elapsed === "number" ? prettyMs(elapsed) : String(elapsed)));
+  if (step != null && maxSteps != null) parts.push(muted(`step ${step}/${maxSteps}`));
+  else if (step != null) parts.push(muted(`step ${step}`));
+  if (model) parts.push(faint(truncate(String(model), 24)));
+
+  const line = parts.join(style(" · ", "subtle"));
+  const w = Math.max(40, width);
+  const gap = Math.max(0, w - visibleLength(line));
+  return `${" ".repeat(gap)}${line}`;
+}
+
+// ---------------------------------------------------------------------------
+// 11. Quick Tips Array
+// ---------------------------------------------------------------------------
+
+export function randomTip() {
+  return BUILT_IN_TIPS[Math.floor(Math.random() * BUILT_IN_TIPS.length)];
+}
+
+// ---------------------------------------------------------------------------
+// 12. Enhanced Diff Display
+// ---------------------------------------------------------------------------
+
+export function richDiffBlock(text, { maxLines = 8, width = 60, showLineNumbers = true, title = null } = {}) {
+  const rawLines = String(text ?? "").split("\n").filter((l) => /^[+-]/.test(l) && !/^[+-]{3}/.test(l));
+  const lines = rawLines.slice(0, maxLines);
+  if (!lines.length) return [];
+
+  const out = [];
+  const w = Math.max(30, width);
+
+  // File header
+  if (title) {
+    out.push(`  ${style("─", "faint")} ${accent(title)} ${style("─".repeat(Math.max(2, w - visibleLength(title) - 6)), "faint")}`);
+  }
+
+  const gutterWidth = showLineNumbers ? String(lines.length).length + 1 : 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineNo = showLineNumbers ? faint(padStart(String(i + 1), gutterWidth)) + " " : "";
+    const pipe = `${style("│", "faint")} `;
+
+    let rendered;
+    if (line.startsWith("+")) {
+      const bg = trueColorEnabled ? "\x1b[48;2;20;60;20m" : "";
+      const fg = ANSI.success;
+      rendered = colorsEnabled ? `${bg}${fg}${line}${ANSI.reset}` : line;
+    } else if (line.startsWith("-")) {
+      const bg = trueColorEnabled ? "\x1b[48;2;60;20;20m" : "";
+      const fg = ANSI.error;
+      rendered = colorsEnabled ? `${bg}${fg}${line}${ANSI.reset}` : line;
+    } else {
+      rendered = muted(line);
+    }
+
+    out.push(`  ${lineNo}${pipe}${truncate(rendered, Math.max(12, w - gutterWidth - 6))}`);
+  }
+
+  if (rawLines.length > maxLines) {
+    const remaining = rawLines.length - maxLines;
+    out.push(`  ${" ".repeat(gutterWidth)}${style("│", "faint")} ${faint(`… ${remaining} more line${remaining === 1 ? "" : "s"}`)}`);
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 13. Notification Toast
+// ---------------------------------------------------------------------------
+
+const TOAST_CONFIG = {
+  info:    { icon: "ℹ", style: "info" },
+  success: { icon: "✓", style: "success" },
+  warn:    { icon: "⚠", style: "warn" },
+  error:   { icon: "✗", style: "error" },
+  tip:     { icon: "💡", style: "accent" }
+};
+
+export function toastMessage(text, { type = "info", width = 60 } = {}) {
+  const config = TOAST_CONFIG[type] || TOAST_CONFIG.info;
+  const toastIcon = style(config.icon, config.style);
+  const body = truncate(String(text ?? ""), Math.max(20, width - 4));
+  return `${toastIcon} ${body}`;
+}

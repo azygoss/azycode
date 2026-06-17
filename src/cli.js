@@ -32,6 +32,8 @@ import {
 } from "./skills.js";
 import { inspectMcpServer, listConfiguredMcpServers, probeMcpServers } from "./mcp.js";
 import { addMemory, removeMemory, searchMemory } from "./memory.js";
+import { getUsageStats, formatUsageReport, resetUsage, computeCost, flushUsage } from "./usage-tracker.js";
+import { listJournal, undoChange, undoSession, clearJournal, formatJournalReport, flushJournal } from "./change-journal.js";
 import { contextPack, formatContextPack, formatSnapshot, repoSnapshot } from "./context.js";
 import { formatLocalReview, localReview } from "./local-review.js";
 import { formatPatchValidationReport, validatePatch } from "./patch-validation.js";
@@ -61,7 +63,8 @@ const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
   "dashboard", "tools", "guard", "session", "memory", "context", "todo", "audit", "report", "completion", "config",
-  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox", "patch"
+  "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox", "patch",
+  "usage", "journal"
 ];
 
 async function runAgentSafe(options, { cancellable = false } = {}) {
@@ -118,6 +121,8 @@ export async function main(argv) {
     case "guard": return guard(args);
     case "session": return session(args);
     case "memory": return memory(args);
+    case "usage": return usageCmd(args);
+    case "journal": return journalCmd(args);
     case "context": return await contextCmd(args);
     case "todo": return todoCmd(args);
     case "audit": return audit();
@@ -389,6 +394,30 @@ function commandHelp(topic) {
       summary: "Repository context packs with layered retrieval and injection hardening.",
       usage: ["azycode context pack", "azycode context snapshot"],
       notes: ["Context files are wrapped as untrusted data except AGENTS.md and .azycode/rules.md."]
+    },
+    usage: {
+      summary: "Track token usage and estimated cost for LLM calls.",
+      usage: [
+        "azycode usage",
+        "azycode usage --json",
+        "azycode usage --since 2024-01-01",
+        "azycode usage --provider openai",
+        "azycode usage --model gpt-4o",
+        "azycode usage cost --provider openai --model gpt-4o --input 100000 --output 50000",
+        "azycode usage reset"
+      ],
+      notes: ["Cost estimates use per-provider pricing tables.", "Run 'azycode usage reset' to clear all usage data."]
+    },
+    journal: {
+      summary: "Change journal with undo for filesystem tool calls.",
+      usage: [
+        "azycode journal list",
+        "azycode journal list --session <id>",
+        "azycode journal undo <id>",
+        "azycode journal undo --session <id>",
+        "azycode journal clear"
+      ],
+      notes: ["Each write/edit/delete is journaled with file backups.", "Undo restores the original file content.", "Truncated backups (>50KB) cannot be fully restored."]
     }
   };
   const page = pages[topic];
@@ -577,7 +606,12 @@ function doctor(args = []) {
 function doctorInfo(root) {
   const localBin = path.resolve(INSTALL_ROOT, "bin", "azycode.js");
   const localReal = fs.existsSync(localBin) ? fs.realpathSync(localBin) : localBin;
-  const packageJson = JSON.parse(fs.readFileSync(path.join(INSTALL_ROOT, "package.json"), "utf8"));
+  let packageJson = { name: "azycode", version: "unknown" };
+  try {
+    packageJson = JSON.parse(fs.readFileSync(path.join(INSTALL_ROOT, "package.json"), "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error(warnText(`Could not read package.json: ${error.message}`));
+  }
   let which = "";
   let pathReal = "";
   let npmVersion = "";
@@ -708,7 +742,7 @@ function toolsCmd(args = []) {
   if (args[0] === "log") {
     const state = loadState();
     ui.title("Tool Runs");
-    ui.table(toolRunListEntries(state.toolRuns || {}), [
+    ui.table(toolRunListEntries(state.toolRuns || []), [
       { key: "at", label: "at" },
       { key: "session", label: "session" },
       { key: "step", label: "step" },
@@ -1171,7 +1205,15 @@ async function configCmd(args) {
     return;
   } else if (args[0] === "import") {
     if (!args[1]) throw new Error("Usage: azycode config import <file>");
-    const imported = JSON.parse(fs.readFileSync(args[1], "utf8"));
+    let imported;
+    try {
+      imported = JSON.parse(fs.readFileSync(args[1], "utf8"));
+    } catch (error) {
+      throw new Error(`Could not read config file ${args[1]}: ${error.message}`);
+    }
+    if (!imported || typeof imported !== "object") {
+      throw new Error(`Config file ${args[1]} is not a valid JSON object.`);
+    }
     if (JSON.stringify(imported).includes("...")) {
       throw new Error("Refusing to import redacted config. Use an unredacted config file.");
     }
@@ -1442,6 +1484,115 @@ async function memory(args) {
     return;
   }
   throw new Error("Usage: azycode memory add|list|remove");
+}
+
+function usageCmd(args) {
+  const flags = parseFlags(args);
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const action = positional[0] || "summary";
+
+  if (action === "reset") {
+    const count = resetUsage(flags.before ? { before: flags.before } : {});
+    console.log(`Usage reset. ${count} entries retained.`);
+    return;
+  }
+
+  if (action === "cost") {
+    const provider = flags.provider || positional[1];
+    const model = flags.model || positional[2];
+    const promptTokens = Number(flags.input || flags.promptTokens) || 0;
+    const completionTokens = Number(flags.output || flags.completionTokens) || 0;
+    const cost = computeCost(provider, model, promptTokens, completionTokens);
+    if (flags.json) {
+      console.log(JSON.stringify({ provider, model, promptTokens, completionTokens, cost }, null, 2));
+    } else {
+      console.log(`Estimated cost for ${promptTokens.toLocaleString()} input + ${completionTokens.toLocaleString()} output tokens (${provider}/${model}): $${cost.toFixed(6)}`);
+    }
+    return;
+  }
+
+  const stats = getUsageStats({
+    since: flags.since || null,
+    provider: flags.provider || null,
+    model: flags.model || null
+  });
+
+  if (flags.json) {
+    console.log(JSON.stringify(stats, null, 2));
+    return;
+  }
+
+  if (!stats.entries) {
+    console.log("No usage data recorded yet.");
+    return;
+  }
+  console.log("");
+  console.log(formatUsageReport(stats));
+  console.log("");
+}
+
+function journalCmd(args) {
+  const flags = parseFlags(args);
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const action = positional[0] || "list";
+
+  if (action === "clear") {
+    const count = clearJournal();
+    console.log(`Journal cleared. ${count} entries removed.`);
+    return;
+  }
+
+  if (action === "undo") {
+    if (flags.session) {
+      const result = undoSession(flags.session);
+      if (flags.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.undone === 0) {
+          console.log(result.errors[0] || "No entries found for session.");
+        } else {
+          console.log(`Undid ${result.undone} change(s) for session ${flags.session}.`);
+          for (const line of result.restored) console.log(`  ${line}`);
+          for (const line of result.errors) console.log(`  ${warnText(line)}`);
+        }
+      }
+      return;
+    }
+    const journalId = positional[1];
+    if (!journalId) throw new Error("Usage: azycode journal undo <id> | azycode journal undo --session <id>");
+    const result = undoChange(journalId);
+    if (flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      if (!result.entry) {
+        console.log(errorText(result.errors[0]));
+        return;
+      }
+      console.log(`Undid ${result.entry.tool} (${result.entry.id}).`);
+      for (const line of result.restored) console.log(`  ${line}`);
+      for (const line of result.errors) console.log(`  ${warnText(line)}`);
+    }
+    return;
+  }
+
+  const entries = listJournal({
+    sessionId: flags.session || null,
+    limit: Number(flags.limit) || 20,
+    tool: flags.tool || null
+  });
+
+  if (flags.json) {
+    console.log(JSON.stringify(entries, null, 2));
+    return;
+  }
+
+  if (!entries.length) {
+    console.log("No journal entries.");
+    return;
+  }
+  console.log("");
+  console.log(formatJournalReport(entries));
+  console.log("");
 }
 
 function todoCmd(args) {
@@ -1718,6 +1869,7 @@ async function goal(args) {
     const skills = parseSkills(args);
     const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills, returnSession: true }, { cancellable: true });
     updateState((done) => {
+      if (!done.goals[goalId]) return done; // goal removed by another writer
       done.goals[goalId].status = result !== undefined ? "done" : "stalled";
       done.goals[goalId].finishedAt = new Date().toISOString();
       if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
@@ -1738,6 +1890,7 @@ async function goal(args) {
     const skills = parseSkills(args);
     const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills, returnSession: true }, { cancellable: true });
     updateState((done) => {
+      if (!done.goals[goalId]) return done; // goal removed by another writer
       done.goals[goalId].status = result !== undefined ? "done" : "stalled";
       done.goals[goalId].finishedAt = new Date().toISOString();
       if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
@@ -1922,7 +2075,12 @@ async function subagent(args) {
     if (jsonFlag >= 0) {
       const payload = args[jsonFlag + 1];
       if (!payload) throw new Error("Usage: azycode subagent spawn --json '<tasks-json>'");
-      tasks = JSON.parse(payload);
+      try {
+        tasks = JSON.parse(payload);
+      } catch (error) {
+        throw new Error(`Invalid task JSON: ${error.message}`);
+      }
+      if (!Array.isArray(tasks)) throw new Error("--json payload must be an array of tasks.");
     } else {
       const name = args[1];
       const prompt = args.slice(2).join(" ");
