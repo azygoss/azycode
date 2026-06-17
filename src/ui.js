@@ -127,6 +127,170 @@ const PANEL_TITLE_ICONS = {
 // Style primitives
 // ---------------------------------------------------------------------------
 
+export function grokComposerLine({
+  model = null,
+  mode = null,
+  reasoning = null,
+  agent = null,
+  messages = null,
+  maxMessages = null,
+  width = stdout?.columns
+} = {}) {
+  const bits = [
+    model ? brand(truncate(model, 40)) : null,
+    mode ? chip(mode, "accent") : null,
+    reasoning ? chip(reasoning, "info") : null,
+    agent ? chip(`@${agent}`, "brand") : null,
+    messages != null && maxMessages != null ? chip(`${messages}/${maxMessages} msg`, "muted") : null
+  ].filter(Boolean);
+  if (!bits.length) return "";
+  const right = bits.join(`  ${subtle("·")}  `);
+  const cols = Math.max(40, Number(width) || 80);
+  const gap = cols - visibleLength(right);
+  return gap > 0 ? `${" ".repeat(gap)}${right}` : right;
+}
+
+
+export function grokShortcutLine() {
+  return [
+    `${subtle("keys")}`,
+    `${bold("Shift+Tab")} ${muted("mode")}`,
+    `${bold("Tab")} ${muted("reasoning")}`,
+    `${bold("/")} ${muted("commands")}`,
+    `${bold("↑↓")} ${muted("pick")}`,
+    `${bold("!")} ${muted("shell")}`
+  ].join(`  ${subtle("·")}  `);
+}
+
+
+export function grokComposerDock({
+  model = null,
+  mode = null,
+  reasoning = null,
+  agent = null,
+  messages = null,
+  maxMessages = null,
+  width = stdout?.columns
+} = {}) {
+  const W = Math.max(48, Number(width) || 80);
+  const lines = [];
+  const composer = grokComposerLine({ model, mode, reasoning, agent, messages, maxMessages, width: W });
+  if (composer) {
+    lines.push(subtle("  " + "─".repeat(Math.max(0, W - 4))));
+    lines.push(composer);
+  }
+  lines.push(`  ${grokShortcutLine()}`);
+  return lines;
+}
+
+
+export function grokWelcomeScreen({
+  connected = false,
+  workspace = "workspace",
+  branch = null,
+  width = stdout?.columns
+} = {}) {
+  const lines = [];
+  const pulse = connected ? success("●") : warn("●");
+  const statusWord = connected ? success("ready") : warn("setup");
+  const place = grokWorkspaceLabel(workspace, branch);
+  lines.push(`  ${brand(icon("diamond"))} ${bold(brand("azycode"))}  ${pulse} ${statusWord}  ${place}`);
+  lines.push(`  ${muted("What should we work on?")}  ${subtle("/help for commands")}`);
+  if (!connected) lines.push(`  ${warn(`${icon("warn")} connect with /login`)}`);
+  return lines;
+}
+
+
+export function isSpinnerActive() {
+  return Boolean(activeSpinner);
+}
+
+
+export function pill(text, color = "muted") {
+  return style(` ${text} `, color);
+}
+
+
+export function quoteBlock(text, { width = 80 } = {}) {
+  const inner = Math.max(16, width - 6);
+  const lines = wrapText(String(text ?? "").trim(), inner);
+  if (!lines.length || (lines.length === 1 && !lines[0])) return [muted("(empty)")];
+  return lines.map((line, index) => {
+    const lead = index === 0 ? brand(icon("prompt")) : faint("  ");
+    const body = index === 0 ? bold(accent(line)) : muted(line);
+    return `${lead} ${body}`;
+  });
+}
+
+
+export function runSummaryPanel(stats, { width, title = "run complete" } = {}) {
+  const statusTone = stats.status === "ok" ? "success" : stats.status === "error" ? "error" : "warn";
+  const headline = [
+    stats.status === "ok" ? success(icon("check")) : stats.status === "error" ? error(icon("cross")) : warn(icon("warn")),
+    bold(style(stats.status || "done", statusTone)),
+    stats.steps != null ? chip(`${stats.steps} step${stats.steps === 1 ? "" : "s"}`, "info") : null,
+    stats.toolCalls != null ? chip(`${stats.toolCalls} tool${stats.toolCalls === 1 ? "" : "s"}`, "accent") : null,
+    stats.toolFailures ? chip(`${stats.toolFailures} failed`, "error") : null,
+    stats.duration ? chip(stats.duration, "muted") : null,
+    stats.tokens ? chip(`${stats.tokens} tok`, "faint") : null
+  ].filter(Boolean).join(` ${faint("·")} `);
+  const timing = statCells([
+    stats.modelMs ? { label: "model", value: stats.modelMs, style: "info" } : null,
+    stats.toolMs ? { label: "tools", value: stats.toolMs, style: "accent" } : null,
+    stats.steps && stats.maxSteps ? { label: "budget", value: `${stats.steps}/${stats.maxSteps}`, style: "muted" } : null
+  ].filter(Boolean));
+  const rows = [];
+  if (headline) rows.push(headline);
+  if (timing) rows.push(faint(timing));
+  if (!rows.length) rows.push(muted("no activity"));
+  return box(rows, { width, title, titleTone: "success", frame: "rounded", color: "borderSoft", padding: 1 });
+}
+
+
+export function spinnerFrames() {
+  return SPINNER_FRAMES.slice();
+}
+
+
+export function tag(text, color = "muted") {
+  return style(text, color);
+}
+
+
+export function tree(items, { indent = 2, prefix = "" } = {}) {
+  const lines = [];
+  const stack = items.map((item, index) => ({ item, depth: 0, last: index === items.length - 1 }));
+  while (stack.length) {
+    const { item, depth, last } = stack.shift();
+    if (typeof item === "string") {
+      const branch = depth === 0 ? "" : `${" ".repeat(indent * depth)}${style(last ? "└─" : "├─", "subtle")} `;
+      lines.push(`${prefix}${branch}${item}`);
+    } else {
+      const head = item.head ?? "";
+      const branch = `${" ".repeat(indent * depth)}${style(last ? "└─" : "├─", "subtle")} `;
+      const headText = head ? `${item.style ? style(head, item.style) : head}` : "";
+      const meta = item.meta ? ` ${style(item.meta, "muted")}` : "";
+      lines.push(`${prefix}${branch}${headText}${meta}`);
+      const children = item.children || [];
+      children.forEach((child, index) => {
+        stack.push({ item: child, depth: depth + 1, last: index === children.length - 1 });
+      });
+    }
+  }
+  return lines;
+}
+
+
+export function wordmark({ version = "v0.1", tagline = "interactive coding harness", connected = null } = {}) {
+  const mark = `${brand(icon("diamond"))} ${bold(brand("azycode"))} ${faint("·")} ${muted(tagline)}`;
+  const status = connected == null
+    ? muted("local agent")
+    : chip(connected ? "online" : "offline", connected ? "success" : "warn");
+  const meta = `${chip(version, "faint")}  ${status}`;
+  return [mark, meta];
+}
+
+
 export function style(text, name) {
   if (!colorsEnabled) return String(text);
   const open = namedColors[name];
@@ -201,10 +365,6 @@ export function truncate(value, width, suffix = "…") {
     len += 1;
   }
   return `${out.join("")}${suffix}`;
-}
-
-export function clipText(value, max) {
-  return truncate(value, max, "…");
 }
 
 function stripAnsi(value) {
@@ -368,10 +528,6 @@ export function spinnerFrame(index) {
   return SPINNER_FRAMES[((i % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) % SPINNER_FRAMES.length];
 }
 
-export function spinnerFrames() {
-  return SPINNER_FRAMES.slice();
-}
-
 // ---------------------------------------------------------------------------
 // Badges + status markers
 // ---------------------------------------------------------------------------
@@ -391,36 +547,9 @@ export function statusDot(state = "ok") {
   return style("●", "muted");
 }
 
-export function policyTag(mode) {
-  if (mode === "auto") return style("auto", "success");
-  if (mode === "ask") return style("ask", "warn");
-  if (mode === "deny") return style("deny", "error");
-  return style(String(mode ?? "—"), "muted");
-}
-
-export function pill(text, color = "muted") {
-  return style(` ${text} `, color);
-}
-
-export function tag(text, color = "muted") {
-  return style(text, color);
-}
-
 // ---------------------------------------------------------------------------
 // Status bar
 // ---------------------------------------------------------------------------
-
-export function statusBar(segments) {
-  return segments
-    .filter((segment) => segment !== null && segment !== undefined)
-    .map((segment) => {
-      if (typeof segment === "string") return segment;
-      if (segment.style) return style(segment.text, segment.style);
-      if (segment.color) return style(segment.text, segment.color);
-      return segment.text;
-    })
-    .join(style(" │ ", "subtle"));
-}
 
 export function promptStatus({
   mode,
@@ -518,8 +647,10 @@ export function box(rows, {
   const bordered = lines.map((line) => `${style(f.v, color)} ${line} ${style(f.v, color)}`);
   let top;
   if (title) {
-    const label = ` ${panelTitle(title, { tone: titleTone, icon: titleIcon })} `;
-    const remaining = w - 2 - visibleLength(label);
+    // ponytail: truncate the title so the top border never exceeds the box width.
+    const titleText = truncate(title, Math.max(4, w - 4));
+    const label = ` ${panelTitle(titleText, { tone: titleTone, icon: titleIcon })} `;
+    const remaining = Math.max(0, w - 2 - visibleLength(label));
     const left = 1;
     const right = Math.max(0, remaining - left);
     top = `${style(f.tl, color)}${style(f.h.repeat(left), color)}${label}${style(f.h.repeat(right), color)}${style(f.tr, color)}`;
@@ -576,22 +707,41 @@ export function list(items) {
   for (const item of items) console.log(`  ${item}`);
 }
 
-export function table(rows, columns) {
+export function table(rows, columns, { maxWidth = stdout?.columns || 80 } = {}) {
   if (!rows.length) return;
-  const widths = columns.map((column) => {
+  const sep = "  ";
+  let widths = columns.map((column) => {
     const cells = rows.map((row) => visibleLength(String(row[column.key] ?? "")));
     return Math.max(column.label.length, ...cells);
   });
+  widths = clampTableWidths(widths, columns.length, sep.length, maxWidth);
   console.log(columns.map((column, index) => {
-    const label = index === columns.length - 1 ? column.label : padEnd(column.label, widths[index]);
+    const label = renderCell(column.label, widths, index, columns.length);
     return style(label, "dim");
-  }).join("  "));
+  }).join(sep));
   for (const row of rows) {
     console.log(columns.map((column, index) => {
       const cell = String(row[column.key] ?? "");
-      return index === columns.length - 1 ? cell : padEnd(cell, widths[index]);
-    }).join("  "));
+      return renderCell(cell, widths, index, columns.length);
+    }).join(sep));
   }
+}
+
+// ponytail: shared width-clamp for table/renderTable. Shrinks the last column
+// (and any overflow) so wide tables truncate with "…" instead of wrapping.
+function clampTableWidths(widths, colCount, sepLen, maxWidth) {
+  const total = widths.reduce((sum, w) => sum + w, 0) + sepLen * (colCount - 1);
+  if (total <= maxWidth || colCount === 0) return widths;
+  const last = colCount - 1;
+  const reserved = widths.reduce((sum, w, i) => i === last ? sum : sum + w, 0) + sepLen * (colCount - 1);
+  const lastWidth = Math.max(8, maxWidth - reserved);
+  return widths.map((w, i) => i === last ? lastWidth : w);
+}
+
+function renderCell(value, widths, index, colCount) {
+  const text = String(value ?? "");
+  if (index === colCount - 1) return truncate(text, widths[index]);
+  return padEnd(text, widths[index]);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,17 +749,18 @@ export function table(rows, columns) {
 // ---------------------------------------------------------------------------
 
 export function renderTable(rows, columns, options = {}) {
-  const { header = true, border = true, headerColor = "muted", zebra = false } = options;
+  const { header = true, border = true, headerColor = "muted", zebra = false, maxWidth = stdout?.columns || 80 } = options;
   if (!rows.length && !header) return [];
-  const widths = columns.map((column) => {
+  let widths = columns.map((column) => {
     const cells = rows.map((row) => visibleLength(String(row[column.key] ?? "")));
     const headerLen = column.label ? visibleLength(column.label) : 0;
     return Math.max(headerLen, ...cells, column.minWidth || 0);
   });
+  widths = clampTableWidths(widths, columns.length, "  ".length, maxWidth);
   const sep = "  ";
   const out = [];
   if (header) {
-    const headerRow = columns.map((column, index) => style(padEnd(column.label || "", widths[index]), headerColor)).join(sep);
+    const headerRow = columns.map((column, index) => style(padEnd(truncate(column.label || "", widths[index]), widths[index]), headerColor)).join(sep);
     out.push(headerRow);
     if (border) {
       out.push(style(columns.map((column, index) => "─".repeat(widths[index])).join(sep), "rule"));
@@ -618,16 +769,11 @@ export function renderTable(rows, columns, options = {}) {
   rows.forEach((row, rowIndex) => {
     const isZebra = zebra && rowIndex % 2 === 1;
     out.push(columns.map((column, index) => {
-      const cell = String(row[column.key] ?? "");
-      const rendered = index === columns.length - 1 ? cell : padEnd(cell, widths[index]);
+      const rendered = renderCell(String(row[column.key] ?? ""), widths, index, columns.length);
       return isZebra ? dim(rendered) : rendered;
     }).join(sep));
   });
   return out;
-}
-
-export function printTable(rows, columns, options = {}) {
-  for (const line of renderTable(rows, columns, options)) console.log(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -647,29 +793,6 @@ export function keyValueList(rows, { boxed = false, frame: frameName = "rounded"
 // ---------------------------------------------------------------------------
 // Tree-like output
 // ---------------------------------------------------------------------------
-
-export function tree(items, { indent = 2, prefix = "" } = {}) {
-  const lines = [];
-  const stack = items.map((item, index) => ({ item, depth: 0, last: index === items.length - 1 }));
-  while (stack.length) {
-    const { item, depth, last } = stack.shift();
-    if (typeof item === "string") {
-      const branch = depth === 0 ? "" : `${" ".repeat(indent * depth)}${style(last ? "└─" : "├─", "subtle")} `;
-      lines.push(`${prefix}${branch}${item}`);
-    } else {
-      const head = item.head ?? "";
-      const branch = `${" ".repeat(indent * depth)}${style(last ? "└─" : "├─", "subtle")} `;
-      const headText = head ? `${item.style ? style(head, item.style) : head}` : "";
-      const meta = item.meta ? ` ${style(item.meta, "muted")}` : "";
-      lines.push(`${prefix}${branch}${headText}${meta}`);
-      const children = item.children || [];
-      children.forEach((child, index) => {
-        stack.push({ item: child, depth: depth + 1, last: index === children.length - 1 });
-      });
-    }
-  }
-  return lines;
-}
 
 // ---------------------------------------------------------------------------
 // Spinner runtime (used by TUI for "working..." state)
@@ -693,7 +816,7 @@ export function startSpinner({ label = "working", stream = stderr, isTTY = strea
     const elapsed = prettyElapsed(activeStart);
     const frame = spinnerFrame(activeSpinner.frame);
     const text = `${style(frame, "brand")} ${activeSpinner.label} ${muted(elapsed)}`;
-    stream.write(`\r${" ".repeat(80)}\r${text}`);
+    stream.write(`\r${" ".repeat(stream.columns || 80)}\r${text}`);
     activeSpinner.frame += 1;
   };
   render();
@@ -712,7 +835,7 @@ export function stopSpinner({ clear = true, finalLabel = null, finalStyle = "suc
   const wasTty = activeSpinner.tty;
   const elapsed = prettyElapsed(activeStart);
   if (wasTty && clear) {
-    activeSpinner.stream.write(`\r${" ".repeat(80)}\r`);
+    activeSpinner.stream.write(`\r${" ".repeat(activeSpinner.stream.columns || 80)}\r`);
   }
   if (finalLabel) {
     const symbol = finalStyle === "error" ? style("✗", "error") : style("✓", "success");
@@ -723,18 +846,9 @@ export function stopSpinner({ clear = true, finalLabel = null, finalStyle = "suc
   activeStart = 0;
 }
 
-export function isSpinnerActive() {
-  return Boolean(activeSpinner);
-}
-
 // ---------------------------------------------------------------------------
 // Indented block (multiline content with hanging indent)
 // ---------------------------------------------------------------------------
-
-export function indentBlock(text, spaces = 2) {
-  const pad = " ".repeat(spaces);
-  return String(text ?? "").split("\n").map((line) => `${pad}${line}`).join("\n");
-}
 
 // ---------------------------------------------------------------------------
 // Code block (subtle background look using dim)
@@ -805,44 +919,6 @@ export function progressBar(current, max, width = 24, { tone = null } = {}) {
   return `[${bar}] ${muted(`${value}/${cap}`)}`;
 }
 
-export function budgetProgressBar(current, max, width = 24) {
-  return progressBar(current, max, width);
-}
-
-export function wordmark({ version = "v0.1", tagline = "interactive coding harness", connected = null } = {}) {
-  const mark = `${brand(icon("diamond"))} ${bold(brand("azycode"))} ${faint("·")} ${muted(tagline)}`;
-  const status = connected == null
-    ? muted("local agent")
-    : chip(connected ? "online" : "offline", connected ? "success" : "warn");
-  const meta = `${chip(version, "faint")}  ${status}`;
-  return [mark, meta];
-}
-
-export function welcomeHero({ repo = "workspace", branch = null, connected = false } = {}) {
-  const [mark, tagline] = wordmark({ connected });
-  return [
-    mark,
-    tagline,
-    "",
-    statCells([
-      { value: connected ? "online" : "offline", style: connected ? "success" : "warn" },
-      { value: repo, style: "accent" },
-      branch ? { value: branch, style: branch === "unknown" ? "muted" : "info" } : null
-    ].filter(Boolean))
-  ];
-}
-
-export function quoteBlock(text, { width = 80 } = {}) {
-  const inner = Math.max(16, width - 6);
-  const lines = wrapText(String(text ?? "").trim(), inner);
-  if (!lines.length || (lines.length === 1 && !lines[0])) return [muted("(empty)")];
-  return lines.map((line, index) => {
-    const lead = index === 0 ? brand(icon("prompt")) : faint("  ");
-    const body = index === 0 ? bold(accent(line)) : muted(line);
-    return `${lead} ${body}`;
-  });
-}
-
 function renderInlineMarkdown(text) {
   let value = String(text ?? "");
   value = value.replace(/\*\*([^*]+)\*\*/g, (_, inner) => bold(accent(inner)));
@@ -883,14 +959,6 @@ export function brandBanner(rows, { width, frame: frameName = "rounded", color =
   return box(rows, { width, frame: frameName, color, title, titleTone, padding: 2 });
 }
 
-export function taskPanel(rows, { width, title = "task" } = {}) {
-  return box(rows, { width, title, titleTone: "brand", color: "border", padding: 2 });
-}
-
-export function assistantPanel(content, { width, title = "assistant" } = {}) {
-  return responsePanel(content, { width, title });
-}
-
 export function timelineRow({
   glyph = icon("bullet"),
   glyphStyle = "muted",
@@ -919,12 +987,6 @@ export function timelineRow({
   return `${pad}${spacer}${iconText}  ${label}${detailText}${metaText}${statusText}`;
 }
 
-export function activityHeader(title = "activity", { width = 60 } = {}) {
-  const head = `${brand(icon("stream"))} ${bold(style(title, "brand"))}`;
-  const lineWidth = Math.max(8, width - visibleLength(head) - 1);
-  return `${head} ${rule(lineWidth, { char: "─", color: "faint" })}`;
-}
-
 export function statCells(stats, { separator = null } = {}) {
   const sep = separator ?? style(" │ ", "subtle");
   return stats
@@ -935,29 +997,6 @@ export function statCells(stats, { separator = null } = {}) {
       return `${label}${value}`;
     })
     .join(sep);
-}
-
-export function runSummaryPanel(stats, { width, title = "run complete" } = {}) {
-  const statusTone = stats.status === "ok" ? "success" : stats.status === "error" ? "error" : "warn";
-  const headline = [
-    stats.status === "ok" ? success(icon("check")) : stats.status === "error" ? error(icon("cross")) : warn(icon("warn")),
-    bold(style(stats.status || "done", statusTone)),
-    stats.steps != null ? chip(`${stats.steps} step${stats.steps === 1 ? "" : "s"}`, "info") : null,
-    stats.toolCalls != null ? chip(`${stats.toolCalls} tool${stats.toolCalls === 1 ? "" : "s"}`, "accent") : null,
-    stats.toolFailures ? chip(`${stats.toolFailures} failed`, "error") : null,
-    stats.duration ? chip(stats.duration, "muted") : null,
-    stats.tokens ? chip(`${stats.tokens} tok`, "faint") : null
-  ].filter(Boolean).join(` ${faint("·")} `);
-  const timing = statCells([
-    stats.modelMs ? { label: "model", value: stats.modelMs, style: "info" } : null,
-    stats.toolMs ? { label: "tools", value: stats.toolMs, style: "accent" } : null,
-    stats.steps && stats.maxSteps ? { label: "budget", value: `${stats.steps}/${stats.maxSteps}`, style: "muted" } : null
-  ].filter(Boolean));
-  const rows = [];
-  if (headline) rows.push(headline);
-  if (timing) rows.push(faint(timing));
-  if (!rows.length) rows.push(muted("no activity"));
-  return box(rows, { width, title, titleTone: "success", frame: "rounded", color: "borderSoft", padding: 1 });
 }
 
 export function responsePanel(content, { width, title = "assistant", frame: frameName = "rounded" } = {}) {
@@ -1035,7 +1074,7 @@ export function shellPanel(command, text, { width, title = "shell" } = {}) {
 
 export function approvalPanel(question, { width, defaultAnswer = "n" } = {}) {
   return box([
-    `${warnText(icon("warn"))} ${bold("Approval required")}`,
+    `${warn(icon("warn"))} ${bold("Approval required")}`,
     "",
     question,
     "",
@@ -1201,76 +1240,6 @@ export function grokUserBar(prompt, { width = stdout?.columns, timestamp = grokT
   return gap > 2 ? `${left}${" ".repeat(gap)}${ts}` : `${left}  ${ts}`;
 }
 
-export function grokComposerLine({
-  model = null,
-  mode = null,
-  reasoning = null,
-  agent = null,
-  messages = null,
-  maxMessages = null,
-  width = stdout?.columns
-} = {}) {
-  const bits = [
-    model ? brand(truncate(model, 40)) : null,
-    mode ? chip(mode, "accent") : null,
-    reasoning ? chip(reasoning, "info") : null,
-    agent ? chip(`@${agent}`, "brand") : null,
-    messages != null && maxMessages != null ? chip(`${messages}/${maxMessages} msg`, "muted") : null
-  ].filter(Boolean);
-  if (!bits.length) return "";
-  const right = bits.join(`  ${subtle("·")}  `);
-  const cols = Math.max(40, Number(width) || 80);
-  const gap = cols - visibleLength(right);
-  return gap > 0 ? `${" ".repeat(gap)}${right}` : right;
-}
-
-export function grokShortcutLine() {
-  return [
-    `${subtle("keys")}`,
-    `${bold("Shift+Tab")} ${muted("mode")}`,
-    `${bold("Tab")} ${muted("reasoning")}`,
-    `${bold("/")} ${muted("commands")}`,
-    `${bold("↑↓")} ${muted("pick")}`,
-    `${bold("!")} ${muted("shell")}`
-  ].join(`  ${subtle("·")}  `);
-}
-
-export function grokWelcomeScreen({
-  connected = false,
-  workspace = "workspace",
-  branch = null,
-  width = stdout?.columns
-} = {}) {
-  const lines = [];
-  const pulse = connected ? success("●") : warn("●");
-  const statusWord = connected ? success("ready") : warn("setup");
-  const place = grokWorkspaceLabel(workspace, branch);
-  lines.push(`  ${brand(icon("diamond"))} ${bold(brand("azycode"))}  ${pulse} ${statusWord}  ${place}`);
-  lines.push(`  ${muted("What should we work on?")}  ${subtle("/help for commands")}`);
-  if (!connected) lines.push(`  ${warn(`${icon("warn")} connect with /login`)}`);
-  return lines;
-}
-
-export function grokComposerDock({
-  model = null,
-  mode = null,
-  reasoning = null,
-  agent = null,
-  messages = null,
-  maxMessages = null,
-  width = stdout?.columns
-} = {}) {
-  const W = Math.max(48, Number(width) || 80);
-  const lines = [];
-  const composer = grokComposerLine({ model, mode, reasoning, agent, messages, maxMessages, width: W });
-  if (composer) {
-    lines.push(subtle("  " + "─".repeat(Math.max(0, W - 4))));
-    lines.push(composer);
-  }
-  lines.push(`  ${grokShortcutLine()}`);
-  return lines;
-}
-
 export function grokRunMeta(stats = {}) {
   const bits = [];
   if (stats.duration) bits.push(stats.duration);
@@ -1312,8 +1281,8 @@ export function asciiLogo({ width = 60 } = {}) {
   const top = "  ▄▀█ ▀█ █▄█ █▀▀ █▀█ █▀▄ █▀▀";
   const bot = "  █▀█ █▄ ░█░ █▄▄ █▄█ █▄▀ ██▄";
   
-  const colorsEnabled = typeof process !== "undefined" && !process.env.NO_COLOR;
-  const gradientCodes = colorsEnabled && typeof process !== "undefined" && process.stdout?.isTTY && process.env.COLORTERM === "truecolor"
+  // ponytail: reuse module-level detection (colorsEnabled gates on TTY/FORCE_COLOR/dumb too).
+  const gradientCodes = trueColorEnabled
     ? [
         "\x1b[38;2;120;140;255m",   // brand blue/purple
         "\x1b[38;2;125;160;255m",
@@ -1751,53 +1720,6 @@ export function sessionCard({
 // ---------------------------------------------------------------------------
 // 8. File Tree View
 // ---------------------------------------------------------------------------
-
-export function fileTreeView(files, { width = 60, maxFiles = 8 } = {}) {
-  if (!files || !files.length) return [muted("  (no files)")];
-
-  // Parse into directory groups
-  const groups = {};
-  for (const entry of files) {
-    const filePath = typeof entry === "string" ? entry : entry.path || entry.file || "";
-    const parts = String(filePath).split("/");
-    const fileName = parts.pop() || filePath;
-    const dir = parts.length ? parts.join("/") + "/" : "";
-    if (!groups[dir]) groups[dir] = [];
-    groups[dir].push({
-      name: fileName,
-      added: typeof entry === "object" ? entry.added : undefined,
-      removed: typeof entry === "object" ? entry.removed : undefined
-    });
-  }
-
-  const lines = [];
-  let count = 0;
-  const dirs = Object.keys(groups).sort();
-
-  for (const dir of dirs) {
-    if (count >= maxFiles) break;
-    if (dir) lines.push(`  ${accent(dir)}`);
-    const entries = groups[dir];
-    for (let i = 0; i < entries.length && count < maxFiles; i++) {
-      const entry = entries[i];
-      const isLast = i === entries.length - 1;
-      const connector = isLast ? "└─" : "├─";
-      const changeBits = [];
-      if (entry.added != null) changeBits.push(success(`+${entry.added}`));
-      if (entry.removed != null) changeBits.push(error(`-${entry.removed}`));
-      const changeStr = changeBits.length ? ` ${muted("(")}${changeBits.join(" ")}${muted(")")}` : "";
-      lines.push(`  ${style(connector, "faint")} ${entry.name}${changeStr}`);
-      count++;
-    }
-  }
-
-  const totalFiles = files.length;
-  if (totalFiles > maxFiles) {
-    lines.push(`  ${faint(`… and ${totalFiles - maxFiles} more file${totalFiles - maxFiles === 1 ? "" : "s"}`)}`);
-  }
-
-  return lines;
-}
 
 // ---------------------------------------------------------------------------
 // 9. Breadcrumb Trail

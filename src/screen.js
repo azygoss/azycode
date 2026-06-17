@@ -152,6 +152,3 @@ export function deleteCharAfter(line, cursor) {
   return { line: line.slice(0, cursor) + line.slice(cursor + 1), cursor };
 }
 
-export function visibleColumn(text) {
-  return visibleLength(text);
-}

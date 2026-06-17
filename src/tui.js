@@ -17,27 +17,20 @@ import { listSkills } from "./skills.js";
 import { gitGuard } from "./guard.js";
 import {
   accent,
-  activityHeader,
   approvalPanel,
-  badge,
   blank,
   bold,
   box,
   brand,
   brandBanner,
-  taskPanel,
-  budgetProgressBar,
   chip,
-  code,
   createStreamPanel,
   dim,
   error as errorText,
   faint,
   grokActionRow,
-  grokComposerDock,
   grokRunMeta,
   grokUserBar,
-  grokWelcomeScreen,
   header as renderHeader,
   highlightTerms,
   helpPanel,
@@ -45,7 +38,6 @@ import {
   icon,
   info as infoText,
   keyValueList,
-  kv,
   list,
   listPanel,
   muted,
@@ -53,16 +45,13 @@ import {
   padEnd,
   palettePanel,
   panel,
-  pill,
   prettyMs,
   progressBar,
   promptStatus,
-  quoteBlock,
   renderTable,
   renderGrokResponse,
   responsePanel,
   rule,
-  runSummaryPanel,
   section as sectionText,
   shellPanel,
   spinnerFrame,
@@ -76,14 +65,10 @@ import {
   style,
   subtle,
   success as successText,
-  tag,
   title as titleText,
   truncate,
-  tree,
   visibleLength,
   warn as warnText,
-  welcomeHero,
-  wordmark,
   enhancedWelcomeScreen,
   errorPanel,
   estimateCost,
@@ -142,6 +127,13 @@ function tuiBlank(stream = output) {
   tuiWriteln("", stream);
 }
 
+// ponytail: shared "… N more" footer for list commands that cap their output.
+function printMoreFooter(total, shown, hint) {
+  if (total <= shown) return;
+  const more = hint ? `… ${total - shown} more (${hint})` : `… ${total - shown} more`;
+  console.log(`  ${faint(more)}`);
+}
+
 function emitLine(line, { tty = output.isTTY, stream = output } = {}) {
   if (tty) tuiWriteln(line, stream);
   else console.log(line);
@@ -198,7 +190,9 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
   const renderPane = createComposerRenderer(state);
   const originalLog = console.log;
   console.log = (...args) => {
-    const text = args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" ");
+    let text = args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" ");
+    // ponytail: strip ANSI when output is piped/non-TTY so captures stay clean.
+    if (!output.isTTY) text = stripAnsi(text);
     if (!text) {
       tuiBlank();
       return;
@@ -239,7 +233,8 @@ export async function launchTui({ cwd = process.cwd() } = {}) {
         } else {
           await askAgent(line, state, rl, promptSession);
           if (line && !line.startsWith("/")) {
-            state.history.push(line);
+            // ponytail: cap history to avoid unbounded growth over a long session.
+            state.history = [...state.history.slice(-200), line];
             state.historyIndex = -1;
           }
         }
@@ -702,12 +697,6 @@ function printAgentRunHeader(state, prompt, maxSteps, attachments, width = tuiWi
   }
 }
 
-function renderAssistantContent(content) {
-  const text = String(content ?? "").trim();
-  if (!text) return muted("(no response)");
-  return responsePanel(text, { width: tuiWidth(), title: "assistant" }).join("\n");
-}
-
 async function confirmInTui(rl, question) {
   const tty = output.isTTY;
   tuiBlank();
@@ -865,6 +854,7 @@ async function handleCommand(line, state, rl = null, promptSession = null) {
   }
   if (command === "context") {
     if (args[0] === "show") {
+      console.log(`${muted("building context…")}`);
       const pack = await contextPack(state.cwd, { maxFiles: 20, maxBytes: 40000 });
       console.log(`${muted(icon("chevron"))} ${formatContextPack(pack)}`);
       return;
@@ -1148,6 +1138,8 @@ function helpGroups() {
       ["/reasoning", "minimal, low, medium, high"],
       ["/profile", "permission profile"],
       ["/context", "toggle repository context"],
+      ["/instructions", "show active AGENTS.md sources"],
+      ["/stream", "toggle response streaming"],
       ["/progress", "toggle inline activity"]
     ]},
     { title: "Review", items: [
@@ -1160,9 +1152,12 @@ function helpGroups() {
     { title: "State", items: [
       ["/sessions", "recent agent sessions"],
       ["/session", "show session transcript"],
+      ["/resume", "resume a saved session"],
       ["/tools", "recent tool activity"],
       ["/goals", "saved goals"],
       ["/missions", "saved missions"],
+      ["/todo", "manage workspace todos"],
+      ["/skill", "list, add, remove skills"],
       ["/cost", "session token cost summary"]
     ]},
     { title: "Other", items: [
@@ -1173,7 +1168,9 @@ function helpGroups() {
       ["/compact", "trim or llm-compact context"],
       ["/hooks", "show lifecycle hook handlers"],
       ["/commands", "list custom slash commands"],
+      ["/reload", "re-read config and refresh"],
       ["/clear", "redraw the screen"],
+      ["!<cmd>", "run a shell command in the workspace"],
       ["/exit", "leave azycode"]
     ]}
   ];
@@ -1300,12 +1297,22 @@ function printWorkspace(state) {
 }
 
 function printReview(state) {
-  const review = localReview(state.cwd);
+  blank();
+  console.log(`${muted("reviewing changes…")}`);
+  let review;
+  try {
+    review = localReview(state.cwd);
+  } catch (error) {
+    console.log(`${warnText(icon("warn"))} Could not run review: ${error.message}`);
+    blank();
+    return;
+  }
   console.log(formatLocalReview(review));
   const actionable = review.findings.filter((item) => item.severity !== "info");
   if (!actionable.length) {
     console.log(`${successText(icon("check"))} ${muted(`review: clean (${review.files.length} files, +${review.stats.added} -${review.stats.removed})`)}`);
   }
+  blank();
 }
 
 const GIT_STDIO = ["ignore", "pipe", "ignore"];
@@ -1397,7 +1404,8 @@ function printSessions() {
   blank();
   console.log(`${brand(icon("chevronRight"))} ${bold("Sessions")}`);
   blank();
-  const rows = sessionListEntries(loadState().sessions || {}, { promptLimit: 80 }).slice(0, 10);
+  const all = sessionListEntries(loadState().sessions || {}, { promptLimit: 80 });
+  const rows = all.slice(0, 10);
   for (const row of rows) {
     const cardLines = sessionCard({
       id: row.id,
@@ -1412,6 +1420,7 @@ function printSessions() {
     for (const line of cardLines) console.log(`  ${line}`);
     blank();
   }
+  printMoreFooter(all.length, rows.length, "/sessions for all");
 }
 
 function printSession(args) {
@@ -1440,7 +1449,8 @@ function printToolRuns() {
   blank();
   console.log(`${brand(icon("chevronRight"))} ${bold("Tool runs")}`);
   blank();
-  const rows = toolRunListEntries(loadState().toolRuns || [], { limit: 10 });
+  const all = toolRunListEntries(loadState().toolRuns || [], { limit: 1000 });
+  const rows = all.slice(0, 10);
   for (const row of rows) {
     // row fields come from toolRunListEntries: tool, summary, ok, ms, session, step, at
     const lines = toolCard({
@@ -1456,6 +1466,7 @@ function printToolRuns() {
     if (row.session) console.log(`  ${muted("session:")} ${row.session}`);
     blank();
   }
+  printMoreFooter(all.length, rows.length);
 }
 
 async function printHealth(state) {
@@ -1707,8 +1718,10 @@ async function handleModels(args, state) {
 }
 
 function printGoals() {
-  const goals = Object.entries(loadState().goals || {}).slice(-10).reverse();
+  const all = Object.entries(loadState().goals || {});
+  const goals = all.slice(-10).reverse();
   printRows("Goals", goals.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.text || "", 60)}`));
+  printMoreFooter(all.length, goals.length);
 }
 
 function handleGoal(args) {
@@ -1756,8 +1769,10 @@ function handleGoal(args) {
 }
 
 function printMissions() {
-  const missions = Object.entries(loadState().missions || {}).slice(-10).reverse();
+  const all = Object.entries(loadState().missions || {});
+  const missions = all.slice(-10).reverse();
   printRows("Missions", missions.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.name || "", 60)}`));
+  printMoreFooter(all.length, missions.length);
 }
 
 function handleMemory(args) {
@@ -1864,7 +1879,16 @@ async function handleMission(args, state, rl) {
       console.log(warnText(`${icon("warn")} mission cancelled.`));
       return;
     }
-    throw error;
+    blank();
+    const errLines = errorPanel({
+      title: "Mission Error",
+      message: error.message,
+      code: error.code || error.status || null,
+      width: tuiWidth()
+    }).lines;
+    if (errLines) emitLines(errLines, { tty: output.isTTY });
+    else console.log(errorText(`${icon("cross")} ${error.message}`));
+    blank();
   }
 }
 
@@ -2072,11 +2096,22 @@ export async function loginProvider(state, rl) {
 
 async function readSecret(label, rl) {
   if (!input.isTTY) return rl.question(label);
+  // ponytail: feature-detect stty; on systems without it (Windows) fall back to
+  // plain readline input instead of crashing /login with an unguarded throw.
+  let sttyAvailable = false;
+  try {
+    execFileSync("stty", ["--version"], { stdio: "ignore" });
+    sttyAvailable = true;
+  } catch {
+    sttyAvailable = false;
+  }
+  if (!sttyAvailable) return rl.question(label);
   try {
     execFileSync("stty", ["-echo"], { stdio: ["inherit", "ignore", "ignore"] });
     return await rl.question(label);
   } finally {
-    execFileSync("stty", ["echo"], { stdio: ["inherit", "ignore", "ignore"] });
+    try { execFileSync("stty", ["echo"], { stdio: ["inherit", "ignore", "ignore"] }); }
+    catch { /* echo may already be on; best-effort */ }
     output.write("\n");
   }
 }

@@ -51,7 +51,7 @@ import { describeExecutionPolicy, resolveExecutionPolicy, sandboxStatus, SANDBOX
 import { formatLocalReviewJson } from "./local-review.js";
 import { toolCatalog } from "./tools.js";
 import * as ui from "./ui.js";
-import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, pill, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
+import { accent, badge, bold, box, brand, code, dim as dimText, error as errorText, faint, icon, info as infoText, keyValueList, muted, paint, prettyMs, promptStatus, renderTable, rule, statusDot, style, subtle, success as successText, warn as warnText } from "./ui.js";
 import { launchTui } from "./tui.js";
 import { createAgentProgress, formatAgentRunSummary, formatAgentStepLine, formatSessionTranscript, formatToolRunLine, hasActiveProvider, runtimeSnapshot, sessionListEntries, summarizeAgentRun, summarizeToolArgs, toolRunListEntries, withAgentAbort } from "./harness.js";
 import { discoverProjectInstructions, listInstructionSources } from "./instructions.js";
@@ -152,6 +152,14 @@ export async function main(argv) {
     case "keys": return keys(args);
     default:
       if (cmd.startsWith("-")) return help();
+      // A single lowercase token with no args is almost certainly a command typo,
+      // not a free-text prompt — error instead of silently billing an LLM call.
+      // Real prompts are phrases (spaces) or multi-word, and still reach run().
+      if (args.length === 0 && /^[a-z][a-z-]*$/.test(cmd)) {
+        console.error(`Unknown command: ${cmd}. Run 'azycode help'.`);
+        process.exitCode = 2;
+        return;
+      }
       return run([cmd, ...args]);
   }
 }
