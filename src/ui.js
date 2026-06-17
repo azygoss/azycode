@@ -1059,8 +1059,14 @@ export function helpPanel(groups, { width, footer = null } = {}) {
 }
 
 export function listPanel(title, rows, { width, empty = "(none)" } = {}) {
-  const body = rows?.length ? rows : [muted(empty)];
-  return box(body, { width, title, titleTone: "brand", frame: "rounded", color: "border", padding: 1 });
+  const w = Math.max(20, width || 80);
+  const lines = [`  ${brand(icon("chevronRight"))} ${bold(title)}`];
+  if (rows?.length) {
+    for (const row of rows) lines.push(`  ${String(row ?? "")}`);
+  } else {
+    lines.push(`  ${muted(empty)}`);
+  }
+  return lines;
 }
 
 export function shellPanel(command, text, { width, title = "shell" } = {}) {
@@ -1357,50 +1363,42 @@ export function enhancedWelcomeScreen({
   width = 80
 } = {}) {
   const w = Math.max(48, width);
+  const dot = style("●", connected ? "success" : "warn");
+  const sep = style(" · ", "subtle");
   const lines = [];
 
-  lines.push(...asciiLogo({ width: w - 4 }));
+  // Line 1: wordmark + version + connection state.
+  const versionBit = faint("v0.1");
+  const connBit = connected ? success("connected") : warn("offline");
+  lines.push(`  ${bold(brand("azycode"))}  ${versionBit}  ${dot} ${connBit}`);
 
-  // Literal wordmark line so the welcome is identifiable as plain text
-  // (the ASCII-art logo alone is not machine-readable as "azycode").
-  lines.push(`  ${bold(brand("azycode"))}`);
-
-  const dot = connected ? success("●") : warn("●");
-  const connLabel = connected ? success("connected") : warn("offline");
+  // Line 2: context row — place · platform · model · mode/reason.
   const place = grokWorkspaceLabel(workspace, branch);
-  const nodeBit = nodeVersion ? faint(nodeVersion) : "";
-  const platBit = platform ? faint(platform) : "";
-  const statusParts = [`${dot} ${connLabel}`, place, nodeBit, platBit].filter(Boolean);
-  
-  lines.push(`  ${statusParts.join(style("  ·  ", "subtle"))}`);
-  
-  const modelBit = model ? `${muted("model:")} ${accent(model)}` : "";
-  const modeBit = mode ? `${muted("mode:")} ${info(mode)}` : "";
-  const reasoningBit = reasoning ? `${muted("reason:")} ${info(reasoning)}` : "";
-  const stateParts = [modelBit, modeBit, reasoningBit].filter(Boolean);
-  if (stateParts.length) {
-    lines.push(`  ${stateParts.join(style("  ·  ", "subtle"))}`);
-  }
-  
-  lines.push(`  ${style("─".repeat(Math.max(8, w - 6)), "rule")}`);
+  const ctxParts = [place, platform ? faint(platform) : ""].filter(Boolean);
+  if (model) ctxParts.push(accent(model));
+  const modeReason = [mode, reasoning].filter(Boolean).join("/");
+  if (modeReason) ctxParts.push(info(modeReason));
+  if (ctxParts.length) lines.push(`  ${ctxParts.join(sep)}`);
 
-  // Combine actions into just 2 lines
-  lines.push(`  ${padEnd(`${bold("Type")} ${muted("to chat")}`, 25)} ${padEnd(`${bold("/")} ${muted("commands")}`, 20)} ${bold("Tab")} ${muted("reasoning")}`);
-  lines.push(`  ${padEnd(`${bold("!")} ${muted("shell")}`, 25)} ${padEnd(`${bold("/context")} ${muted("repo")}`, 20)} ${bold("Shift+Tab")} ${muted("mode")}`);
+  // Line 3: thin rule.
+  lines.push(`  ${style("─".repeat(Math.max(8, w - 4)), "rule")}`);
 
-  lines.push(`  ${muted("What should we work on?")}  ${subtle("/help for commands")}`);
-
-  if (lastSession) {
-    lines.push(`  ${style("↩", "info")} ${muted("Resume:")} ${accent(truncate(String(lastSession), 30))}`);
-  } else if (tips) {
+  // Line 4: hint — resume the last session, or a tip, or a connect hint.
+  const promptText = lastSession && typeof lastSession === "object"
+    ? String(lastSession.prompt || lastSession.id || "")
+    : "";
+  if (promptText) {
+    lines.push(`  ${style("↩", "info")} ${muted("resume")} ${sep} ${accent(truncate(promptText, Math.max(16, w - 24)))}`);
+  } else if (!connected) {
+    lines.push(`  ${muted("connect with")} ${accent("/login")} ${muted("to start")}`);
+  } else if (tips && BUILT_IN_TIPS.length) {
     const tip = BUILT_IN_TIPS[Math.floor(Math.random() * BUILT_IN_TIPS.length)];
-    lines.push(`  ${style("💡", "warn")} ${faint(`Tip: ${tip}`)}`);
+    lines.push(`  ${muted("tip:")} ${faint(truncate(tip, Math.max(16, w - 10)))}`);
+  } else {
+    lines.push(`  ${muted("describe a change, or")} ${accent("/help")} ${muted("for commands")}`);
   }
 
-  lines.push("");
-
-  // Wrap in rounded brand box
-  return box(lines, { width: w, frame: "rounded", color: "border", padding: 0 });
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,30 +1438,27 @@ export function toolCard({
   width = 80
 } = {}) {
   const w = Math.max(40, width);
+  const ok = status === "ok";
   const glyph = resolveToolGlyph(tool);
-  const glyphStr = style(glyph.icon, glyph.style);
+  const glyphStr = style(glyph.icon, ok ? glyph.style : "error");
 
-  // Status indicator
-  const statusIcon = status === "ok" ? success("✓") : status === "failed" ? error("✗") : warn("⚠");
-  const statusLabel = status === "ok"
-    ? success("ok")
-    : status === "failed"
-      ? error("failed")
-      : warn(status);
-
+  // Status glyph carries success/failure; the word only prints on failure.
+  const statusGlyph = ok ? success("✓") : error("✗");
   const durStr = duration != null ? faint(prettyMs(duration)) : "";
-  const stepStr = step != null && maxSteps != null ? faint(`${step}/${maxSteps}`) : "";
 
-  // Build right side
-  const rightParts = [statusIcon, statusLabel, durStr, stepStr].filter(Boolean);
+  // Right side: duration · step · status glyph (+ failure word).
+  const rightParts = [];
+  if (step != null && maxSteps != null) rightParts.push(faint(`${step}/${maxSteps}`));
+  if (durStr) rightParts.push(durStr);
+  rightParts.push(statusGlyph);
+  if (!ok) rightParts.push(error(typeof status === "string" && status !== "failed" ? status : "failed"));
   const right = rightParts.join(" ");
 
-  // Build left side
-  const toolLabel = bold(String(tool));
-  const summaryStr = summary ? `  ${muted(summary)}` : "";
-  const left = `${glyphStr} ${toolLabel}${summaryStr}`;
+  // Left side: glyph + padded bold tool name + muted summary.
+  const toolName = padEnd(bold(String(tool)), 10);
+  const summaryStr = summary ? `  ${muted(truncate(String(summary), Math.max(8, w - 30)))}` : "";
+  const left = `  ${glyphStr} ${toolName}${summaryStr}`;
 
-  // Combine with padding
   const gap = Math.max(2, w - visibleLength(left) - visibleLength(right));
   const lines = [`${left}${" ".repeat(gap)}${right}`];
 
@@ -1497,25 +1492,15 @@ export function thinkingBlock({
   model = null,
   width = 80
 } = {}) {
-  const w = Math.max(30, width);
-  const glowIcon = style("⟡", "glow");
-  const label = style("Thinking", "glow");
-
-  const metaParts = [];
-  if (duration != null) metaParts.push(faint(prettyMs(duration)));
+  const sep = style(" · ", "subtle");
+  const parts = [style("thought", "brand")];
+  if (duration != null) parts.push(faint(prettyMs(duration)));
   if (tokens != null) {
     const tok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
-    metaParts.push(faint(`${tok} tok`));
+    parts.push(faint(`${tok} tok`));
   }
-  if (model) metaParts.push(faint(truncate(model, 20)));
-  const meta = metaParts.join(style(" · ", "subtle"));
-
-  const leftStr = `  ${glowIcon} ${label} `;
-  const rightStr = meta ? ` ${meta}` : "";
-  const lineLen = Math.max(4, w - visibleLength(leftStr) - visibleLength(rightStr));
-  const separator = style("─".repeat(lineLen), "faint");
-
-  return [`${leftStr}${separator}${rightStr}`];
+  if (model) parts.push(faint(truncate(model, 20)));
+  return [`  ${style(icon("sparkle"), "brand")} ${parts.join(sep)}`];
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,43 +1617,39 @@ export function errorPanel({
 } = {}) {
   const rows = [];
 
-  // Message
   if (message) {
     for (const line of wrapText(String(message), Math.max(20, width - 8))) {
       rows.push(line);
     }
   }
 
-  // Code
   if (code != null) {
-    rows.push("");
     rows.push(`${muted("code:")} ${style(String(code), "warn")}`);
   }
 
-  // Context
   if (context) {
-    rows.push(`${muted(String(context))}`);
+    rows.push(muted(String(context)));
   }
 
-  // Suggestion
   if (suggestion) {
-    rows.push("");
-    rows.push(`${style("💡", "warn")} ${style("Try:", "warn")} ${suggestion}`);
+    rows.push(`${style("Try:", "warn")} ${suggestion}`);
   }
 
-  // Retry hint
   if (retryHint) {
     rows.push(`${style("↩", "info")} ${muted(retryHint)}`);
   }
 
-  return box(rows, {
-    width,
-    title: `${icon("cross")} ${title}`,
-    titleTone: "error",
-    frame: "rounded",
-    color: "error",
-    padding: 1
-  });
+  // Return { lines } so callers that destructure .lines get the styled box.
+  return {
+    lines: box(rows, {
+      width,
+      title: `${icon("cross")} ${title}`,
+      titleTone: "error",
+      frame: "rounded",
+      color: "error",
+      padding: 1
+    })
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1686,35 +1667,29 @@ export function sessionCard({
   width = 60
 } = {}) {
   const w = Math.max(40, width);
-  const rows = [];
+  const lines = [];
+  const sep = style(" · ", "subtle");
 
-  // Header line: id + mode badge + status dot
-  const idStr = id ? faint(truncate(String(id), 10)) : faint("—");
-  const modeBadge = mode ? chip(mode, "accent") : "";
-  const statusDotStr = status ? ` ${statusDot(status)}` : "";
-  rows.push(`${idStr}  ${modeBadge}${statusDotStr}`);
-
-  // Stats line: steps, duration, cost
+  // Header: id  mode  ●status   right-aligned stats
+  const idStr = faint(truncate(String(id || "—"), 12));
+  const modeBit = mode ? ` ${chip(mode, "accent")}` : "";
+  const dotBit = status ? ` ${statusDot(status)}` : "";
   const statParts = [];
-  if (steps) statParts.push(muted(`${steps} step${steps === 1 ? "" : "s"}`));
-  if (duration) statParts.push(muted(String(duration)));
+  if (steps) statParts.push(faint(`${steps} step${steps === 1 ? "" : "s"}`));
+  if (duration) statParts.push(faint(String(duration)));
   if (cost != null) statParts.push(style(formatUSD(cost), costColor(cost)));
-  if (statParts.length) rows.push(`  ${statParts.join(style(" · ", "subtle"))}`);
+  const stats = statParts.join(sep);
+  const left = `  ${idStr}${modeBit}${dotBit}`;
+  const gap = stats ? Math.max(2, w - visibleLength(left) - visibleLength(stats)) : 0;
+  lines.push(stats ? `${left}${" ".repeat(gap)}${stats}` : left);
 
-  // Truncated prompt
+  // Prompt
   if (prompt) {
-    const maxPrompt = Math.max(16, w - 8);
-    rows.push(`  ${muted("›")} ${faint(truncate(String(prompt).trim(), maxPrompt))}`);
+    const maxPrompt = Math.max(16, w - 6);
+    lines.push(`    ${muted("›")} ${faint(truncate(String(prompt).trim(), maxPrompt))}`);
   }
 
-  return box(rows, {
-    width: w,
-    title: "session",
-    titleTone: "brand",
-    frame: "rounded",
-    color: "borderSoft",
-    padding: 1
-  });
+  return lines;
 }
 
 // ---------------------------------------------------------------------------

@@ -290,7 +290,7 @@ test("default command launches the interactive tui", async () => {
   const plain = stripAnsi(stdout);
   assert.match(plain, /azycode/);
   assert.match(plain, /azycode/);
-  assert.match(plain, /azycode[\s\S]*What should we work on[\s\S]*\/help/);
+  assert.match(plain, /azycode[\s\S]*(\/help|\/login)/);
   assert.match(plain, /not connected/);
   assert.match(plain, /model: no configured provider/);
   assert.match(plain, /status[\s\S]*provider[\s\S]*model[\s\S]*mode[\s\S]*goal[\s\S]*reasoning[\s\S]*high[\s\S]*profile[\s\S]*read-only/);
@@ -317,7 +317,7 @@ test("tui can inspect sessions tools goals and missions", async () => {
   }));
   const stdout = await runWithInput([], "/sessions\n/tools\n/goals\n/missions\n/exit\n", { AZYCODE_HOME: home });
   assert.match(stdout, /Sessions[\s\S]*ses_test[\s\S]*goal[\s\S]*ship it/i);
-  assert.match(stdout, /Tool runs[\s\S]*read_file[\s\S]*ok[\s\S]*ses_test/i);
+  assert.match(stdout, /Tool runs[\s\S]*read_file[\s\S]*ses_test/i);
   assert.match(stdout, /goals[\s\S]*goal_test\s+running\s+ship it/);
   assert.match(stdout, /missions[\s\S]*mis_test\s+done\s+release/);
 });

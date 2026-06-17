@@ -64,6 +64,12 @@ import {
   visibleLength,
   warn as warnText,
   wordmark,
+  enhancedWelcomeScreen,
+  thinkingBlock,
+  toolCard,
+  listPanel,
+  sessionCard,
+  errorPanel,
   wrapText
 } from "../src/ui.js";
 
@@ -488,4 +494,65 @@ test("progressBar shifts tone near budget limit", () => {
   const high = stripAnsi(progressBar(11, 12, 10));
   assert.match(low, /2\/12/);
   assert.match(high, /11\/12/);
+});
+
+// ponytail: one smoke check per restyled surface to lock the new shape.
+
+test("enhancedWelcomeScreen renders a compact header and never prints [object Object]", () => {
+  const lines = enhancedWelcomeScreen({
+    connected: true, workspace: "azycode", branch: "main", platform: "darwin",
+    model: "gpt-5.2", mode: "build", reasoning: "medium",
+    lastSession: { id: "ses_abc", prompt: "fix the auth bug", mode: "build" },
+    width: 72
+  });
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.ok(Array.isArray(lines), "welcome returns raw lines");
+  assert.match(plain, /azycode/);
+  assert.match(plain, /connected/);
+  assert.match(plain, /gpt-5\.2/);
+  assert.match(plain, /fix the auth bug/);
+  assert.ok(!plain.includes("[object Object]"), "no [object Object] leak");
+});
+
+test("thinkingBlock renders a single compact thought line", () => {
+  const lines = thinkingBlock({ duration: "2.1s", tokens: 4500, model: "gpt-5.2", width: 72 });
+  assert.equal(lines.length, 1);
+  const plain = stripAnsi(lines[0]);
+  assert.match(plain, /thought/);
+  assert.match(plain, /4\.5k tok/);
+});
+
+test("toolCard aligns name and shows status glyph without redundant ok word", () => {
+  const lines = toolCard({ tool: "Read", status: "ok", duration: "1.2s", summary: "src/ui.js", width: 72 });
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.match(plain, /Read/);
+  assert.match(plain, /src\/ui\.js/);
+  assert.match(plain, /✓/);
+  assert.ok(!/\bok\b/.test(plain), "ok word is dropped on success (glyph carries it)");
+});
+
+test("listPanel renders a lightweight header without a box frame", () => {
+  const lines = listPanel("goals", ["goal_1  done  ship it"], { width: 60 });
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.ok(!plain.includes("╭"), "no box frame");
+  assert.match(plain, /goals/);
+  assert.match(plain, /goal_1/);
+});
+
+test("sessionCard renders raw lines without a box frame", () => {
+  const lines = sessionCard({ id: "ses_abc", mode: "build", status: "ok", steps: 5, duration: "12s", prompt: "hi", width: 60 });
+  assert.ok(Array.isArray(lines));
+  const plain = lines.map(stripAnsi).join("\n");
+  assert.ok(!plain.includes("╭"), "no box frame");
+  assert.match(plain, /ses_abc/);
+  assert.match(plain, /hi/);
+});
+
+test("errorPanel returns { lines } and renders a boxed error", () => {
+  const result = errorPanel({ title: "Agent Error", message: "rate limited", code: 429, width: 60 });
+  assert.ok(Array.isArray(result.lines), "returns { lines }");
+  const plain = result.lines.map(stripAnsi).join("\n");
+  assert.match(plain, /rate limited/);
+  assert.match(plain, /429/);
+  assert.match(plain, /╭/); // errors stay boxed for emphasis
 });

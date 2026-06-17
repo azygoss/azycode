@@ -1720,7 +1720,7 @@ async function handleModels(args, state) {
 function printGoals() {
   const all = Object.entries(loadState().goals || {});
   const goals = all.slice(-10).reverse();
-  printRows("Goals", goals.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.text || "", 60)}`));
+  printRows("Goals", goals.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.text || "", 60)}`), { empty: "(no goals yet — start one with a prompt)" });
   printMoreFooter(all.length, goals.length);
 }
 
@@ -1771,7 +1771,7 @@ function handleGoal(args) {
 function printMissions() {
   const all = Object.entries(loadState().missions || {});
   const missions = all.slice(-10).reverse();
-  printRows("Missions", missions.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.name || "", 60)}`));
+  printRows("Missions", missions.map(([id, item]) => `${muted(id)}  ${item.status || ""}  ${truncate(item.name || "", 60)}`), { empty: "(no missions yet — run one with /mission run <file>)" });
   printMoreFooter(all.length, missions.length);
 }
 
@@ -2183,11 +2183,11 @@ async function selectFromList({ title, items, active = null, rl, format = (item)
   });
 }
 
-function printRows(label, rows) {
+function printRows(label, rows, { empty = null } = {}) {
   blank();
   const body = rows.length
     ? rows.map((row) => `${muted(icon("bullet"))} ${row}`)
-    : [`${muted(icon("circle"))} (none)`];
+    : [`${muted(icon("circle"))} ${empty || "(none)"}`];
   for (const line of listPanel(label.toLowerCase(), body, { width: tuiWidth() })) {
     console.log(line);
   }
