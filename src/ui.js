@@ -1372,9 +1372,10 @@ export function enhancedWelcomeScreen({
   const connBit = connected ? success("connected") : warn("offline");
   lines.push(`  ${bold(brand("azycode"))}  ${versionBit}  ${dot} ${connBit}`);
 
-  // Line 2: context row — place · platform · model · mode/reason.
+  // Line 2: context row — place · model · mode/reason. (platform dropped — it's
+  // the kernel name like "darwin", not useful in the header.)
   const place = grokWorkspaceLabel(workspace, branch);
-  const ctxParts = [place, platform ? faint(platform) : ""].filter(Boolean);
+  const ctxParts = [place].filter(Boolean);
   if (model) ctxParts.push(accent(model));
   const modeReason = [mode, reasoning].filter(Boolean).join("/");
   if (modeReason) ctxParts.push(info(modeReason));
