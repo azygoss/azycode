@@ -3,12 +3,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileCancellable } from "./exec.js";
+import { assertPatchPathsAllowed } from "./path-guard.js";
+import { evaluateShellPolicy } from "./shell-risk.js";
 import { isGitRepository, prepareSubagentWorkspace } from "./subagents.js";
 
 export async function validatePatch({
   cwd = process.cwd(),
   patch,
   checks = [],
+  cfg = {},
   timeoutMs = 120_000,
   signal = null
 } = {}) {
@@ -17,6 +20,16 @@ export async function validatePatch({
   }
 
   const root = path.resolve(cwd);
+
+  // Guard the patch destinations before doing any work: a patch touching a
+  // protected path (e.g. .env, .github/workflows/) must be rejected even when
+  // it would otherwise apply cleanly in the worktree.
+  try {
+    assertPatchPathsAllowed(root, String(patch), cfg);
+  } catch (error) {
+    return reportFailure(error.message);
+  }
+
   if (!isGitRepository(root)) {
     return validatePatchWithoutWorktree(root, patch);
   }
@@ -49,7 +62,7 @@ export async function validatePatch({
       stdio: ["ignore", "pipe", "pipe"]
     });
     const changedFiles = listChangedFiles(workspace.cwd);
-    const checkResults = await runPatchChecks(workspace.cwd, checks, { timeoutMs, signal });
+    const checkResults = await runPatchChecks(workspace.cwd, checks, { timeoutMs, signal, cfg });
     const ok = checkResults.every((entry) => entry.ok);
     return {
       ok,
@@ -102,12 +115,26 @@ function validatePatchWithoutWorktree(root, patch) {
   }
 }
 
-async function runPatchChecks(cwd, checks, { timeoutMs, signal }) {
+async function runPatchChecks(cwd, checks, { timeoutMs, signal, cfg = {} }) {
   const entries = Array.isArray(checks) ? checks.filter(Boolean) : [];
   if (!entries.length) return [];
   const results = [];
   for (const command of entries) {
     const startedAt = Date.now();
+    // Enforce shell policy on each check command so a destructive or
+    // secret-exfiltrating command in a patch's checks cannot run unchecked.
+    const policy = evaluateShellPolicy(command, cfg);
+    if (policy.decision === "deny") {
+      results.push({
+        command,
+        ok: false,
+        exitCode: null,
+        durationMs: Date.now() - startedAt,
+        error: `Denied by shell policy: ${policy.reason}`,
+        output: ""
+      });
+      continue;
+    }
     try {
       const { stdout, stderr, code } = await execFileCancellable(process.env.SHELL || "sh", ["-lc", command], {
         cwd,

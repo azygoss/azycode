@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 
 const DEFAULT_PROTECTED_PATTERNS = [
   { pattern: /^\.git(?:\/|$)/, reason: ".git metadata is protected" },
@@ -11,13 +12,66 @@ const DEFAULT_PROTECTED_PATTERNS = [
   { pattern: /^\.azycode\/config\.json$/, reason: "harness config is protected" }
 ];
 
-export function normalizeWorkspacePath(root, requested) {
+/**
+ * Normalize a requested path against the workspace root.
+ *
+ * Performs a lexical containment check and, when `options.resolveSymlinks`
+ * is set, also resolves the real path on disk so symlinks cannot be used to
+ * escape the workspace. This mirrors the defense used by hardened tool layers
+ * (path traversal via `ln -s /etc/passwd etc-passwd` must be blocked).
+ */
+export function normalizeWorkspacePath(root, requested, options = {}) {
   const resolved = path.resolve(root, requested || ".");
   const rel = path.relative(root, resolved);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     return { ok: false, reason: `Path escapes workspace: ${requested}` };
   }
+
+  // Lexical containment passed. If requested, also resolve symlinks so an
+  // attacker cannot place a symlink inside the workspace that points outside.
+  if (options.resolveSymlinks) {
+    try {
+      const realRoot = fs.realpathSync(root);
+      let realTarget = resolved;
+      try {
+        // realpathSync resolves the final target if the file exists.
+        realTarget = fs.realpathSync(resolved);
+      } catch {
+        // Target may not exist yet (write path). Walk the existing prefix and
+        // resolve any symlinked ancestors to detect escape before creation.
+        realTarget = resolveExistingAncestors(resolved);
+      }
+      const realRel = path.relative(realRoot, realTarget);
+      if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
+        return { ok: false, reason: `Symlink escapes workspace: ${requested}` };
+      }
+    } catch (err) {
+      // If realpath of root itself fails we cannot make a containment claim;
+      // fail closed.
+      return { ok: false, reason: `Unable to resolve workspace root: ${err && err.message}` };
+    }
+  }
+
   return { ok: true, rel: rel.split(path.sep).join("/") || ".", abs: resolved };
+}
+
+/** Resolve the longest existing prefix of `target`, following symlinks. */
+function resolveExistingAncestors(target) {
+  let probe = target;
+  const failed = [];
+  while (true) {
+    try {
+      return fs.realpathSync(probe);
+    } catch {
+      const dir = path.dirname(probe);
+      if (dir === probe) {
+        // Reached the filesystem root without a resolvable component.
+        return target;
+      }
+      failed.unshift(path.basename(probe));
+      probe = dir;
+    }
+  }
 }
 
 export function isProtectedWritePath(relPath, cfg = {}) {
@@ -46,7 +100,7 @@ export function isProtectedWritePath(relPath, cfg = {}) {
 }
 
 export function evaluateWritePath(root, requested, cfg = {}, options = {}) {
-  const norm = normalizeWorkspacePath(root, requested);
+  const norm = normalizeWorkspacePath(root, requested, { resolveSymlinks: options.resolveSymlinks });
   if (!norm.ok) return { allowed: false, reason: norm.reason, path: requested };
 
   const check = isProtectedWritePath(norm.rel, cfg);

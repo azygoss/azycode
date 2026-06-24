@@ -68,6 +68,21 @@ test("resolveAgentMaxSteps is unlimited by default and optional when set", async
   assert.equal(mod.formatAgentStepLimit(12), "max 12 steps");
 });
 
+test("atomicWriteJson uses unique temp names and leaves no leftover tmp files", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-atomic-"));
+  const target = path.join(dir, "state.json");
+  const mod = await import(`../src/config.js?atom=${Date.now()}`);
+  // Concurrent writes within the same process must not collide on a shared
+  // temp filename (the previous `.${pid}.tmp` scheme could clobber).
+  await Promise.all(Array.from({ length: 10 }, (_, i) => Promise.resolve(
+    mod.atomicWriteJson(target, { i, marker: `v${i}` })
+  )));
+  const leftover = fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"));
+  assert.deepEqual(leftover, [], "no leftover temp files after successful rename");
+  const final = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.ok(typeof final.marker === "string");
+});
+
 test("defaultConfig enables git guard and path protections", async () => {
   const mod = await import(`../src/config.js?guard=${Date.now()}`);
   const cfg = mod.defaultConfig();

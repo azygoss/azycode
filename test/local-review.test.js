@@ -80,3 +80,55 @@ test("localReview detects TODO and FIXME markers in diff", () => {
   const review = localReview(dir);
   assert(review.findings.some((f) => f.title.includes("Code markers")));
 });
+
+test("localReview detects AWS access key id and GitHub token patterns", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-secret-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(
+    path.join(dir, "keys.js"),
+    "const AWS_ACCESS_KEY_ID = 'AKIAIOSFODNN7EXAMPLE';\nconst GITHUB_TOKEN = 'ghp_0123456789abcdef0123456789abcdef';\n"
+  );
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "secret" || f.title.includes("secret")), "AWS/GitHub token must be flagged");
+});
+
+test("localReview detects password/secret/token assignment patterns", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-assign-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "cfg.js"), "const password = 'supersecretvalue';\nconst dbToken = 'tok_abcdef123456';\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "secret" || f.title.includes("secret")), "password/token assignment must be flagged");
+});
+
+test("localReview detects SSRF via axios/http/node-fetch libraries", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-ssrf-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(
+    path.join(dir, "fetch.js"),
+    "import axios from 'axios';\nawait axios.get(req.query.url);\nhttp.request(params.target);\n"
+  );
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "ssrf" || f.title.includes("SSRF")), "axios/http SSRF must be flagged");
+});
+
+test("localReview detects fs read of user-controlled input (path traversal)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-fs-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "read.js"), "const data = fs.readFileSync(req.body.filename);\n");
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "path-traversal" || f.title.includes("path traversal")), "fs read of user input must be flagged");
+});
+
+test("localReview detects permission config change by content, not filename", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-cfg-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  fs.mkdirSync(path.join(dir, ".azycode"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".azycode", "config.json"), JSON.stringify({ permissionProfile: "full-auto", gitGuard: { enabled: false } }));
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  const review = localReview(dir);
+  assert(review.findings.some((f) => f.id === "permission-change" || f.title.includes("Permission or guard")), "permission config change must be flagged by content");
+});

@@ -37,7 +37,7 @@ function scanAddedLines(added, findings, files) {
       severity: "high",
       title: "Possible secret added.",
       detail: "Inspect added credentials and move secrets to login/env storage.",
-      pattern: /api[_-]?key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|sk-[a-z0-9_-]{16,}/i
+      pattern: /api[_-]?key\s*[:=]\s*['"][^'"]{12,}|bearer\s+[a-z0-9._-]{20,}|sk-[a-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[0-9a-zA-Z]{36,}|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|(?:password|passwd|secret|token|api[_-]?secret)\s*[:=]\s*['"][^'"]{6,}/i
     },
     {
       id: "eval",
@@ -65,7 +65,7 @@ function scanAddedLines(added, findings, files) {
       severity: "high",
       title: "Possible path traversal.",
       detail: "Validate and normalize user-controlled paths before filesystem access.",
-      pattern: /\.\.(?:\/|\\)|path\.join\([^)]*req\.|readFile\([^)]*req\./
+      pattern: /\.\.(?:\/|\\)|path\.join\([^)]*req\.|(?:readFile(?:Sync)?|readFileSync|writeFile(?:Sync)?|createReadStream)\s*\([^)]*req\./
     },
     {
       id: "unsafe-json",
@@ -93,7 +93,7 @@ function scanAddedLines(added, findings, files) {
       severity: "high",
       title: "Possible SSRF-style fetch.",
       detail: "Validate URLs and block internal/metadata endpoints before fetching user input.",
-      pattern: /fetch\([^)]*(?:req\.|params\.|query\.|user)/i
+      pattern: /(?:fetch|axios(?:\.get|\.post|\()\s*|node-fetch|http\.request|https\.request|require\s*\(\s*['"]request['"]\s*\)|urllib\.request)\s*\(?[^)]*(?:req\.|params\.|query\.|user|body)/i
     },
     {
       id: "shell-interpolation",
@@ -155,8 +155,18 @@ function scanFiles(files, cwd, findings) {
         }
       }
     }
-    if (/(?:^|\/)config\.json$/.test(file) && /permissionProfile|gitGuard|toolPolicy/.test(file)) {
-      findings.push(finding("medium", "Permission or guard config changed.", "Verify safety defaults were not weakened unintentionally.", null, "permission-change", file));
+    if (/(?:^|\/)config\.json$/.test(file)) {
+      const full = path.join(cwd, file);
+      if (fs.existsSync(full)) {
+        try {
+          const content = fs.readFileSync(full, "utf8");
+          if (/permissionProfile|gitGuard|toolPolicy|alwaysApprove/.test(content)) {
+            findings.push(finding("medium", "Permission or guard config changed.", "Verify safety defaults were not weakened unintentionally.", null, "permission-change", file));
+          }
+        } catch {
+          // ignore unreadable config
+        }
+      }
     }
   }
 }

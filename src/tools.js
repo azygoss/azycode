@@ -69,7 +69,12 @@ export function createTools({
 
   function guardWritePath(requested, options = {}) {
     const activeCfg = policySource();
-    const result = evaluateWritePath(root, requested, activeCfg, options);
+    // Resolve symlinks by default so a symlink placed inside the workspace
+    // cannot be used to write outside of it (path traversal via `ln -s`).
+    const result = evaluateWritePath(root, requested, activeCfg, {
+      resolveSymlinks: options.resolveSymlinks !== false,
+      ...options
+    });
     if (result.allowed === false) throw new Error(result.reason);
     if (result.allowed === null && !options.approved) {
       throw new Error(`Write to protected path blocked: ${result.path} — ${result.reason}`);

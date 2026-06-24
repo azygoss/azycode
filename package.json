@@ -7,7 +7,7 @@
     "azycode": "./bin/azycode.js"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.js\"",
     "check": "node --check bin/azycode.js && node --check src/*.js",
     "pack:dry": "npm pack --dry-run"
   },

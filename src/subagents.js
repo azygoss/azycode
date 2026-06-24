@@ -206,15 +206,21 @@ export async function runSubagentsParallel({
         worktree: workspace.worktree?.path || null
       });
       try {
+        // Subagents must not silently escalate privileges. They inherit the
+        // parent's permission profile and tool policy rather than forcing
+        // alwaysApprove on. The parent cfg already encodes the intended trust
+        // level (e.g. via permissionProfile / toolPolicy).
         const output = await runAgent({
-          cfg: { ...cfg, alwaysApprove: true },
+          cfg,
           cwd: workspace.cwd,
           prompt: String(task.prompt || ""),
           mode: task.mode || "always-approve",
           subagent: { name: agentName, ...profile },
           maxSteps: Number(task.maxSteps) > 0 ? Number(task.maxSteps) : maxStepsPerAgent,
           signal,
-          subagentDepth,
+          // Propagate the incremented depth so recursive subagents converge on
+          // the maxSubagentDepth limit instead of nesting unboundedly.
+          subagentDepth: subagentDepth + 1,
           progressStyle: "tui"
         });
         const changedFiles = collectSubagentChangedFiles(workspace.cwd, cwd);

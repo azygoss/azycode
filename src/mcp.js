@@ -9,7 +9,56 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"];
 
+/**
+ * Environment keys that may be supplied via a server's `env` but must never be
+ * forwarded to the spawned child. They allow code injection (`LD_PRELOAD`,
+ * `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`) or otherwise hijack execution.
+ */
+const DENIED_SERVER_ENV_KEYS = [
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FALLBACK_LIBRARY_PATH",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "ELECTRON_RUN_AS_NODE",
+  "ELECTRON_ENABLE_LOGGING",
+  "PYTHONPATH",
+  "PYTHONSTARTUP",
+  "PERL5OPT",
+  "RUBYOPT",
+  "BASH_ENV",
+  "ENV",
+  "ENVIRONMENT"
+];
+
+/** Characters that must not appear in an MCP server command. */
+const FORBIDDEN_COMMAND_CHARS = /[;|&$`<>()\n\r]/;
+
+/**
+ * Validate an MCP server `command` before it is spawned. We allow a bare
+ * executable name or an absolute path, plus simple arguments via `args`, but we
+ * reject shell metacharacters that would enable injection when the command is
+ * later composed or logged. The command itself is spawned directly (not via a
+ * shell), but validation defends against misconfigured or hostile config.
+ */
+export function validateMcpServerCommand(command) {
+  const cmd = String(command || "").trim();
+  if (!cmd) return { ok: false, reason: "MCP server command is empty" };
+  if (FORBIDDEN_COMMAND_CHARS.test(cmd)) {
+    return { ok: false, reason: `MCP server command contains forbidden shell metacharacters: ${cmd}` };
+  }
+  return { ok: true, command: cmd };
+}
+
 export function normalizeMcpServer(name, server = {}) {
+  const rawEnv = server.env && typeof server.env === "object" ? server.env : {};
+  const safeEnv = {};
+  for (const [key, value] of Object.entries(rawEnv)) {
+    if (DENIED_SERVER_ENV_KEYS.includes(key)) continue;
+    safeEnv[key] = value;
+  }
   return {
     name,
     transport: server.transport || "stdio",
@@ -19,7 +68,7 @@ export function normalizeMcpServer(name, server = {}) {
     startupTimeoutMs: Number(server.startupTimeoutMs) > 0 ? Number(server.startupTimeoutMs) : DEFAULT_STARTUP_TIMEOUT_MS,
     requestTimeoutMs: Number(server.requestTimeoutMs) > 0 ? Number(server.requestTimeoutMs) : DEFAULT_REQUEST_TIMEOUT_MS,
     envAllowlist: Array.isArray(server.envAllowlist) ? server.envAllowlist : DEFAULT_ENV_ALLOWLIST,
-    env: server.env && typeof server.env === "object" ? server.env : {},
+    env: safeEnv,
     toolPolicy: {
       allow: Array.isArray(server.toolPolicy?.allow) ? server.toolPolicy.allow : [],
       deny: Array.isArray(server.toolPolicy?.deny) ? server.toolPolicy.deny : []
@@ -31,9 +80,12 @@ export function buildMcpServerEnv(server) {
   const normalized = normalizeMcpServer(server.name || "server", server);
   const env = {};
   for (const key of normalized.envAllowlist) {
+    // Never forward denied injection vectors even if an allowlist names them.
+    if (DENIED_SERVER_ENV_KEYS.includes(key)) continue;
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   for (const [key, value] of Object.entries(normalized.env)) {
+    if (DENIED_SERVER_ENV_KEYS.includes(key)) continue;
     env[key] = String(value);
   }
   return env;
@@ -256,6 +308,8 @@ export class McpStdioClient {
 
   async start() {
     if (this.started) return;
+    const check = validateMcpServerCommand(this.command);
+    if (!check.ok) throw new Error(`MCP server ${this.name}: ${check.reason}`);
     this.child = spawn(this.command, this.args, {
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"]
@@ -284,10 +338,36 @@ export class McpStdioClient {
 
   async close() {
     this.abortAll(new Error(`MCP server ${this.name} closed`));
-    if (!this.child || this.child.killed) return;
-    this.child.kill("SIGTERM");
+    const child = this.child;
     this.child = null;
     this.started = false;
+    if (!child || child.killed) return;
+    // Graceful shutdown: SIGTERM, then escalate to SIGKILL if the process does
+    // not exit within the grace window. This prevents zombie/hung MCP servers.
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(escalate);
+        resolve();
+      };
+      child.once("exit", finish);
+      const escalate = setTimeout(() => {
+        try {
+          if (!child.killed) child.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
+        // Give SIGKILL a brief moment to take effect before resolving.
+        setTimeout(finish, 50);
+      }, 1500);
+    });
   }
 
   onData(chunk) {

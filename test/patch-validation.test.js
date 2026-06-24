@@ -62,3 +62,34 @@ test("validatePatch runs configured checks in worktree", async () => {
   assert.equal(report.checks.length, 1);
   assert.equal(report.checks[0].ok, true);
 });
+
+test("validatePatch blocks patches targeting protected paths (.env)", async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-patch-protected-"));
+  initRepo(repo);
+  const envPatch = [
+    "diff --git a/.env b/.env",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/.env",
+    "@@ -0,0 +1 @@",
+    "+SECRET=leaked",
+    ""
+  ].join("\n");
+  const report = await validatePatch({ cwd: repo, patch: envPatch, checks: [] });
+  assert.equal(report.ok, false);
+  assert.match(report.error, /protected path|\.env/i);
+});
+
+test("validatePatch blocks dangerous shell checks by policy", async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "azy-patch-shell-"));
+  initRepo(repo);
+  const report = await validatePatch({
+    cwd: repo,
+    patch: SAMPLE_PATCH,
+    checks: ["rm -rf /tmp/azy-dangerous-nonexistent"]
+  });
+  assert.equal(report.ok, false);
+  assert.equal(report.checks.length, 1);
+  assert.equal(report.checks[0].ok, false);
+  assert.match(report.checks[0].error || "", /destructive|policy|denied/i);
+});

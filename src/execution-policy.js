@@ -135,6 +135,33 @@ export function probeContainerBinary(runtime) {
   }
 }
 
+/**
+ * Host paths that must never be bind-mounted into a sandbox container.
+ * Mounting the docker/podman socket grants full container-escape privileges,
+ * while /proc, /sys, /dev expose kernel and device interfaces.
+ */
+const FORBIDDEN_MOUNT_SOURCES = [
+  /^\/var\/run\/docker\.sock$/,
+  /^\/run\/docker\.sock$/,
+  /^\/var\/run\/podman\/podman\.sock$/,
+  /^\/run\/podman\/podman\.sock$/,
+  /^\/proc(?:\/|$)/,
+  /^\/sys(?:\/|$)/,
+  /^\/dev(?:\/|$)/,
+  /^\/etc(?:\/|$)/,
+  /^\/boot(?:\/|$)/
+];
+
+/** Reject mounts that would expose sensitive host paths into the container. */
+function assertMountAllowed(mount) {
+  const source = String(mount?.source || "").trim();
+  for (const pattern of FORBIDDEN_MOUNT_SOURCES) {
+    if (pattern.test(source)) {
+      throw new Error(`Refusing to mount sensitive host path into container: ${source}`);
+    }
+  }
+}
+
 export function buildContainerArgs(policy, { runtime = "docker", command, env = {} } = {}) {
   const binary = runtime === "podman" ? "podman" : "docker";
   const args = ["run", "--rm", "-i"];
@@ -143,6 +170,7 @@ export function buildContainerArgs(policy, { runtime = "docker", command, env = 
   args.push("-w", "/workspace", "-v", `${policy.cwd}:/workspace:rw`);
   for (const mount of policy.mounts) {
     if (mount?.source && mount?.target) {
+      assertMountAllowed(mount);
       args.push("-v", `${mount.source}:${mount.target}${mount.readonly ? ":ro" : ""}`);
     }
   }

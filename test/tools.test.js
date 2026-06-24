@@ -28,6 +28,26 @@ test("apply_patch blocks patches targeting protected paths", async () => {
   await assert.rejects(() => applyPatch.run({ patch }), /protected path blocked/i);
 });
 
+test("write_file blocks symlink escaping the workspace (path traversal)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-sym-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "azy-out-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature/sym"], { cwd: dir, stdio: "ignore" });
+  // Plant a symlink inside the workspace that points outside of it.
+  fs.symlinkSync(outside, path.join(dir, "escape-link"));
+  const tools = createTools({
+    cwd: dir,
+    cfg: { alwaysApprove: true, toolPolicy: {}, gitGuard: { enabled: true, blockBranches: ["main"] } }
+  });
+  const writeFile = tools.find((t) => t.name === "write_file");
+  await assert.rejects(
+    () => writeFile.run({ file: "escape-link/owned.txt", content: "pwned\n" }),
+    /escapes workspace|symlink/i
+  );
+  // Ensure nothing was written outside the workspace.
+  assert.equal(fs.existsSync(path.join(outside, "owned.txt")), false);
+});
+
 test("apply_patch tool applies a unified diff inside workspace", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-tools-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

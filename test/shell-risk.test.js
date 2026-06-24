@@ -69,3 +69,33 @@ test("destructive allowed only with explicit config in full-auto", () => {
   const result = evaluateShellPolicy("rm -rf /tmp/safe", cfg);
   assert.equal(result.decision, "auto");
 });
+
+test("redirection operator elevates safe-read to write-risk", () => {
+  // `cat x > /etc/passwd` must not be classified as safe-read just because of `cat`.
+  assert.notEqual(classifyShellCommand("cat notes > /etc/passwd").level, "safe-read");
+  assert.notEqual(classifyShellCommand("echo hi >> ~/.bashrc").level, "safe-read");
+});
+
+test("pipeline operator evaluates the most dangerous segment", () => {
+  // `echo x | tee /etc/cron.d/x` should not be safe-read.
+  const a = classifyShellCommand("echo x | tee /tmp/cron");
+  assert.notEqual(a.level, "safe-read");
+  // `ls | grep secret` — secret match in a segment must elevate.
+  const b = classifyShellCommand("ls -la | grep -i token");
+  assert.notEqual(b.level, "safe-read");
+});
+
+test("input redirection is not safe-read", () => {
+  assert.notEqual(classifyShellCommand("sort < /etc/passwd").level, "safe-read");
+});
+
+test("redirect to a system path is destructive", () => {
+  assert.equal(classifyShellCommand("echo pwn > /etc/passwd").level, "destructive");
+  assert.equal(classifyShellCommand("echo pwn > /dev/sda").level, "destructive");
+});
+
+test("evaluateShellPolicy denies redirect-to-system-path by default", () => {
+  const cfg = defaultConfig();
+  const result = evaluateShellPolicy("echo pwn > /etc/passwd", cfg);
+  assert.equal(result.decision, "deny");
+});

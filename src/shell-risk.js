@@ -97,20 +97,121 @@ const SECRET_RISK_PATTERNS = [
   /\bopenssl\s+.*-pass/i
 ];
 
+/**
+ * Paths that are dangerous to write to. A redirect targeting any of these is
+ * treated as destructive regardless of the source command.
+ */
+const DANGEROUS_REDIRECT_TARGETS = [
+  /^\/etc\//i,
+  /^\/var\/log\//i,
+  /^\/dev\/(?!null\b)/i, // /dev/null is harmless; other devices are not
+  /^\/proc\//i,
+  /^\/sys\//i,
+  /^\/boot\//i,
+  /^\/usr\/(local\/)?bin\//i,
+  /^\/root\/\./i,
+  /^\/etc\/(?:passwd|shadow|sudoers)/i
+];
+
+/**
+ * Detect shell metacharacter operators in a command: pipes `|`, output
+ * redirection `>`/`>>`, input redirection `<`, and command substitution
+ * backticks/`$()`. We deliberately keep this lexical — full shell parsing is
+ * out of scope — but it is enough to stop `cat x > /etc/passwd` slipping past
+ * a `cat`-based safe-read rule.
+ *
+ * @returns {{ pipe: boolean, redirect: boolean, redirectTargets: string[], inputRedirect: boolean, substitution: boolean }}
+ */
+export function detectShellOperators(command) {
+  const cmd = String(command || "");
+  const pipe = /\|/.test(cmd);
+  // `>` or `>>` not preceded by a digit that is part of an fd merge like `2>&1`
+  const redirectMatch = cmd.match(/(?:\d)?(>>|>)\s*(\S+)/g) || [];
+  const redirect = redirectMatch.length > 0;
+  const redirectTargets = redirectMatch
+    .map((segment) => segment.replace(/^\d?>>?[\s]*/, "").trim())
+    .filter((t) => t && t !== "&" && !/^&\d/.test(t));
+  const inputRedirect = /[^<]\s*</.test(cmd) || /^\s*</.test(cmd);
+  const substitution = /`/.test(cmd) || /\$\(/.test(cmd);
+  return { pipe, redirect, redirectTargets, inputRedirect, substitution };
+}
+
+/** Whether a redirect target points at a sensitive system location. */
+function isDangerousRedirectTarget(target) {
+  const t = String(target || "").trim().replace(/^["']|["']$/g, "");
+  if (!t || t === "/dev/null") return false;
+  return DANGEROUS_REDIRECT_TARGETS.some((re) => re.test(t));
+}
+
+/** Classify a single command segment (no operators) by risk level. */
+function classifySegment(segment) {
+  const seg = String(segment || "").trim();
+  if (!seg) return { level: "build-test", reason: "empty segment" };
+  const levels = [];
+  if (SECRET_RISK_PATTERNS.some((p) => p.test(seg))) levels.push("secret-risk");
+  if (DESTRUCTIVE_PATTERNS.some((p) => p.test(seg))) levels.push("destructive");
+  if (NETWORK_PATTERNS.some((p) => p.test(seg))) levels.push("network");
+  if (BUILD_TEST_PATTERNS.some((p) => p.test(seg))) levels.push("build-test");
+  if (SAFE_READ_PATTERNS.some((p) => p.test(seg))) levels.push("safe-read");
+  const priority = ["secret-risk", "destructive", "network", "build-test", "safe-read"];
+  const level = priority.find((item) => levels.includes(item)) || "build-test";
+  return { level, levels };
+}
+
 export function classifyShellCommand(command) {
   const cmd = String(command || "").trim();
   if (!cmd) return { level: "safe-read", reason: "empty command" };
 
-  const levels = [];
-  if (SECRET_RISK_PATTERNS.some((p) => p.test(cmd))) levels.push("secret-risk");
-  if (DESTRUCTIVE_PATTERNS.some((p) => p.test(cmd))) levels.push("destructive");
-  if (NETWORK_PATTERNS.some((p) => p.test(cmd))) levels.push("network");
-  if (BUILD_TEST_PATTERNS.some((p) => p.test(cmd))) levels.push("build-test");
-  if (SAFE_READ_PATTERNS.some((p) => p.test(cmd))) levels.push("safe-read");
+  const operators = detectShellOperators(cmd);
 
+  // Split on pipe `|` (but not `||`) and classify each segment independently,
+  // then take the most dangerous segment. This catches `ls | grep token`.
+  const segments = operators.pipe
+    ? cmd.split(/\|\|/).length > 1
+      ? [cmd] // `||` is a logical OR, not a pipeline; keep whole
+      : cmd.split(/\|/).map((s) => s.trim()).filter(Boolean)
+    : [cmd];
+
+  const segmentResults = segments.map(classifySegment);
   const priority = ["secret-risk", "destructive", "network", "build-test", "safe-read"];
-  const level = priority.find((item) => levels.includes(item)) || "build-test";
-  return { level, levels: [...new Set(levels)], command: cmd };
+  let level = "safe-read";
+  let reason = "command classified";
+  for (const segLevel of priority) {
+    if (segmentResults.some((r) => r.level === segLevel)) {
+      level = segLevel;
+      break;
+    }
+  }
+
+  // Redirection to a sensitive system path is destructive regardless of the
+  // source command: `echo x > /etc/passwd` must never be auto-approved.
+  if (operators.redirect && operators.redirectTargets.some(isDangerousRedirectTarget)) {
+    level = "destructive";
+    reason = "Redirect targets a sensitive system path";
+  } else if (operators.redirect) {
+    // Any output redirection changes a safe-read command into write-risk and
+    // therefore must not stay at safe-read. Elevate to at least build-test.
+    if (level === "safe-read") {
+      level = "build-test";
+      reason = "Output redirection present";
+    }
+  }
+
+  if (operators.inputRedirect && level === "safe-read") {
+    level = "build-test";
+    reason = "Input redirection present";
+  }
+
+  if (operators.substitution) {
+    // Command substitution can hide arbitrary execution; never safe-read.
+    if (level === "safe-read") {
+      level = "build-test";
+      reason = "Command substitution present";
+    }
+  }
+
+  const levels = [...new Set([...segmentResults.flatMap((r) => r.levels), level])];
+  return { level, levels, command: cmd, operators };
 }
 
 export function evaluateShellPolicy(command, cfg = {}) {

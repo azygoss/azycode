@@ -187,7 +187,7 @@ azycode help bench
 ### 🤝 Contributing & Support
 
 - **Check code:** `npm run check`
-- **Run tests:** `npm test` (405 tests)
+- **Run tests:** `npm test` (491 tests)
 - **Report bugs:** [GitHub Issues](https://github.com/azygoss/azycode/issues)
 
 ---

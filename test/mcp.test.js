@@ -1,13 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildMcpServerEnv,
   createMcpTools,
   detectMcpToolCollisions,
   fakeMcpServerPath,
   inspectMcpServer,
   isMcpToolAllowed,
   normalizeMcpServer,
-  probeMcpServers
+  probeMcpServers,
+  validateMcpServerCommand
 } from "../src/mcp.js";
 
 function fakeServerConfig(name = "fake") {
@@ -79,4 +81,68 @@ test("createMcpTools exposes qualified MCP tools", async () => {
   } finally {
     await close();
   }
+});
+
+test("buildMcpServerEnv strips dangerous env keys (LD_PRELOAD, NODE_OPTIONS)", () => {
+  const env = buildMcpServerEnv({
+    name: "evil",
+    command: "node",
+    env: {
+      LD_PRELOAD: "/tmp/evil.so",
+      DYLD_INSERT_LIBRARIES: "/tmp/evil.dylib",
+      NODE_OPTIONS: "--require /tmp/pwn.js",
+      MY_SAFE_VAR: "ok"
+    }
+  });
+  assert.equal(env.LD_PRELOAD, undefined, "LD_PRELOAD must be stripped");
+  assert.equal(env.DYLD_INSERT_LIBRARIES, undefined, "DYLD_INSERT_LIBRARIES must be stripped");
+  assert.equal(env.NODE_OPTIONS, undefined, "NODE_OPTIONS must be stripped");
+  assert.equal(env.MY_SAFE_VAR, "ok", "safe server env must pass through");
+});
+
+test("validateMcpServerCommand rejects shell metacharacters and empty", () => {
+  assert.equal(validateMcpServerCommand("").ok, false);
+  assert.equal(validateMcpServerCommand("node; rm -rf /").ok, false);
+  assert.equal(validateMcpServerCommand("node && cat /etc/passwd").ok, false);
+  assert.equal(validateMcpServerCommand("node | tee log").ok, false);
+  assert.equal(validateMcpServerCommand("node").ok, true);
+  assert.equal(validateMcpServerCommand("/usr/local/bin/node").ok, true);
+  assert.equal(validateMcpServerCommand("npx -y @some/server").ok, true);
+});
+
+test("normalizeMcpServer drops dangerous env keys", () => {
+  const server = normalizeMcpServer("demo", {
+    command: "node",
+    env: { LD_PRELOAD: "/tmp/x.so", GOOD: "1" }
+  });
+  assert.equal(server.env.LD_PRELOAD, undefined);
+  assert.equal(server.env.GOOD, "1");
+});
+
+test("McpStdioClient.close escalates to SIGKILL after SIGTERM", async () => {
+  const { McpStdioClient } = await import("../src/mcp.js");
+  const { spawn } = await import("node:child_process");
+  // Use a fake server that ignores SIGTERM to force escalation.
+  const client = new McpStdioClient({
+    name: "stubborn",
+    command: process.execPath,
+    args: ["-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000);"],
+    env: { PATH: process.env.PATH },
+    startupTimeoutMs: 2000,
+    requestTimeoutMs: 2000
+  });
+  // Stub out the network handshake: we only care about process teardown.
+  client.child = spawn(client.command, client.args, { env: client.env, stdio: ["pipe", "ignore", "ignore"] });
+  client.started = true;
+  const pid = client.child.pid;
+  await client.close();
+  // After close, the process must actually be gone (SIGKILL fallback worked).
+  assert.equal(client.child, null);
+  let alive = true;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    alive = false;
+  }
+  assert.equal(alive, false, "stubborn process should be killed after close()");
 });

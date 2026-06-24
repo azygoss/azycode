@@ -168,6 +168,24 @@ export function readJson(file, fallback) {
   }
 }
 
+/**
+ * Atomic JSON write: serialize to a uniquely-named temp file (random suffix to
+ * avoid collisions between concurrent writes within the same process), then
+ * rename into place. `rename` is atomic on POSIX, so readers never observe a
+ * partially-written file.
+ */
+export function atomicWriteJson(targetPath, value) {
+  const suffix = crypto.randomBytes(6).toString("hex");
+  const tmp = `${targetPath}.${process.pid}.${suffix}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  try {
+    fs.renameSync(tmp, targetPath);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    throw error;
+  }
+}
+
 export function validateConfig(cfg) {
   const defaults = defaultConfig();
   cfg.mode = normalizeMode(cfg.mode);
@@ -261,9 +279,7 @@ export function loadConfig() {
 
 export function saveConfig(cfg) {
   ensureHome();
-  const tmp = `${configPath()}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, configPath());
+  atomicWriteJson(configPath(), cfg);
   _configCache = null;
   _configMtime = 0;
 }
@@ -287,9 +303,7 @@ export function loadState() {
 
 export function saveState(state) {
   ensureHome();
-  const tmp = `${statePath()}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, statePath());
+  atomicWriteJson(statePath(), state);
   _stateCache = null;
   _stateMtime = 0;
 }
@@ -337,9 +351,7 @@ export function loadTodos() {
 
 export function saveTodos(todos) {
   ensureHome();
-  const tmp = `${todosPath()}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(todos, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, todosPath());
+  atomicWriteJson(todosPath(), todos);
   _todosCache = null;
   _todosMtime = 0;
 }

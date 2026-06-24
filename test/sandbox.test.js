@@ -119,3 +119,48 @@ test("sandboxStatus reports runtime availability with injected probe", () => {
   assert.equal(status.runtimes.podman.available, false);
   assert.ok(status.localShell.file);
 });
+
+test("buildContainerArgs rejects mounts of sensitive host paths", () => {
+  const policy = {
+    cwd: "/tmp/project",
+    network: "deny",
+    mounts: [
+      { source: "/var/run/docker.sock", target: "/var/run/docker.sock" },
+      { source: "/proc", target: "/hostproc" },
+      { source: "/sys", target: "/hostsys" },
+      { source: "/dev", target: "/hostdev" }
+    ],
+    image: "node:20-alpine",
+    passEnv: false
+  };
+  assert.throws(
+    () => buildContainerArgs(policy, { runtime: "docker", command: "id", env: {} }),
+    /docker\.sock|proc|sys|dev|sensitive|forbidden/i
+  );
+});
+
+test("buildContainerArgs rejects mount of the host docker socket only by source", () => {
+  const policy = {
+    cwd: "/tmp/project",
+    network: "deny",
+    mounts: [{ source: "/var/run/docker.sock", target: "/run/docker.sock" }],
+    image: "node:20-alpine",
+    passEnv: false
+  };
+  assert.throws(
+    () => buildContainerArgs(policy, { runtime: "docker", command: "id", env: {} }),
+    /sensitive|forbidden|docker\.sock/i
+  );
+});
+
+test("buildContainerArgs allows safe cache mounts", () => {
+  const policy = {
+    cwd: "/tmp/project",
+    network: "deny",
+    mounts: [{ source: "/tmp/.cache", target: "/root/.cache", readonly: false }],
+    image: "node:20-alpine",
+    passEnv: false
+  };
+  const container = buildContainerArgs(policy, { runtime: "docker", command: "npm test", env: {} });
+  assert(container.args.some((a, i) => a === "-v" && container.args[i + 1]?.startsWith("/tmp/.cache:")));
+});
