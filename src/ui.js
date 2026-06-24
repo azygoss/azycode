@@ -1,111 +1,42 @@
 // Azycode UI primitives
 // Dependency-free terminal rendering: colors, boxes, badges, tables, spinners, status pills.
 // All helpers degrade to plain text when the terminal does not advertise color.
+//
+// Layered architecture (see plan.md §2.4):
+//   - src/ui/ansi.js   : color detection, ANSI palette, style/width helpers, wrapText
+//   - src/ui/layout.js : rule, frame, box, panel, modeColor
+//   - src/ui/cost.js   : MODEL_PRICING, estimateCost, cost display
+// This module re-exports those primitives and builds higher-level components
+// (welcome screen, tool cards, diff blocks, error panels, etc.) on top of them.
 
 import { stdout, stderr, env } from "node:process";
 
-// ---------------------------------------------------------------------------
-// Color capability detection
-// ---------------------------------------------------------------------------
+// Re-export the foundational layers so existing `from "./ui.js"` imports keep
+// working without any call-site changes.
+export {
+  detectColor, colorsEnabled, trueColorEnabled, ANSI, namedColors,
+  style, paint, muted, subtle, faint, accent, success, warn, error, info, brand,
+  dim, bold, cyan, green, yellow, red,
+  visibleLength, padEnd, padStart, truncate, stripAnsi, sliceVisible, skipVisible, wrapText
+} from "./ui/ansi.js";
+export { modeColor, FRAME, rule, frame, box, panel } from "./ui/layout.js";
+export {
+  MODEL_PRICING, estimateCost, formatTokenCount, formatUSD, costColor,
+  costDisplay, costSummaryPanel
+} from "./ui/cost.js";
 
-const TERM = env.TERM || "";
-const NO_COLOR = "NO_COLOR" in env;
-const FORCE_COLOR = env.FORCE_COLOR;
-
-function detectColor() {
-  if (NO_COLOR) return false;
-  if (FORCE_COLOR === "1" || FORCE_COLOR === "true") return true;
-  if (FORCE_COLOR === "0" || FORCE_COLOR === "false") return false;
-  if (TERM === "dumb") return false;
-  if (stdout && stdout.isTTY) return true;
-  return false;
-}
-
-const colorsEnabled = detectColor();
-const trueColorEnabled = colorsEnabled && (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit" || /-256color/.test(TERM));
-
-// 8-color fallback + 256-color palette for richer tones when supported.
-const ANSI = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  italic: "\x1b[3m",
-  underline: "\x1b[4m",
-  inverse: "\x1b[7m",
-  hidden: "\x1b[8m",
-  strikethrough: "\x1b[9m",
-  // 16-color foregrounds
-  black: "\x1b[30m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  blue: "\x1b[34m",
-  magenta: "\x1b[35m",
-  cyan: "\x1b[36m",
-  white: "\x1b[37m",
-  brightBlack: "\x1b[90m",
-  brightRed: "\x1b[91m",
-  brightGreen: "\x1b[92m",
-  brightYellow: "\x1b[93m",
-  brightBlue: "\x1b[94m",
-  brightMagenta: "\x1b[95m",
-  brightCyan: "\x1b[96m",
-  brightWhite: "\x1b[97m",
-  // 256-color helpers (semantic) — tuned for readable dark terminals
-  muted: "\x1b[38;5;251m",
-  subtle: "\x1b[38;5;249m",
-  faint: "\x1b[38;5;244m",
-  accent: "\x1b[38;5;214m",
-  success: "\x1b[38;5;114m",
-  warn: "\x1b[38;5;179m",
-  error: "\x1b[38;5;203m",
-  info: "\x1b[38;5;117m",
-  brand: "\x1b[38;5;183m",
-  panel: "\x1b[38;5;59m",
-  border: "\x1b[38;5;60m",
-  borderSoft: "\x1b[38;5;245m",
-  glow: "\x1b[38;5;183m",
-  rule: "\x1b[38;5;243m"
-};
-
-const namedColors = {
-  bold: ANSI.bold,
-  dim: ANSI.dim,
-  italic: ANSI.italic,
-  underline: ANSI.underline,
-  strikethrough: ANSI.strikethrough,
-  inverse: ANSI.inverse,
-  hidden: ANSI.hidden,
-  red: ANSI.red,
-  green: ANSI.green,
-  yellow: ANSI.yellow,
-  blue: ANSI.blue,
-  magenta: ANSI.magenta,
-  cyan: ANSI.cyan,
-  white: ANSI.white,
-  brightRed: ANSI.brightRed,
-  brightGreen: ANSI.brightGreen,
-  brightYellow: ANSI.brightYellow,
-  brightBlue: ANSI.brightBlue,
-  brightMagenta: ANSI.brightMagenta,
-  brightCyan: ANSI.brightCyan,
-  brightWhite: ANSI.brightWhite,
-  brightBlack: ANSI.brightBlack,
-  muted: ANSI.muted,
-  subtle: ANSI.subtle,
-  faint: ANSI.faint,
-  accent: ANSI.accent,
-  success: ANSI.success,
-  warn: ANSI.warn,
-  error: ANSI.error,
-  info: ANSI.info,
-  brand: ANSI.brand,
-  panel: ANSI.panel,
-  border: ANSI.border,
-  borderSoft: ANSI.borderSoft,
-  glow: ANSI.glow,
-  rule: ANSI.rule
-};
+// Pull the primitives into local scope for use by the higher-level components below.
+import { colorsEnabled, ANSI, namedColors } from "./ui/ansi.js";
+import {
+  style, paint, muted, subtle, faint, accent, success, warn, error, info, brand,
+  dim, bold, cyan, green, yellow, red,
+  visibleLength, padEnd, padStart, truncate, stripAnsi, sliceVisible, skipVisible, wrapText
+} from "./ui/ansi.js";
+import { modeColor, FRAME, rule, frame, box as internalBox, panel } from "./ui/layout.js";
+import {
+  MODEL_PRICING, estimateCost, formatTokenCount, formatUSD, costColor,
+  costDisplay, costSummaryPanel
+} from "./ui/cost.js";
 
 const PANEL_TITLE_ICONS = {
   task: "chevronRight",
@@ -124,7 +55,9 @@ const PANEL_TITLE_ICONS = {
 };
 
 // ---------------------------------------------------------------------------
-// Style primitives
+// Style primitives — imported from src/ui/ansi.js (see header).
+// The semantic color shortcuts, width helpers, and wrapText live in the ansi
+// layer; this section only contains higher-level composer/screen helpers.
 // ---------------------------------------------------------------------------
 
 export function grokComposerLine({
@@ -291,159 +224,9 @@ export function wordmark({ version = "v0.1", tagline = "interactive coding harne
 }
 
 
-export function style(text, name) {
-  if (!colorsEnabled) return String(text);
-  const open = namedColors[name];
-  if (!open) return String(text);
-  return `${open}${text}${ANSI.reset}`;
-}
 
-export function paint(text, openCode) {
-  if (!colorsEnabled) return String(text);
-  if (!openCode) return String(text);
-  return `${openCode}${text}${ANSI.reset}`;
-}
-
-// Shortcut semantic colors
-export const muted = (text) => style(text, "muted");
-export const subtle = (text) => style(text, "subtle");
-export const faint = (text) => style(text, "faint");
-export const accent = (text) => style(text, "accent");
-export const success = (text) => style(text, "success");
-export const warn = (text) => style(text, "warn");
-export const error = (text) => style(text, "error");
-export const info = (text) => style(text, "info");
-export const brand = (text) => style(text, "brand");
-
-export const dim = (text) => style(text, "dim");
-export const bold = (text) => style(text, "bold");
-export const cyan = (text) => style(text, "cyan");
-export const green = (text) => style(text, "green");
-export const yellow = (text) => style(text, "yellow");
-export const red = (text) => style(text, "red");
-
-// Width helpers (ignore ANSI escapes).
-const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
-
-export function visibleLength(value) {
-  return String(value ?? "").replace(ANSI_PATTERN, "").length;
-}
-
-export function padEnd(value, width, fill = " ") {
-  const text = String(value ?? "");
-  const gap = width - visibleLength(text);
-  return gap > 0 ? text + fill.repeat(gap) : text;
-}
-
-export function padStart(value, width, fill = " ") {
-  const text = String(value ?? "");
-  const gap = width - visibleLength(text);
-  return gap > 0 ? fill.repeat(gap) + text : text;
-}
-
-export function truncate(value, width, suffix = "…") {
-  const text = String(value ?? "");
-  if (width <= 0) return "";
-  if (visibleLength(text) <= width) return text;
-  const out = [];
-  let len = 0;
-  const target = Math.max(1, width - visibleLength(suffix));
-  let inEscape = false;
-  for (const ch of text) {
-    if (inEscape) {
-      out.push(ch);
-      if (/[a-zA-Z]/.test(ch)) inEscape = false;
-      continue;
-    }
-    if (ch === "\x1b") {
-      inEscape = true;
-      out.push(ch);
-      continue;
-    }
-    if (len >= target) break;
-    out.push(ch);
-    len += 1;
-  }
-  return `${out.join("")}${suffix}`;
-}
-
-function stripAnsi(value) {
-  return String(value ?? "").replace(ANSI_PATTERN, "");
-}
-
-export { stripAnsi };
-
-function sliceVisible(text, maxVisible) {
-  const out = [];
-  let len = 0;
-  let inEscape = false;
-  for (const ch of String(text ?? "")) {
-    if (inEscape) {
-      out.push(ch);
-      if (/[a-zA-Z]/.test(ch)) inEscape = false;
-      continue;
-    }
-    if (ch === "\x1b") {
-      inEscape = true;
-      out.push(ch);
-      continue;
-    }
-    if (len >= maxVisible) break;
-    out.push(ch);
-    len += 1;
-  }
-  return out.join("");
-}
-
-function skipVisible(text, count) {
-  let skipped = 0;
-  let inEscape = false;
-  let index = 0;
-  const value = String(text ?? "");
-  while (index < value.length && skipped < count) {
-    const ch = value[index];
-    if (inEscape) {
-      index += 1;
-      if (/[a-zA-Z]/.test(ch)) inEscape = false;
-      continue;
-    }
-    if (ch === "\x1b") {
-      inEscape = true;
-      index += 1;
-      continue;
-    }
-    skipped += 1;
-    index += 1;
-  }
-  return value.slice(index);
-}
-
-export function wrapText(value, maxWidth) {
-  const width = Math.max(1, Number(maxWidth) || 1);
-  const text = String(value ?? "");
-  if (!text) return [""];
-  const lines = [];
-  for (const paragraph of text.split("\n")) {
-    let remaining = paragraph;
-    if (!remaining) {
-      lines.push("");
-      continue;
-    }
-    while (visibleLength(remaining) > width) {
-      const chunk = sliceVisible(remaining, width);
-      const plain = stripAnsi(chunk);
-      let breakAt = plain.length;
-      const space = plain.lastIndexOf(" ");
-      if (space > 0) breakAt = space;
-      const head = sliceVisible(remaining, breakAt);
-      lines.push(head.trimEnd());
-      remaining = skipVisible(remaining, breakAt).trimStart();
-      if (!remaining) break;
-    }
-    if (remaining) lines.push(remaining);
-  }
-  return lines.length ? lines : [""];
-}
+// (style, paint, semantic color shortcuts, width helpers, truncate, stripAnsi,
+// sliceVisible, skipVisible, and wrapText are imported from src/ui/ansi.js.)
 
 // ---------------------------------------------------------------------------
 // Time + numeric formatting
@@ -577,113 +360,12 @@ export function promptStatus({
   return parts.join(style(" │ ", "subtle"));
 }
 
-function modeColor(mode) {
-  if (mode === "plan") return "info";
-  if (mode === "build") return "success";
-  if (mode === "always-approve") return "warn";
-  if (mode === "goal") return "brand";
-  if (mode === "review") return "accent";
-  return "muted";
-}
-
-// ---------------------------------------------------------------------------
-// Rules, frames, panels
-// ---------------------------------------------------------------------------
-
-const FRAME = {
-  ascii: { tl: "+", tr: "+", bl: "+", br: "+", h: "-", v: "|" },
-  thin: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" },
-  rounded: { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" },
-  double: { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" },
-  heavy: { tl: "┏", tr: "┓", bl: "┗", br: "┛", h: "━", v: "┃" }
-};
-
-export function rule(width = 60, { char = "─", color = "rule", label = null, labelColor = "muted", align = "center" } = {}) {
-  const w = Math.max(8, width);
-  if (!label) {
-    return style(char.repeat(w), color);
-  }
-  const text = ` ${label} `;
-  const remaining = w - visibleLength(text);
-  if (remaining < 4) return style(text.padEnd(w, char), color);
-  let left;
-  let right;
-  if (align === "left") {
-    left = 0;
-    right = remaining;
-  } else if (align === "right") {
-    left = remaining;
-    right = 0;
-  } else {
-    left = Math.floor(remaining / 2);
-    right = remaining - left;
-  }
-  return `${style(char.repeat(left), color)}${style(text, labelColor)}${style(char.repeat(right), color)}`;
-}
-
-export function frame(styleName = "rounded") {
-  return FRAME[styleName] || FRAME.rounded;
-}
-
-export function box(rows, {
-  width,
-  frame: frameName = "rounded",
-  color = "border",
-  title = null,
-  titleTone = "brand",
-  titleIcon = null,
-  padding = 1,
-  align = "left"
-} = {}) {
-  const f = frame(frameName);
-  const w = Math.max(20, width || maxContentWidth(rows, padding));
-  const inner = Math.max(1, w - 2 - padding * 2);
-  const expanded = [];
-  for (const row of rows) {
-    expanded.push(...wrapText(String(row ?? ""), inner));
-  }
-  const lines = expanded.map((row) => renderBoxRow(row, w - 2, padding, align));
-  const bottom = style(`${f.bl}${f.h.repeat(w - 2)}${f.br}`, color);
-  const bordered = lines.map((line) => `${style(f.v, color)} ${line} ${style(f.v, color)}`);
-  let top;
-  if (title) {
-    // ponytail: truncate the title so the top border never exceeds the box width.
-    const titleText = truncate(title, Math.max(4, w - 4));
-    const label = ` ${panelTitle(titleText, { tone: titleTone, icon: titleIcon })} `;
-    const remaining = Math.max(0, w - 2 - visibleLength(label));
-    const left = 1;
-    const right = Math.max(0, remaining - left);
-    top = `${style(f.tl, color)}${style(f.h.repeat(left), color)}${label}${style(f.h.repeat(right), color)}${style(f.tr, color)}`;
-  } else {
-    top = style(`${f.tl}${f.h.repeat(w - 2)}${f.tr}`, color);
-  }
-  return [top, ...bordered, bottom];
-}
-
-function renderBoxRow(row, innerWidth, padding, align) {
-  const value = String(row ?? "");
-  const padded = padding > 0 ? " ".repeat(padding) + value + " ".repeat(padding) : value;
-  const totalWidth = innerWidth;
-  const len = visibleLength(padded);
-  if (len > totalWidth) return truncate(padded, totalWidth);
-  if (align === "right") return " ".repeat(totalWidth - len) + padded;
-  if (align === "center") {
-    const left = Math.floor((totalWidth - len) / 2);
-    return " ".repeat(left) + padded + " ".repeat(totalWidth - len - left);
-  }
-  return padded + " ".repeat(totalWidth - len);
-}
-
-function maxContentWidth(rows, padding) {
-  const longest = rows.reduce((max, row) => Math.max(max, visibleLength(row)), 0);
-  return Math.max(20, longest + padding * 2 + 2);
-}
-
-export function panel(title, rows, { width, color = "panel", frame: frameName = "rounded", padding = 1 } = {}) {
-  if (!rows.length) {
-    return box([title, muted("(empty)")], { width, frame: frameName, color, padding });
-  }
-  return box([title, ...rows], { width, frame: frameName, color, padding });
+// (modeColor, FRAME, rule, frame, and panel are imported from src/ui/layout.js.)
+// `box` is a local wrapper that injects the higher-level panelTitle renderer
+// (an icon + tone chip defined below) so titled boxes keep their rich titles
+// while the layout primitive itself stays free of components-layer dependencies.
+function box(rows, options = {}) {
+  return internalBox(rows, { ...options, titleRenderer: panelTitle });
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,103 +1187,10 @@ export function thinkingBlock({
 }
 
 // ---------------------------------------------------------------------------
-// 5. Cost & Usage Display
+// 5. Cost & Usage Display — imported from src/ui/cost.js (see header).
+//    MODEL_PRICING, estimateCost, formatTokenCount, formatUSD, costColor,
+//    costDisplay, and costSummaryPanel all live in the cost layer.
 // ---------------------------------------------------------------------------
-
-export const MODEL_PRICING = {
-  "gpt-4o": { input: 2.5, output: 10 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
-  "gpt-4.1": { input: 2.0, output: 8.0 },
-  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
-  "gpt-4.1-nano": { input: 0.1, output: 0.4 },
-  "o3": { input: 2.0, output: 8.0 },
-  "o3-mini": { input: 1.1, output: 4.4 },
-  "o4-mini": { input: 1.1, output: 4.4 },
-  "claude-sonnet-4-20250514": { input: 3.0, output: 15.0 },
-  "claude-3-5-sonnet": { input: 3.0, output: 15.0 },
-  "claude-3-5-haiku": { input: 0.8, output: 4.0 },
-  "claude-opus-4-20250514": { input: 15.0, output: 75.0 },
-  "gemini-2.5-pro": { input: 1.25, output: 10.0 },
-  "gemini-2.5-flash": { input: 0.15, output: 0.6 },
-  "moonshot-v1": { input: 1.0, output: 2.0 },
-  "kimi-latest": { input: 1.0, output: 2.0 },
-  "deepseek-chat": { input: 0.14, output: 0.28 },
-  "deepseek-reasoner": { input: 0.55, output: 2.19 }
-};
-
-export function estimateCost(model, inputTokens, outputTokens) {
-  const modelName = String(model ?? "").toLowerCase();
-  let pricing = MODEL_PRICING[modelName] || null;
-  if (!pricing) {
-    // Partial match: find the first key that the model name contains
-    for (const key of Object.keys(MODEL_PRICING)) {
-      if (modelName.includes(key) || key.includes(modelName)) {
-        pricing = MODEL_PRICING[key];
-        break;
-      }
-    }
-  }
-  if (!pricing) return null;
-  const inTok = Math.max(0, Number(inputTokens) || 0);
-  const outTok = Math.max(0, Number(outputTokens) || 0);
-  const inputCost = (inTok / 1_000_000) * pricing.input;
-  const outputCost = (outTok / 1_000_000) * pricing.output;
-  return { inputCost, outputCost, totalCost: inputCost + outputCost };
-}
-
-function formatTokenCount(n) {
-  const val = Number(n) || 0;
-  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
-  if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
-  return String(val);
-}
-
-function formatUSD(amount) {
-  const val = Math.max(0, Number(amount) || 0);
-  if (val === 0) return "$0.00";
-  if (val < 0.001) return `$${val.toFixed(6)}`;
-  if (val < 0.01) return `$${val.toFixed(4)}`;
-  if (val < 1) return `$${val.toFixed(3)}`;
-  return `$${val.toFixed(2)}`;
-}
-
-function costColor(amount) {
-  if (amount < 0.01) return "success";
-  if (amount < 0.10) return "warn";
-  return "error";
-}
-
-export function costDisplay({ model, inputTokens, outputTokens, sessionTotal = null, width = 60 } = {}) {
-  const estimate = estimateCost(model, inputTokens, outputTokens);
-  if (!estimate) return muted("(pricing unavailable)");
-
-  const costStr = style(formatUSD(estimate.totalCost), costColor(estimate.totalCost));
-  const inStr = faint(`in: ${formatTokenCount(inputTokens)}`);
-  const outStr = faint(`out: ${formatTokenCount(outputTokens)}`);
-  const parts = [`${costStr} ${muted("(")}${inStr}${muted(" · ")}${outStr}${muted(")")}`];
-
-  if (sessionTotal != null) {
-    parts.push(`${muted("session:")} ${style(formatUSD(sessionTotal), costColor(sessionTotal))}`);
-  }
-
-  return parts.join(style(" · ", "subtle"));
-}
-
-export function costSummaryPanel({ runs = [], sessionTotal = 0, width = 60 } = {}) {
-  const rows = [];
-  if (runs.length) {
-    for (const [i, run] of runs.entries()) {
-      const idx = faint(`#${i + 1}`);
-      const modelLabel = run.model ? truncate(run.model, 20) : "unknown";
-      const cost = run.cost != null ? style(formatUSD(run.cost), costColor(run.cost)) : muted("—");
-      rows.push(`  ${idx}  ${padEnd(modelLabel, 22)} ${cost}`);
-    }
-    rows.push("");
-  }
-  const total = style(formatUSD(sessionTotal), costColor(sessionTotal));
-  rows.push(`  ${bold("Session total:")} ${total}`);
-  return box(rows, { width, title: "Cost Summary", titleTone: "accent", frame: "rounded", color: "borderSoft", padding: 1 });
-}
 
 // ---------------------------------------------------------------------------
 // 6. Enhanced Error Panel

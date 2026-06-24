@@ -158,6 +158,19 @@ function classifySegment(segment) {
   return { level, levels };
 }
 
+/**
+ * Classify a shell command by risk level, accounting for shell operators.
+ *
+ * The command is split on pipes (`|`) and each segment is classified; the most
+ * dangerous segment wins. Output redirection (`>`, `>>`) to a sensitive system
+ * path is treated as destructive; any redirection, input redirection (`<`), or
+ * command substitution (`$()`, backticks) elevates a safe-read command above
+ * safe-read so it can no longer be auto-approved as read-only.
+ *
+ * @param {string} command - The raw shell command.
+ * @returns {{level:string, levels:string[], command:string, operators:object}} The
+ *   primary risk level plus all matched levels and detected operators.
+ */
 export function classifyShellCommand(command) {
   const cmd = String(command || "").trim();
   if (!cmd) return { level: "safe-read", reason: "empty command" };
@@ -214,6 +227,18 @@ export function classifyShellCommand(command) {
   return { level, levels, command: cmd, operators };
 }
 
+/**
+ * Resolve the execution decision for a shell command against the active config.
+ *
+ * Combines {@link classifyShellCommand} with the permission profile, tool
+ * policy, and shell policy knobs. Returns a decision of `auto`, `ask`, or
+ * `deny`. Secret-risk commands always ask; destructive commands are denied
+ * unless `shellPolicy.allowDestructive` is set under `full-auto`.
+ *
+ * @param {string} command - The raw shell command.
+ * @param {object} [cfg={}] - Active config.
+ * @returns {{decision:"auto"|"ask"|"deny", level:string, reason:string, classification:object}}
+ */
 export function evaluateShellPolicy(command, cfg = {}) {
   const classification = classifyShellCommand(command);
   const profile = cfg.permissionProfile || "normal";

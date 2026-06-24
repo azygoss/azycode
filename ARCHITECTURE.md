@@ -32,11 +32,16 @@ Azycode is a dependency-free Node.js CLI. The main process owns:
 | `src/memory.js` | Long-lived local notes |
 | `src/hooks.js` | Configurable lifecycle hooks |
 | `src/bench.js` | Internal benchmark harness |
-| `src/tui.js` / `src/ui.js` | Interactive terminal UI |
+| `src/tui.js` | Interactive terminal UI (facade; command catalog in `src/tui/commands.js`) |
+| `src/tui/commands.js` | TUI slash-command registry, aliases, help groups, dispatch |
+| `src/ui.js` | Terminal rendering components (facade; see the UI sub-layers below) |
+| `src/ui/ansi.js` | ANSI color detection, palette, style/width primitives, `wrapText` |
+| `src/ui/layout.js` | Layout primitives: `rule`, `frame`, `box`, `panel`, `modeColor` |
+| `src/ui/cost.js` | Model pricing + cost estimation business logic |
 | `src/harness.js` | Progress formatting, runtime snapshots, abort handling |
 | `src/logger.js` | Leveled logging (`AZYCODE_LOG_LEVEL`, `AZYCODE_DEBUG`) |
 
-The CLI entrypoint is `bin/azycode.js`. All runtime behavior lives under this repository's `src/` directory — it is not a wrapper around another harness.
+The CLI entrypoint is `bin/azycode.js`. All runtime behavior lives under this repository's `src/` directory — it is not a wrapper around another harness. The UI and TUI modules are layered: `src/ui/{ansi,layout,cost}.js` hold the low-level primitives and business logic, while `src/ui.js` and `src/tui.js` re-export them and build higher-level components on top. See [docs/API.md](docs/API.md) for the public API surface.
 
 ## Config
 

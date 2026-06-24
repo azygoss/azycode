@@ -114,6 +114,7 @@ export function buildProfileToolPolicy(profile) {
 }
 
 /** Apply profile defaults onto cfg.toolPolicy. Saved per-tool overrides are merged in loadConfig after this runs. */
+/** Mutate `cfg.toolPolicy` in place to reflect the active permission profile. */
 export function applyPermissionProfile(cfg) {
   const profile = cfg.permissionProfile || "normal";
   if (!PERMISSION_PROFILES.includes(profile)) {
@@ -123,6 +124,15 @@ export function applyPermissionProfile(cfg) {
   return cfg;
 }
 
+/**
+ * Resolve the approval decision for a single tool call. Combines the tool
+ * policy, permission profile, and `alwaysApprove` into a concrete decision.
+ * Deny rules always win; `alwaysApprove` auto-approves unless the rule is deny.
+ * @param {object} cfg - Active config.
+ * @param {string} toolName - Tool being invoked.
+ * @param {object} [context] - Extra context (e.g. classification for shell).
+ * @returns {{allowed:boolean, decision:"auto"|"ask"|"deny", rule:string, reason:string}}
+ */
 export function resolveToolPermission(cfg, toolName, context = {}) {
   const name = String(toolName || "");
   const category = toolCategory(name);

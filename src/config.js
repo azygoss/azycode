@@ -39,6 +39,11 @@ export function formatAgentStepLimit(limit) {
   return limit ? `max ${limit} steps` : "unlimited steps";
 }
 
+/**
+ * Resolve the azycode home directory. Defaults to `~/.azycode`; override per
+ * project/test/CI with the `AZYCODE_HOME` environment variable.
+ * @returns {string}
+ */
 export function azyHome() {
   return process.env.AZYCODE_HOME || path.join(os.homedir(), ".azycode");
 }
@@ -59,6 +64,11 @@ export function ensureHome() {
   fs.mkdirSync(azyHome(), { recursive: true, mode: 0o700 });
 }
 
+/**
+ * Return a fresh, fully-populated default config object. Merge new config
+ * files against this via {@link loadConfig} to pick up new defaults.
+ * @returns {object}
+ */
 export function defaultConfig() {
   return {
     version: 1,
@@ -186,6 +196,13 @@ export function atomicWriteJson(targetPath, value) {
   }
 }
 
+/**
+ * Validate and normalize a config object in place. Unknown modes, reasoning
+ * levels, permission profiles, sandbox modes, and tool policies are reset to
+ * safe defaults so the runtime never operates on unsupported values.
+ * @param {object} cfg - Config object (mutated).
+ * @returns {object} The normalized config.
+ */
 export function validateConfig(cfg) {
   const defaults = defaultConfig();
   cfg.mode = normalizeMode(cfg.mode);
@@ -242,6 +259,12 @@ export function validateConfig(cfg) {
   return cfg;
 }
 
+/**
+ * Load and validate `config.json`, merging any new defaults from
+ * {@link defaultConfig}. Results are cached in memory keyed on file mtime, so
+ * repeated calls are cheap; mutation via {@link saveConfig} invalidates the cache.
+ * @returns {object} A deep copy of the active config.
+ */
 export function loadConfig() {
   ensureHome();
   const cPath = configPath();
@@ -277,6 +300,11 @@ export function loadConfig() {
   return typeof structuredClone === "function" ? structuredClone(cfg) : JSON.parse(JSON.stringify(cfg));
 }
 
+/**
+ * Persist `cfg` to `config.json` atomically (random-suffix temp + rename) and
+ * invalidate the load cache. The file is written with `0600` permissions.
+ * @param {object} cfg - Config object to persist.
+ */
 export function saveConfig(cfg) {
   ensureHome();
   atomicWriteJson(configPath(), cfg);
@@ -356,16 +384,24 @@ export function saveTodos(todos) {
   _todosMtime = 0;
 }
 
+/**
+ * Mask a secret for safe display/logging. Short values become `****`; longer
+ * ones keep only the first and last 4 characters (e.g. `sk-a...ijkl`).
+ * @param {string} value
+ * @returns {string}
+ */
 export function maskSecret(value) {
   if (!value) return "";
   if (value.length <= 8) return "****";
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
+/** Generate a short unique id with the given prefix (e.g. `ses_a1b2c3`). */
 export function id(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString("hex")}`;
 }
 
+/** Cycle to the next mode in {@link MODES}, accepting the legacy `approve` alias. */
 export function rotateMode(current) {
   if (current === "approve") current = "always-approve";
   const index = MODES.indexOf(current);

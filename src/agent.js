@@ -32,6 +32,33 @@ const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 const MAX_SESSIONS = 50;
 const MAX_IN_RUN_MESSAGES = 80;
 
+/**
+ * Run the coding-harness agent loop to completion (a final assistant message).
+ *
+ * Sends a mode-specific system prompt, applied skills, project instructions,
+ * relevant memory, active todos, an optional context pack, the user task, and
+ * the OpenAI tool schemas; then dispatches structured tool results until the
+ * model returns a final assistant message.
+ *
+ * Risky tools require approval unless `alwaysApprove` is set or the tool policy
+ * allows auto. Git guard and path guard apply independently of approval. Runs
+ * emit progress events, persist recent tool records, and expose formatted
+ * transcripts. Throws {@link AgentStepLimitError} / {@link AgentCancelledError}.
+ *
+ * @param {object} opts
+ * @param {object} opts.cfg - Active config (provider, toolPolicy, guards, …).
+ * @param {string} opts.cwd - Workspace root for filesystem tools.
+ * @param {string} opts.prompt - The user task.
+ * @param {string} [opts.mode] - Runtime mode (plan/build/always-approve/goal/review).
+ * @param {number} [opts.maxSteps] - Override the step limit.
+ * @param {object} [opts.subagent] - Subagent profile (system/model/reasoning).
+ * @param {Array} [opts.conversation] - Prior messages for a follow-up run.
+ * @param {AbortSignal} [opts.signal] - Abort the run mid-turn.
+ * @param {number} [opts.subagentDepth=0] - Current subagent nesting depth.
+ * @param {boolean} [opts.includeContext=false] - Inject a context pack.
+ * @returns {Promise<string|{content,sessionId,messages}>} The final assistant
+ *   text, or a session object when `returnSession` is set.
+ */
 export async function runAgent({
   cfg,
   cwd,

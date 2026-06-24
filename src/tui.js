@@ -99,12 +99,19 @@ import { createPromptSession, normalizeTabKey, syncTuiPrompt } from "./terminal-
 const PROFILES = ["normal", "read-only", "safe-write", "full-auto"];
 const MAX_CONVERSATION_MESSAGES = 80;
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const TUI_COMMANDS = [
-  "help", "status", "health", "doctor", "dashboard", "sessions", "tools", "goals", "missions", "mission",
-  "session", "resume", "policy", "tool", "memory", "agents", "agent", "providers", "provider", "login", "mode", "reasoning",
-  "model", "models", "profile", "credentials", "keys", "workspace", "context", "progress", "stream", "instructions", "review", "skill", "todo", "new", "compact", "hooks", "commands", "cost", "clear", "reload", "exit", "quit"
-];
-const TOOL_POLICY_MODES = ["auto", "ask", "deny"];
+// Command catalog, aliases, help groups, and the dispatch registry live in the
+// dedicated tui/commands.js module (plan.md §2.3). Re-exported here for the
+// handful of call sites that still import them from tui.js.
+import {
+  TUI_COMMANDS,
+  TOOL_POLICY_MODES,
+  helpGroups,
+  COMMAND_HANDLERS,
+  registerCommand,
+  resolveCommandName,
+  dispatchCommand
+} from "./tui/commands.js";
+export { TUI_COMMANDS, TOOL_POLICY_MODES, helpGroups, registerCommand };
 
 const AGENT_BORDER = "rounded";
 
@@ -1117,64 +1124,7 @@ function printHelp(topic = null) {
   printHelpGroups();
 }
 
-function helpGroups() {
-  return [
-    { title: "Status", items: [
-      ["/status", "active model, provider, guard"],
-      ["/health", "provider connectivity"],
-      ["/doctor", "local binary and config paths"],
-      ["/dashboard", "local overview"],
-      ["/workspace", "cwd, config, git, guard"]
-    ]},
-    { title: "Providers", items: [
-      ["/login", "connect a provider"],
-      ["/provider", "switch configured provider"],
-      ["/model", "all models grouped by provider"],
-      ["/providers", "show provider presets"],
-      ["/credentials", "masked provider key sources"]
-    ]},
-    { title: "Run", items: [
-      ["/mode", "plan, build, always-approve, goal, review"],
-      ["/reasoning", "minimal, low, medium, high"],
-      ["/profile", "permission profile"],
-      ["/context", "toggle repository context"],
-      ["/instructions", "show active AGENTS.md sources"],
-      ["/stream", "toggle response streaming"],
-      ["/progress", "toggle inline activity"]
-    ]},
-    { title: "Review", items: [
-      ["/review", "local git review"],
-      ["/policy", "tool approvals"],
-      ["/tool", "set tool approval mode"],
-      ["/agents", "show subagents"],
-      ["/agent", "select subagent"]
-    ]},
-    { title: "State", items: [
-      ["/sessions", "recent agent sessions"],
-      ["/session", "show session transcript"],
-      ["/resume", "resume a saved session"],
-      ["/tools", "recent tool activity"],
-      ["/goals", "saved goals"],
-      ["/missions", "saved missions"],
-      ["/todo", "manage workspace todos"],
-      ["/skill", "list, add, remove skills"],
-      ["/cost", "session token cost summary"]
-    ]},
-    { title: "Other", items: [
-      ["/mission", "dry-run, run, report"],
-      ["/memory", "manage notes"],
-      ["/keys", "keyboard shortcuts"],
-      ["/new", "start a fresh conversation"],
-      ["/compact", "trim or llm-compact context"],
-      ["/hooks", "show lifecycle hook handlers"],
-      ["/commands", "list custom slash commands"],
-      ["/reload", "re-read config and refresh"],
-      ["/clear", "redraw the screen"],
-      ["!<cmd>", "run a shell command in the workspace"],
-      ["/exit", "leave azycode"]
-    ]}
-  ];
-}
+// helpGroups() is imported from src/tui/commands.js (plan.md §2.3).
 
 function printHelpGroups() {
   blank();

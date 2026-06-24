@@ -51,6 +51,22 @@ function isBinaryBuffer(buffer) {
   return sample.includes(0);
 }
 
+/**
+ * Build the tool array exposed to the model: filesystem, search, patch, shell,
+ * git, todo, set_mode, and spawn_subagents. Each tool has a `name`, `schema`
+ * (OpenAI function parameters), and an async `run(args, ctx)` handler.
+ *
+ * Write tools enforce workspace containment + the path guard via
+ * {@link guardWritePath}; shell tools enforce the shell-risk policy; risky
+ * tools ask for approval unless `alwaysApprove` or the tool policy allows auto.
+ *
+ * @param {object} opts
+ * @param {string} [opts.cwd] - Workspace root.
+ * @param {object} [opts.cfg] - Static config (used when `resolveCfg` omitted).
+ * @param {() => object} [opts.resolveCfg] - Live config resolver (preferred).
+ * @param {(event) => Promise<boolean>} [opts.confirmTool] - Approval callback.
+ * @returns {Array<{name:string, schema:object, run:Function}>}
+ */
 export function createTools({
   cwd = process.cwd(),
   cfg,

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
-    "check": "node --check bin/azycode.js && node --check src/*.js",
+    "check": "node --check bin/azycode.js && node --check src/*.js && node --check src/ui/*.js && node --check src/tui/*.js",
     "pack:dry": "npm pack --dry-run"
   },
   "files": [
@@ -16,6 +16,7 @@
     "src/",
     "bench/",
     "examples/",
+    "docs/",
     "README.md",
     "ARCHITECTURE.md",
     "COMPLETION_AUDIT.md",

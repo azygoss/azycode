@@ -36,6 +36,14 @@ let _contextCacheKey = "";
 let _contextCacheValue = null;
 let _workspaceMutationGen = 0;
 
+/**
+ * Capture a quick structural snapshot of a repository for context injection.
+ * Returns the package metadata, git state (root/branch/changed/diff files), a
+ * depth-limited file listing (ignoring common build/dep dirs), and the set of
+ * recognized config/instruction files. Safe on non-git or empty directories.
+ * @param {string} [cwd=process.cwd()]
+ * @returns {{root:string, package:object|null, git:object, files:string[], configFiles:string[]}}
+ */
 export function repoSnapshot(cwd = process.cwd()) {
   const root = path.resolve(cwd);
   return {
@@ -404,6 +412,19 @@ function fileIncludesKeyword(filePath, keyword) {
   }
 }
 
+/**
+ * Assemble a context pack for `cwd`: layered retrieval of instructions, changed
+ * files, prompt mentions, import/symbol neighbors, tests, keyword search, and
+ * recent files, each capped by a per-section byte budget ({@link SECTION_BUDGETS}).
+ *
+ * Results are cached in memory keyed on file mtimes + a mutation generation,
+ * so repeated calls are cheap; {@link notifyContextWorkspaceMutation} and
+ * {@link clearContextPackCache} invalidate it. File content is marked as
+ * untrusted data (see {@link formatContextPack}).
+ * @param {string} [cwd=process.cwd()]
+ * @param {object} [options] - `{ maxFiles, maxBytes, prompt }`.
+ * @returns {Promise<object>} The pack with `files`, `usedBytes`, and section usage.
+ */
 export async function contextPack(cwd = process.cwd(), options = {}) {
   const cacheKey = contextCacheKey(cwd, options);
   if (_contextCacheKey === cacheKey) return _contextCacheValue;

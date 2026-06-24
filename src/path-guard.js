@@ -99,6 +99,21 @@ export function isProtectedWritePath(relPath, cfg = {}) {
   return { protected: false, path: normalized };
 }
 
+/**
+ * Evaluate whether a write to `requested` is allowed, combining workspace
+ * containment ({@link normalizeWorkspacePath}) with the protected-path list
+ * ({@link isProtectedWritePath}).
+ *
+ * Returns `{ allowed: true }` for ordinary paths, `{ allowed: false }` when the
+ * path escapes the workspace, or `{ allowed: null, requiresApproval: true }`
+ * for protected paths that need explicit approval (config may auto-allow).
+ *
+ * @param {string} root - Workspace root.
+ * @param {string} requested - Path requested by the model (relative or absolute).
+ * @param {object} [cfg={}] - Active config (pathGuard options).
+ * @param {object} [options={}] - `{ resolveSymlinks, bypassPathGuard, approved }`.
+ * @returns {{allowed:boolean|null, path:string, reason:string, requiresApproval?:boolean}}
+ */
 export function evaluateWritePath(root, requested, cfg = {}, options = {}) {
   const norm = normalizeWorkspacePath(root, requested, { resolveSymlinks: options.resolveSymlinks });
   if (!norm.ok) return { allowed: false, reason: norm.reason, path: requested };
