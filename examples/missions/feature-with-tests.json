@@ -1,0 +1,21 @@
+{
+  "name": "feature-with-tests",
+  "mode": "build",
+  "passContext": true,
+  "steps": [
+    {
+      "id": "implement",
+      "prompt": "Implement the feature described in the issue: add a throttle helper to src/throttle.js that limits calls to N per second."
+    },
+    {
+      "id": "test",
+      "dependsOn": "implement",
+      "prompt": "Add unit tests for src/throttle.js covering: basic throttle, edge cases at the boundary, and concurrent callers."
+    },
+    {
+      "id": "verify",
+      "dependsOn": "test",
+      "prompt": "Run npm test and npm run check. If anything fails, fix it and re-run. Report the final status."
+    }
+  ]
+}
