@@ -126,9 +126,10 @@ export function classifyToolRisk(toolName, args = {}) {
  * Suggest whether a tool should auto-approve, ask, or deny based on profile +
  * risk classification. Used to reduce approval fatigue without bypassing deny rules.
  */
-export function suggestPermissionDecision(cfg, toolName, args = {}) {
-  const classification = classifyToolRisk(toolName, args);
-  const resolved = resolveToolPermission(cfg, toolName, { classification });
+export function suggestPermissionDecision(cfg, toolName, context = {}) {
+  const { sessionApproval, ...toolArgs } = context;
+  const classification = classifyToolRisk(toolName, toolArgs);
+  const resolved = resolveToolPermission(cfg, toolName, { classification, sessionApproval });
   const profile = cfg.permissionProfile || "normal";
   const fatigueReduction = profile === "trusted-workspace" || profile === "full-auto";
 

@@ -8,7 +8,7 @@ import { runTodoAction } from "./todos.js";
 import { execFileCancellable } from "./exec.js";
 import { notifyContextWorkspaceMutation, shouldInvalidateContextForShell } from "./context.js";
 import { listMcpToolCatalog } from "./mcp.js";
-import { resolveToolPermission } from "./permissions.js";
+import { suggestPermissionDecision } from "./permissions.js";
 import { evaluateShellPolicy } from "./shell-risk.js";
 import { assertPatchPathsAllowed, assertWritePathAllowed, evaluateWritePath } from "./path-guard.js";
 import { executePreparedShell, formatShellResultForModel, resolveShellInvocation } from "./execution-policy.js";
@@ -606,7 +606,8 @@ export function createTools({
     ...entry,
     run: async (args, runOptions = {}) => {
       const activeCfg = policySource();
-      const permission = resolveToolPermission(activeCfg, entry.name, {
+      const permission = suggestPermissionDecision(activeCfg, entry.name, {
+        ...args,
         sessionApproval: sessionApprovals.has(entry.name)
       });
       if (permission.allowed === false) {

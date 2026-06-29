@@ -848,6 +848,34 @@ test("todo command lists active items and clears workspace todos", () => {
   assert.match(runInWorkspace(["todo", "clear"]), /Cleared 1 todo/);
 });
 
+test("backlog add strips flag values from item text", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-bl-"));
+  const out = run(["backlog", "add", "harden path guard", "--priority", "high", "--area", "safety", "--json"], { AZYCODE_HOME: home });
+  const item = JSON.parse(out);
+  assert.equal(item.text, "harden path guard");
+  assert.equal(item.priority, "high");
+  assert.equal(item.area, "safety");
+});
+
+test("progress add and list support strict session filter", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-prog-"));
+  run(["progress", "add", "scoped work", "--session", "ses_cli", "--json"], { AZYCODE_HOME: home });
+  run(["progress", "add", "other session", "--session", "ses_other", "--json"], { AZYCODE_HOME: home });
+  const listed = JSON.parse(run(["progress", "list", "--session", "ses_cli", "--json"], { AZYCODE_HOME: home }));
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].message, "scoped work");
+});
+
+test("backlog complete and remove work from CLI", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-bl2-"));
+  const added = JSON.parse(run(["backlog", "add", "wire classifier", "--json"], { AZYCODE_HOME: home }));
+  const completed = JSON.parse(run(["backlog", "complete", added.id, "--json"], { AZYCODE_HOME: home }));
+  assert.equal(completed.status, "completed");
+  run(["backlog", "remove", added.id], { AZYCODE_HOME: home });
+  const items = JSON.parse(run(["backlog", "list", "--json"], { AZYCODE_HOME: home }));
+  assert.equal(items.length, 0);
+});
+
 test("goal handoff and report emit structured artifacts from state", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-goal-"));
   const goalId = "goal_test_1";
@@ -881,6 +909,9 @@ test("goal handoff and report emit structured artifacts from state", () => {
   const handoffJson = JSON.parse(handoff);
   assert.equal(handoffJson.goal.text, "ship harness improvements");
   assert.equal(handoffJson.sessionId, "ses_goal");
+  assert.equal(handoffJson.version, 2);
+  assert.ok(handoffJson.backlog);
+  assert.ok(handoffJson.progress);
   const report = run(["goal", "report", goalId, "--json"], { AZYCODE_HOME: home });
   const reportJson = JSON.parse(report);
   assert.equal(reportJson.version, 2);

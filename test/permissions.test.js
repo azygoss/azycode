@@ -87,3 +87,14 @@ test("suggestPermissionDecision never bypasses deny rules", () => {
   assert.equal(suggestion.allowed, false);
   assert.equal(suggestion.decision, "deny");
 });
+
+test("suggestPermissionDecision forwards sessionApproval to resolveToolPermission", () => {
+  const cfg = defaultConfig();
+  cfg.toolPolicy.write_file = "ask";
+  const suggestion = suggestPermissionDecision(cfg, "write_file", {
+    file: "src/x.js",
+    sessionApproval: true
+  });
+  assert.equal(suggestion.allowed, true);
+  assert.equal(suggestion.decision, "ask");
+});

@@ -10,8 +10,23 @@ import { applyPermissionProfile, COMPACTION_MODES, defaultConfig, loadConfig, re
 import { loadCustomCommands, previewCustomCommand, resolveCustomCommand } from "./commands.js";
 import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
 import { clearAllTodos, clearCompletedTodos, formatActiveTodos, formatTodoList, listActiveTodos, listTodos } from "./todos.js";
-import { formatActiveBacklog, formatBacklogList, listActiveBacklog, listBacklogItems, runBacklogAction } from "./backlog.js";
-import { appendProgressEntry, formatRecentProgress, listProgressEntries, runProgressAction } from "./progress-log.js";
+import {
+  addBacklogItem,
+  completeBacklogItem,
+  formatActiveBacklog,
+  formatBacklogList,
+  listActiveBacklog,
+  listBacklogItems,
+  removeBacklogItem,
+  updateBacklogItem
+} from "./backlog.js";
+import {
+  appendProgressEntry,
+  clearProgressLog,
+  formatProgressList,
+  formatRecentProgress,
+  listProgressEntries
+} from "./progress-log.js";
 import { loadHookConfig } from "./hooks.js";
 import { trimConversation } from "./conversation.js";
 import { AgentCancelledError, AgentRunError, AgentStepLimitError } from "./agent-errors.js";
@@ -21,7 +36,7 @@ import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.j
 import { ask, askSecret } from "./prompt.js";
 import { buildMissionDryRun, formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, formatSubagentResults, listSubagents, removeSubagent, runSubagentsParallel } from "./subagents.js";
-import { buildGoalHandoffArtifact, formatGoalHandoffArtifact } from "./agent-report.js";
+import { buildGoalHandoffArtifact, formatGoalHandoffArtifact, upgradeGoalHandoffArtifact } from "./agent-report.js";
 import {
   addSkill,
   exportSkill,
@@ -1684,11 +1699,20 @@ function todoCmd(args) {
   throw new Error("Usage: azycode todo list|active|clear [--json] [--completed] [--status <status>]");
 }
 
+const BACKLOG_VALUE_FLAGS = ["status", "area", "priority", "goal", "goal-id", "id", "tags"];
+const PROGRESS_VALUE_FLAGS = ["level", "area", "session", "session-id", "goal", "goal-id", "limit", "before"];
+
+function emitCmdResult(flags, data, text) {
+  if (flags.json) console.log(JSON.stringify(data, null, 2));
+  else console.log(text);
+}
+
 function backlogCmd(args) {
   const flags = parseFlags(args);
-  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const positional = positionalArgs(args, BACKLOG_VALUE_FLAGS);
   const action = positional[0] || "list";
   const cwd = process.cwd();
+  const goalId = flags.goal || flags.goalId || flags["goal-id"] || null;
 
   if (action === "list") {
     const items = listBacklogItems(cwd, {
@@ -1700,61 +1724,84 @@ function backlogCmd(args) {
     return;
   }
   if (action === "active") {
-    const items = listActiveBacklog(cwd, { goalId: flags.goal || flags.goalId || null });
+    const items = listActiveBacklog(cwd, { goalId, scope: goalId ? "strict" : "inclusive" });
     if (flags.json) console.log(JSON.stringify(items, null, 2));
-    else console.log(formatActiveBacklog(cwd) || "No active backlog items.");
+    else console.log(formatActiveBacklog(cwd, { goalId }) || "No active backlog items.");
     return;
   }
   if (action === "add") {
     const text = positional.slice(1).join(" ");
     if (!text) throw new Error("Usage: azycode backlog add \"feature description\" [--priority high] [--area safety]");
-    const result = runBacklogAction(cwd, "add", {
-      text,
+    const item = addBacklogItem(cwd, text, {
       priority: flags.priority,
       area: flags.area,
-      goalId: flags.goal || flags.goalId || null
+      goalId
     });
-    console.log(result);
+    emitCmdResult(flags, item, `added ${item.id} (${item.status}, ${item.priority}): ${item.text}`);
     return;
   }
-  throw new Error("Usage: azycode backlog list|active|add [--json] [--status <status>] [--area <area>] [--priority <level>]");
+  if (action === "update") {
+    const itemId = positional[1] || flags.id;
+    if (!itemId) throw new Error("Usage: azycode backlog update <id> [--text \"...\"] [--status ...] [--priority ...]");
+    const item = updateBacklogItem(cwd, itemId, {
+      text: positional.slice(2).join(" ") || undefined,
+      status: flags.status,
+      priority: flags.priority,
+      area: flags.area
+    });
+    emitCmdResult(flags, item, `updated ${item.id} (${item.status}): ${item.text}`);
+    return;
+  }
+  if (action === "complete") {
+    const itemId = positional[1] || flags.id;
+    if (!itemId) throw new Error("Usage: azycode backlog complete <id>");
+    const item = completeBacklogItem(cwd, itemId);
+    emitCmdResult(flags, item, `completed ${item.id}: ${item.text}`);
+    return;
+  }
+  if (action === "remove") {
+    const itemId = positional[1] || flags.id;
+    if (!itemId) throw new Error("Usage: azycode backlog remove <id>");
+    removeBacklogItem(cwd, itemId);
+    emitCmdResult(flags, { removed: itemId }, `removed ${itemId}`);
+    return;
+  }
+  throw new Error("Usage: azycode backlog list|active|add|update|complete|remove [--json] [--status <status>] [--area <area>] [--priority <level>] [--goal <id>]");
 }
 
 function progressCmd(args) {
   const flags = parseFlags(args);
-  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const positional = positionalArgs(args, PROGRESS_VALUE_FLAGS);
   const action = positional[0] || "list";
   const cwd = process.cwd();
+  const sessionId = flags.session || flags.sessionId || flags["session-id"] || null;
+  const goalId = flags.goal || flags.goalId || flags["goal-id"] || null;
+  const limit = flags.limit ? Number(flags.limit) : 50;
 
   if (action === "list") {
-    const entries = listProgressEntries(cwd, {
-      limit: flags.limit ? Number(flags.limit) : 50,
-      sessionId: flags.session || flags.sessionId || null,
-      goalId: flags.goal || flags.goalId || null
-    });
+    const entries = listProgressEntries(cwd, { limit, sessionId, goalId, scope: "strict" });
     if (flags.json) console.log(JSON.stringify(entries, null, 2));
-    else console.log(formatRecentProgress(cwd, { limit: flags.limit ? Number(flags.limit) : 50 }) || "No progress entries.");
+    else console.log(entries.length ? formatProgressList(entries) : "No progress entries.");
     return;
   }
   if (action === "add") {
     const message = positional.slice(1).join(" ");
     if (!message) throw new Error("Usage: azycode progress add \"message\" [--level milestone|blocker|warn] [--area <area>]");
-    const result = runProgressAction(cwd, "add", {
-      message,
+    const entry = appendProgressEntry(cwd, message, {
       level: flags.level,
       area: flags.area,
-      sessionId: flags.session || flags.sessionId || null,
-      goalId: flags.goal || flags.goalId || null
+      sessionId,
+      goalId
     });
-    console.log(result);
+    emitCmdResult(flags, entry, `logged ${entry.id}: ${entry.message}`);
     return;
   }
   if (action === "clear") {
-    const result = runProgressAction(cwd, "clear", { before: flags.before || null });
-    console.log(result);
+    const removed = clearProgressLog(cwd, { before: flags.before || null });
+    emitCmdResult(flags, { removed }, `cleared ${removed} progress entr${removed === 1 ? "y" : "ies"}`);
     return;
   }
-  throw new Error("Usage: azycode progress list|add|clear [--json] [--level <level>] [--area <area>] [--limit N]");
+  throw new Error("Usage: azycode progress list|add|clear [--json] [--level <level>] [--area <area>] [--session <id>] [--goal <id>] [--limit N]");
 }
 
 async function contextCmd(args) {
@@ -1994,13 +2041,24 @@ async function goal(args) {
   }
   if (action === "start") {
     const cfg = loadConfig();
-    const text = args.slice(1).join(" ");
+    const startArgs = args.slice(1);
+    const text = positionalArgs(startArgs).join(" ");
     if (!text) throw new Error("Usage: azycode goal start \"goal text\"");
     const goalId = `goal_${Date.now()}`;
-    state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [], handoffs: [] };
+    const cwd = process.cwd();
+    state.goals[goalId] = { id: goalId, text, status: "running", startedAt: new Date().toISOString(), sessions: [], handoffs: [] };
     saveState(state);
-    const skills = parseSkills(args);
-    const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills, returnSession: true }, { cancellable: true });
+    appendProgressEntry(cwd, `Goal started: ${text}`, { goalId, level: "info", area: "goal" });
+    const skills = parseSkills(startArgs);
+    const result = await runAgentSafe({
+      cfg,
+      cwd,
+      prompt: text,
+      mode: "goal",
+      skills,
+      goalId,
+      returnSession: true
+    }, { cancellable: true });
     updateState((done) => {
       if (!done.goals[goalId]) return done; // goal removed by another writer
       const goal = done.goals[goalId];
@@ -2032,18 +2090,32 @@ async function goal(args) {
     const selected = state.goals[goalId];
     if (!selected) throw new Error(`No goal ${goalId}`);
     if (action === "handoff") {
-      const artifact = selected.lastHandoff || buildGoalHandoffArtifact({ goal: selected, cwd: process.cwd() });
+      const artifact = upgradeGoalHandoffArtifact(selected.lastHandoff, {
+        goal: { ...selected, id: goalId },
+        cwd: process.cwd()
+      });
       console.log(formatGoalHandoffArtifact(artifact, { json: args.includes("--json") }));
       return;
     }
     const cfg = loadConfig();
+    const cwd = process.cwd();
     selected.status = "running";
     selected.resumedAt = new Date().toISOString();
     saveState(state);
-    const prior = selected.lastHandoff;
-    const prompt = prior?.resumePrompt || `Continue this goal until it is complete. Goal: ${selected.text}`;
-    const skills = parseSkills(args);
-    const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills, returnSession: true }, { cancellable: true });
+    appendProgressEntry(cwd, `Goal resumed: ${selected.text}`, { goalId, level: "info", area: "goal" });
+    const prior = upgradeGoalHandoffArtifact(selected.lastHandoff, { goal: { ...selected, id: goalId }, cwd });
+    const prompt = prior.resumePrompt || `Continue this goal until it is complete. Goal: ${selected.text}`;
+    const resumeArgs = args.slice(2);
+    const skills = parseSkills(resumeArgs);
+    const result = await runAgentSafe({
+      cfg,
+      cwd,
+      prompt,
+      mode: "goal",
+      skills,
+      goalId,
+      returnSession: true
+    }, { cancellable: true });
     updateState((done) => {
       if (!done.goals[goalId]) return done; // goal removed by another writer
       const goal = done.goals[goalId];

@@ -189,6 +189,25 @@ test("collectChangedFiles returns full paths from git status --short", () => {
   assert.ok(files.includes("src/tracked.js"));
 });
 
+test("compactConversationDeterministic scopes backlog to goalId when provided", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-goal-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-goal-cwd-"));
+  process.env.AZYCODE_HOME = home;
+  addBacklogItem(cwd, "goal-specific task", { goalId: "goal_a" });
+  addBacklogItem(cwd, "other goal task", { goalId: "goal_b" });
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `msg-${index}`
+  }));
+  const compacted = compactConversationDeterministic(messages, {
+    keepRecent: 4,
+    cwd,
+    goalId: "goal_a"
+  });
+  assert.match(compacted[0].content, /goal-specific task/);
+  assert.doesNotMatch(compacted[0].content, /other goal task/);
+});
+
 test("compactConversationDeterministic preserves memory when cwd is provided", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-cwd-"));

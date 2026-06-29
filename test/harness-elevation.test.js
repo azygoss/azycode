@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildGoalHandoffArtifact,
-  buildGoalResumePrompt
+  buildGoalResumePrompt,
+  upgradeGoalHandoffArtifact
 } from "../src/agent-report.js";
 import { addBacklogItem } from "../src/backlog.js";
 import { appendProgressEntry } from "../src/progress-log.js";
@@ -74,6 +75,29 @@ test("permission classifier reduces fatigue for safe reads", () => {
 
   const sensitive = classifyToolRisk("write_file", { file: ".env" });
   assert.equal(sensitive.level, "high");
+});
+
+test("upgradeGoalHandoffArtifact upgrades persisted v1 handoffs to v2", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-elev-home-3-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-elev-cwd-3-"));
+  process.env.AZYCODE_HOME = home;
+  addBacklogItem(cwd, "finish backlog CLI");
+
+  const v1 = {
+    version: 1,
+    generatedAt: "2026-06-29T00:00:00.000Z",
+    goal: { text: "old goal", status: "stalled" },
+    sessionId: "ses_old",
+    stats: { steps: 2, toolCalls: 1 },
+    todos: { open: [], completed: [] },
+    changedFiles: ["src/x.js"],
+    resumePrompt: "Continue old goal"
+  };
+  const upgraded = upgradeGoalHandoffArtifact(v1, { goal: { id: "g_old", text: "old goal" }, cwd });
+  assert.equal(upgraded.version, 2);
+  assert.ok(upgraded.backlog);
+  assert.ok(upgraded.progress);
+  assert.equal(upgraded.stats.steps, 2);
 });
 
 test("buildGoalResumePrompt includes backlog progress and changed sections", () => {

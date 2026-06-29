@@ -33,10 +33,11 @@ export function compactConversationDeterministic(messages, {
   todoState = "",
   cwd = null,
   sessionId = null,
+  goalId = null,
   prompt = ""
 } = {}) {
   if (cwd) {
-    const built = buildCompactionContext(cwd, { prompt, sessionId });
+    const built = buildCompactionContext(cwd, { prompt, sessionId, goalId });
     todoState = todoState ? `${todoState}\n\n${built}` : built;
   }
   const nonSystem = messages.filter((message) => message.role !== "system");

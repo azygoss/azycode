@@ -57,10 +57,12 @@ export function listBacklogItems(cwd, { status = null, area = null } = {}) {
   });
 }
 
-export function listActiveBacklog(cwd, { goalId = null } = {}) {
+export function listActiveBacklog(cwd, { goalId = null, scope = "inclusive" } = {}) {
   let items = listBacklogItems(cwd, { status: ["pending", "in_progress"] });
   if (goalId) {
-    items = items.filter((item) => !item.goalId || item.goalId === goalId);
+    items = scope === "inclusive"
+      ? items.filter((item) => !item.goalId || item.goalId === goalId)
+      : items.filter((item) => item.goalId === goalId);
   }
   return items;
 }

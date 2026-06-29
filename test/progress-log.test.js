@@ -33,8 +33,9 @@ test("listProgressEntries filters by sessionId and goalId", () => {
   appendProgressEntry(cwd, "session A", { sessionId: "ses_a", goalId: "goal_a" });
   appendProgressEntry(cwd, "session B", { sessionId: "ses_b", goalId: "goal_b" });
   appendProgressEntry(cwd, "goal X", { goalId: "goal_x", sessionId: "ses_c" });
-  assert.equal(listProgressEntries(cwd, { sessionId: "ses_a" }).length, 2);
-  assert.equal(listProgressEntries(cwd, { goalId: "goal_x" }).length, 2);
+  assert.equal(listProgressEntries(cwd, { sessionId: "ses_a", scope: "strict" }).length, 1);
+  assert.equal(listProgressEntries(cwd, { goalId: "goal_x", scope: "strict" }).length, 1);
+  assert.equal(listProgressEntries(cwd, { sessionId: "ses_a", scope: "inclusive" }).length, 2);
 });
 
 test("serializeProgressForHandoff captures milestones and blockers", () => {

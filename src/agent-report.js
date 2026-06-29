@@ -158,6 +158,38 @@ export function buildGoalResumePrompt(goal, {
   return parts.join("\n\n");
 }
 
+/**
+ * Upgrade a persisted v1 handoff (or partial artifact) to v2 with fresh
+ * backlog/progress/todos while preserving prior stats and partial output.
+ */
+export function upgradeGoalHandoffArtifact(artifact, { goal = {}, cwd = process.cwd() } = {}) {
+  if (!artifact) {
+    return buildGoalHandoffArtifact({ goal, cwd });
+  }
+  const goalId = goal.id || goal.goalId || artifact.goal?.id || null;
+  const mergedGoal = { ...(artifact.goal || {}), ...goal, id: goalId };
+  if (artifact.version >= 2 && artifact.backlog && artifact.progress) {
+    return { ...artifact, goal: mergedGoal };
+  }
+  const fresh = buildGoalHandoffArtifact({
+    goal: mergedGoal,
+    cwd,
+    sessionId: artifact.sessionId || null,
+    partialContent: artifact.partialContent || "",
+    events: []
+  });
+  return {
+    ...fresh,
+    generatedAt: artifact.generatedAt || fresh.generatedAt,
+    stats: artifact.stats || fresh.stats,
+    journal: artifact.journal?.length ? artifact.journal : fresh.journal,
+    todos: artifact.todos?.open?.length || artifact.todos?.completed?.length
+      ? artifact.todos
+      : fresh.todos,
+    resumePrompt: artifact.resumePrompt || fresh.resumePrompt
+  };
+}
+
 export function formatGoalHandoffArtifact(artifact, { json = false } = {}) {
   if (json) return JSON.stringify(artifact, null, 2);
   const lines = [

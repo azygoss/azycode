@@ -77,7 +77,8 @@ export async function runAgent({
   signal = null,
   stream = null,
   onToken = null,
-  subagentDepth = 0
+  subagentDepth = 0,
+  goalId = null
 } = {}) {
   const stepLimit = resolveAgentMaxSteps(cfg, maxSteps);
   const client = new LlmClient(cfg);
@@ -490,6 +491,7 @@ export async function runAgent({
         keepRecent: Math.max(8, Math.floor(maxMessages * 0.4)),
         cwd,
         sessionId,
+        goalId,
         prompt
       });
       emit({ type: "context_compact", step, maxSteps: stepLimit, before, after: trimmed.length, method: "deterministic" });

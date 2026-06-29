@@ -22,11 +22,29 @@ function bucket(cwd) {
   return { store, key, bucket: store[key] };
 }
 
-export function listProgressEntries(cwd, { limit = 50, sessionId = null, goalId = null } = {}) {
+function filterProgressEntries(entries, { sessionId = null, goalId = null, scope = "strict" } = {}) {
+  let filtered = entries;
+  if (sessionId) {
+    filtered = scope === "inclusive"
+      ? filtered.filter((e) => !e.sessionId || e.sessionId === sessionId)
+      : filtered.filter((e) => e.sessionId === sessionId);
+  }
+  if (goalId) {
+    filtered = scope === "inclusive"
+      ? filtered.filter((e) => !e.goalId || e.goalId === goalId)
+      : filtered.filter((e) => e.goalId === goalId);
+  }
+  return filtered;
+}
+
+export function listProgressEntries(cwd, {
+  limit = 50,
+  sessionId = null,
+  goalId = null,
+  scope = "strict"
+} = {}) {
   const { bucket: store } = bucket(cwd);
-  let entries = [...(store.entries || [])];
-  if (sessionId) entries = entries.filter((e) => !e.sessionId || e.sessionId === sessionId);
-  if (goalId) entries = entries.filter((e) => !e.goalId || e.goalId === goalId);
+  const entries = filterProgressEntries(store.entries || [], { sessionId, goalId, scope });
   return entries.slice(-Math.max(1, limit));
 }
 
@@ -88,14 +106,14 @@ export function formatRecentProgress(cwd, { limit = 12, sessionId = null, goalId
 }
 
 export function serializeProgressForHandoff(cwd, { sessionId = null, goalId = null, limit = 20 } = {}) {
-  const entries = listProgressEntries(cwd, { limit, sessionId, goalId });
+  const entries = listProgressEntries(cwd, { limit, sessionId, goalId, scope: "inclusive" });
   const milestones = entries.filter((e) => e.level === "milestone");
   const blockers = entries.filter((e) => e.level === "blocker");
   return { entries, milestones, blockers, total: entries.length };
 }
 
 export function summarizeProgressForCompaction(cwd, { sessionId = null, goalId = null } = {}) {
-  const entries = listProgressEntries(cwd, { limit: 8, sessionId, goalId });
+  const entries = listProgressEntries(cwd, { limit: 8, sessionId, goalId, scope: "inclusive" });
   if (!entries.length) return "";
   const lines = entries.map((e) => `- ${e.message}`);
   const blockers = entries.filter((e) => e.level === "blocker");
