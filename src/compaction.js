@@ -1,11 +1,35 @@
 import { assistantMessageFromCompletion } from "./llm.js";
 import { trimConversation } from "./conversation.js";
 import { compactionSystemPrompt } from "./prompts.js";
+import { formatActiveTodos } from "./todos.js";
+import { searchMemory } from "./memory.js";
 
 const DEFAULT_KEEP_RECENT = 12;
 const PATH_PATTERN = /\b(?:[a-z0-9_./-]+\/)?[a-z0-9_./-]+\.(?:js|ts|jsx|tsx|py|go|rs|md|json|yml|yaml)\b/gi;
 
-export function compactConversationDeterministic(messages, { keepRecent = DEFAULT_KEEP_RECENT, todoState = "" } = {}) {
+/**
+ * Gather todo and memory context for compaction so long-horizon runs preserve
+ * actionable state across context trims.
+ */
+export function buildCompactionContext(cwd = process.cwd(), { prompt = "", sessionId = null } = {}) {
+  const todoState = formatActiveTodos(cwd, { sessionId });
+  const memoryHits = searchMemory(String(prompt || "").slice(0, 160)).slice(0, 4);
+  const memoryState = memoryHits.length
+    ? `Relevant memory:\n${memoryHits.map((item) => `- ${item.text}`).join("\n")}`
+    : "";
+  return [todoState, memoryState].filter(Boolean).join("\n\n");
+}
+
+export function compactConversationDeterministic(messages, {
+  keepRecent = DEFAULT_KEEP_RECENT,
+  todoState = "",
+  cwd = null,
+  sessionId = null,
+  prompt = ""
+} = {}) {
+  if (!todoState && cwd) {
+    todoState = buildCompactionContext(cwd, { prompt, sessionId });
+  }
   const nonSystem = messages.filter((message) => message.role !== "system");
   if (nonSystem.length <= keepRecent) return nonSystem;
 

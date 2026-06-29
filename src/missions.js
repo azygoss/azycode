@@ -215,7 +215,8 @@ async function runParallelMissionGroup({
 
   const outputEntries = childResults.map((result) => result.outputEntry).filter(Boolean);
   const childStepRecords = childResults.map((result) => result.stepRecord).filter(Boolean);
-  const combinedOutput = outputEntries.map((entry) => `### ${entry.id}\n${entry.output}`).join("\n\n");
+  const supervisor = summarizeMissionParallelGroup(outputEntries, { parentId: normalized.id });
+  const combinedOutput = `${supervisor.brief}\n\n${outputEntries.map((entry) => `### ${entry.id}\n${entry.output}`).join("\n\n")}`;
   appendMissionSteps(missionId, [
     ...childStepRecords,
     {
@@ -856,6 +857,30 @@ function parseTinyYaml(text) {
 
   flushObject();
   return result;
+}
+
+/** Summarize parallel mission step outputs for supervisor-style reporting. */
+export function summarizeMissionParallelGroup(outputEntries = [], { parentId = null } = {}) {
+  const entries = Array.isArray(outputEntries) ? outputEntries : [];
+  const succeeded = entries.filter((entry) => !entry.failed);
+  const failed = entries.filter((entry) => entry.failed);
+  return {
+    parentId,
+    total: entries.length,
+    succeeded: succeeded.length,
+    failed: failed.length,
+    ok: failed.length === 0,
+    steps: entries.map((entry) => ({
+      id: entry.id,
+      status: entry.failed ? "failed" : "done",
+      outputPreview: String(entry.output || "").slice(0, 240)
+    })),
+    brief: [
+      `Parallel group ${parentId || "(root)"}: ${succeeded.length}/${entries.length} steps succeeded.`,
+      ...failed.map((entry) => `FAILED ${entry.id}: ${String(entry.output || "").slice(0, 120)}`),
+      ...succeeded.map((entry) => `OK ${entry.id}: ${String(entry.output || "").slice(0, 120)}`)
+    ].join("\n")
+  };
 }
 
 function coerceYamlValue(value) {

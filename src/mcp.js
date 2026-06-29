@@ -7,6 +7,7 @@ import { warn } from "./logger.js";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_PROBE_RETRIES = 2;
 const DEFAULT_ENV_ALLOWLIST = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"];
 
 /**
@@ -50,6 +51,17 @@ export function validateMcpServerCommand(command) {
     return { ok: false, reason: `MCP server command contains forbidden shell metacharacters: ${cmd}` };
   }
   return { ok: true, command: cmd };
+}
+
+export function resolveMcpTimeouts(server = {}) {
+  const normalized = normalizeMcpServer(server.name || "server", server);
+  return {
+    startupTimeoutMs: normalized.startupTimeoutMs,
+    requestTimeoutMs: normalized.requestTimeoutMs,
+    probeRetries: Number.isFinite(Number(server.probeRetries))
+      ? Math.max(0, Math.min(5, Math.floor(Number(server.probeRetries))))
+      : DEFAULT_PROBE_RETRIES
+  };
 }
 
 export function normalizeMcpServer(name, server = {}) {
@@ -133,26 +145,27 @@ export function listConfiguredMcpServers(cfg = loadConfig()) {
   return Object.entries(cfg.mcpServers || {}).map(([name, server]) => normalizeMcpServer(name, server));
 }
 
-export async function probeMcpServers(cfg = loadConfig()) {
-  const servers = listConfiguredMcpServers(cfg).filter((server) => server.enabled && server.command);
-  const results = [];
-  for (const server of servers) {
-    const client = new McpStdioClient({
-      name: server.name,
-      command: server.command,
-      args: server.args,
-      env: buildMcpServerEnv(server),
-      startupTimeoutMs: server.startupTimeoutMs,
-      requestTimeoutMs: server.requestTimeoutMs
-    });
+async function probeSingleMcpServer(server) {
+  const timeouts = resolveMcpTimeouts(server);
+  let lastError = null;
+  for (let attempt = 0; attempt <= timeouts.probeRetries; attempt += 1) {
+    let client = null;
     try {
+      client = new McpStdioClient({
+        name: server.name,
+        command: server.command,
+        args: server.args,
+        env: buildMcpServerEnv(server),
+        startupTimeoutMs: server.startupTimeoutMs,
+        requestTimeoutMs: server.requestTimeoutMs
+      });
       await client.start();
       const [tools, resources, prompts] = await Promise.all([
         client.listTools(),
         client.listResources().catch(() => []),
         client.listPrompts().catch(() => [])
       ]);
-      results.push({
+      return {
         name: server.name,
         ok: true,
         command: server.command,
@@ -160,19 +173,39 @@ export async function probeMcpServers(cfg = loadConfig()) {
         resources: resources.length,
         prompts: prompts.length,
         stderr: client.stderrTail(),
-        allowedTools: tools.filter((tool) => isMcpToolAllowed(server, tool.name)).map((tool) => tool.name)
-      });
+        allowedTools: tools.filter((tool) => isMcpToolAllowed(server, tool.name)).map((tool) => tool.name),
+        attempts: attempt + 1
+      };
     } catch (error) {
-      results.push({
+      lastError = error;
+      if (attempt < timeouts.probeRetries) continue;
+      return {
         name: server.name,
         ok: false,
         command: server.command,
         error: error.message,
-        stderr: client.stderrTail()
-      });
+        stderr: client?.stderrTail?.() || "",
+        attempts: attempt + 1
+      };
     } finally {
-      await client.close();
+      if (client) await client.close();
     }
+  }
+  return {
+    name: server.name,
+    ok: false,
+    command: server.command,
+    error: lastError?.message || "probe failed",
+    stderr: "",
+    attempts: timeouts.probeRetries + 1
+  };
+}
+
+export async function probeMcpServers(cfg = loadConfig()) {
+  const servers = listConfiguredMcpServers(cfg).filter((server) => server.enabled && server.command);
+  const results = [];
+  for (const server of servers) {
+    results.push(await probeSingleMcpServer(server));
   }
   return results;
 }

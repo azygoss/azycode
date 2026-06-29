@@ -19,6 +19,7 @@ import { syncConfiguredProviderModels, syncProviderModels } from "./model-sync.j
 import { ask, askSecret } from "./prompt.js";
 import { buildMissionDryRun, formatMissionPlan, loadMission, runMission } from "./missions.js";
 import { addSubagent, formatSubagentResults, listSubagents, removeSubagent, runSubagentsParallel } from "./subagents.js";
+import { buildGoalHandoffArtifact, formatGoalHandoffArtifact } from "./agent-report.js";
 import {
   addSkill,
   exportSkill,
@@ -134,7 +135,7 @@ export async function main(argv) {
     case "chat": return chat(args);
     case "mcp": return mcpCmd(args);
     case "instructions": return instructionsCmd(args);
-    case "hooks": return hooksCmd(args);
+    case "hooks": return await hooksCmd(args);
     case "commands": return commandsCmd(args);
     case "bench": return await benchCmd(args);
     case "sandbox": return sandboxCmd(args);
@@ -611,6 +612,34 @@ function doctor(args = []) {
   }
 }
 
+export function harnessCapabilities() {
+  return {
+    modes: ["plan", "build", "always-approve", "goal", "review"],
+    reasoningLevels: ["minimal", "low", "medium", "high"],
+    permissionProfiles: PERMISSION_PROFILES,
+    subagentIsolation: ["same-workspace", "worktree"],
+    compactionModes: COMPACTION_MODES,
+    sandboxModes: SANDBOX_MODES,
+    features: {
+      parallelSubagents: true,
+      supervisorAggregation: true,
+      missionParallelGroups: true,
+      goalHandoff: true,
+      changeJournal: true,
+      patchValidation: true,
+      localReview: true,
+      securityReview: true,
+      mcpStdio: true,
+      skills: true,
+      customCommands: true,
+      hooks: true,
+      contextPack: true,
+      bench: true,
+      byok: true
+    }
+  };
+}
+
 function doctorInfo(root) {
   const localBin = path.resolve(INSTALL_ROOT, "bin", "azycode.js");
   const localReal = fs.existsSync(localBin) ? fs.realpathSync(localBin) : localBin;
@@ -647,7 +676,8 @@ function doctorInfo(root) {
     localBinRealpath: localReal,
     pathAzycode: which,
     pathRealpath: pathReal,
-    pathMatchesLocal: Boolean(which && pathReal === localReal)
+    pathMatchesLocal: Boolean(which && pathReal === localReal),
+    capabilities: harnessCapabilities()
   };
 }
 
@@ -1872,39 +1902,73 @@ async function goal(args) {
     const text = args.slice(1).join(" ");
     if (!text) throw new Error("Usage: azycode goal start \"goal text\"");
     const goalId = `goal_${Date.now()}`;
-    state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [] };
+    state.goals[goalId] = { text, status: "running", startedAt: new Date().toISOString(), sessions: [], handoffs: [] };
     saveState(state);
     const skills = parseSkills(args);
     const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt: text, mode: "goal", skills, returnSession: true }, { cancellable: true });
     updateState((done) => {
       if (!done.goals[goalId]) return done; // goal removed by another writer
-      done.goals[goalId].status = result !== undefined ? "done" : "stalled";
-      done.goals[goalId].finishedAt = new Date().toISOString();
-      if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
+      const goal = done.goals[goalId];
+      goal.status = result !== undefined ? "done" : "stalled";
+      goal.finishedAt = new Date().toISOString();
+      if (result?.sessionId) goal.sessions.push(result.sessionId);
+      const handoff = buildGoalHandoffArtifact({
+        goal,
+        cwd: process.cwd(),
+        events: result?.events || [],
+        sessionId: result?.sessionId || null,
+        partialContent: typeof result === "string" ? result : result?.content || ""
+      });
+      goal.handoffs = [...(goal.handoffs || []), { at: handoff.generatedAt, sessionId: handoff.sessionId, stats: handoff.stats }];
+      goal.lastHandoff = handoff;
       return done;
     });
     if (result !== undefined) console.log(typeof result === "string" ? result : result.content);
     return;
   }
-  if (action === "resume") {
+  if (action === "resume" || action === "handoff") {
     const goalId = args[1];
     const selected = state.goals[goalId];
     if (!selected) throw new Error(`No goal ${goalId}`);
+    if (action === "handoff") {
+      const artifact = selected.lastHandoff || buildGoalHandoffArtifact({ goal: selected, cwd: process.cwd() });
+      console.log(formatGoalHandoffArtifact(artifact, { json: args.includes("--json") }));
+      return;
+    }
     const cfg = loadConfig();
     selected.status = "running";
     selected.resumedAt = new Date().toISOString();
     saveState(state);
-    const prompt = `Continue this goal until it is complete. Goal: ${selected.text}`;
+    const prior = selected.lastHandoff;
+    const prompt = prior?.resumePrompt || `Continue this goal until it is complete. Goal: ${selected.text}`;
     const skills = parseSkills(args);
     const result = await runAgentSafe({ cfg, cwd: process.cwd(), prompt, mode: "goal", skills, returnSession: true }, { cancellable: true });
     updateState((done) => {
       if (!done.goals[goalId]) return done; // goal removed by another writer
-      done.goals[goalId].status = result !== undefined ? "done" : "stalled";
-      done.goals[goalId].finishedAt = new Date().toISOString();
-      if (result?.sessionId) done.goals[goalId].sessions.push(result.sessionId);
+      const goal = done.goals[goalId];
+      goal.status = result !== undefined ? "done" : "stalled";
+      goal.finishedAt = new Date().toISOString();
+      if (result?.sessionId) goal.sessions.push(result.sessionId);
+      const handoff = buildGoalHandoffArtifact({
+        goal,
+        cwd: process.cwd(),
+        events: result?.events || [],
+        sessionId: result?.sessionId || null,
+        partialContent: typeof result === "string" ? result : result?.content || ""
+      });
+      goal.handoffs = [...(goal.handoffs || []), { at: handoff.generatedAt, sessionId: handoff.sessionId, stats: handoff.stats }];
+      goal.lastHandoff = handoff;
       return done;
     });
     if (result !== undefined) console.log(typeof result === "string" ? result : result.content);
+    return;
+  }
+  if (action === "report") {
+    const goalId = args[1];
+    const selected = state.goals[goalId];
+    if (!selected) throw new Error(`No goal ${goalId}`);
+    const artifact = buildGoalHandoffArtifact({ goal: selected, cwd: process.cwd() });
+    console.log(formatGoalHandoffArtifact(artifact, { json: args.includes("--json") }));
     return;
   }
   if (action === "status") {
@@ -1933,7 +1997,7 @@ async function goal(args) {
     console.log(`Goal ${id} stopped.`);
     return;
   }
-  throw new Error("Usage: azycode goal create|start|resume|status|stop");
+  throw new Error("Usage: azycode goal create|start|resume|handoff|report|status|stop");
 }
 
 async function mission(args) {
@@ -2024,8 +2088,13 @@ async function mission(args) {
 async function subagent(args) {
   const action = args[0] || "list";
   if (action === "list") {
+    const agents = listSubagents(loadConfig());
+    if (args.includes("--json")) {
+      console.log(JSON.stringify(agents, null, 2));
+      return;
+    }
     ui.title("Subagents");
-    ui.table(listSubagents(loadConfig()).map((agent) => ({
+    ui.table(agents.map((agent) => ({
       name: agent.name,
       reasoning: agent.reasoning,
       model: agent.model || "(active)",
@@ -2103,16 +2172,33 @@ async function subagent(args) {
       maxParallel: cfg.maxParallelSubagents,
       maxStepsPerAgent: cfg.subagentMaxSteps
     });
-    console.log(formatSubagentResults(results, { json: Boolean(flags.json) }));
+    const supervisor = args.includes("--supervisor") || tasks.length > 1;
+    console.log(formatSubagentResults(results, { json: Boolean(flags.json), supervisor }));
     if (results.some((result) => !result.ok)) process.exitCode = 1;
     return;
   }
   throw new Error("Usage: azycode subagent list|add|remove|run|spawn");
 }
 
-function hooksCmd(args = []) {
+async function hooksCmd(args = []) {
   const cfg = loadConfig();
   const hooks = loadHookConfig(cfg, process.cwd());
+  const action = args[0] || "list";
+  if (action === "probe" || action === "dry-run") {
+    const event = args[1] || "agent_run_start";
+    const { runHooks } = await import("./hooks.js");
+    const payload = { probe: true, event, cwd: process.cwd(), at: new Date().toISOString() };
+    try {
+      const result = await runHooks(event, payload, hooks, { cwd: process.cwd() });
+      const report = { event, ok: true, handlers: (hooks[event] || []).length, result };
+      console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : `Hook probe OK: ${event} (${report.handlers} handlers)`);
+    } catch (error) {
+      const report = { event, ok: false, handlers: (hooks[event] || []).length, error: error.message };
+      console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : `Hook probe failed: ${error.message}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (args.includes("--json")) {
     console.log(JSON.stringify(hooks, null, 2));
     return;

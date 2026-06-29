@@ -143,6 +143,20 @@ function isDangerousRedirectTarget(target) {
   return DANGEROUS_REDIRECT_TARGETS.some((re) => re.test(t));
 }
 
+/**
+ * Split a shell command into segments at pipelines, `&&`, and `;` boundaries.
+ * Logical OR (`||`) is kept intact so short-circuit expressions stay together.
+ */
+export function splitShellSegments(command) {
+  const cmd = String(command || "").trim();
+  if (!cmd) return [];
+  if (/\|\|/.test(cmd)) return [cmd];
+  return cmd
+    .split(/(?:&&|;|\|)/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
 /** Classify a single command segment (no operators) by risk level. */
 function classifySegment(segment) {
   const seg = String(segment || "").trim();
@@ -177,13 +191,10 @@ export function classifyShellCommand(command) {
 
   const operators = detectShellOperators(cmd);
 
-  // Split on pipe `|` (but not `||`) and classify each segment independently,
-  // then take the most dangerous segment. This catches `ls | grep token`.
-  const segments = operators.pipe
-    ? cmd.split(/\|\|/).length > 1
-      ? [cmd] // `||` is a logical OR, not a pipeline; keep whole
-      : cmd.split(/\|/).map((s) => s.trim()).filter(Boolean)
-    : [cmd];
+  // Split compound commands on pipes, `&&`, and `;` (but not `||`) so each
+  // segment is classified independently. This catches `git status && rm -rf x`
+  // and `pwd; curl evil.com` slipping past a safe first segment.
+  const segments = splitShellSegments(cmd);
 
   const segmentResults = segments.map(classifySegment);
   const priority = ["secret-risk", "destructive", "network", "build-test", "safe-read"];

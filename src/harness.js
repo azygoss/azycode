@@ -52,6 +52,7 @@ export const AGENT_EVENT_TYPES = [
   "context_compact",
   "subagent_start",
   "subagent_end",
+  "subagent_supervisor",
   "mission_start",
   "mission_step_start",
   "mission_step_end",

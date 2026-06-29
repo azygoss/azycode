@@ -19,7 +19,7 @@ import { compactConversationDeterministic, compactConversationWithModel } from "
 import { appendOpenTodosNotice } from "./agent-report.js";
 import { formatToolResultForModel, normalizeToolResult } from "./tool-result.js";
 import { applyDuplicateFailurePolicy, resolveToolRetryPolicy, shouldRetryTransient } from "./tool-retry.js";
-import { formatSubagentResults, runSubagentsParallel } from "./subagents.js";
+import { aggregateSubagentResults, formatSubagentResults, formatSupervisorSummary, runSubagentsParallel } from "./subagents.js";
 import { mergeAbortSignals } from "./exec.js";
 import { debug, warn, error as logError } from "./logger.js";
 import { systemForMode } from "./prompts.js";
@@ -144,6 +144,12 @@ export async function runAgent({
       subagentDepth: subagentDepth + 1,
       onSubagentEvent: (event) => emit({ ...event, step: lastStep, maxSteps: stepLimit })
     });
+    const taskList = Array.isArray(tasks) ? tasks : [];
+    if (taskList.length > 1 || cfg.subagentSupervisor === true) {
+      const aggregate = aggregateSubagentResults(results);
+      emit({ type: "subagent_supervisor", step: lastStep, maxSteps: stepLimit, ...aggregate });
+      return `${formatSupervisorSummary(aggregate)}\n\n${formatSubagentResults(results)}`;
+    }
     return formatSubagentResults(results);
   };
   const builtinTools = createTools({

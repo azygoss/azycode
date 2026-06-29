@@ -266,7 +266,86 @@ export async function runSubagentsParallel({
   return results;
 }
 
-export function formatSubagentResults(results = [], { json = false } = {}) {
+/**
+ * Aggregate parallel subagent results into a supervisor-style summary suitable
+ * for parent-agent handoff or CLI reporting.
+ */
+export function aggregateSubagentResults(results = []) {
+  const items = Array.isArray(results) ? results : [];
+  const succeeded = items.filter((r) => r.ok);
+  const failed = items.filter((r) => !r.ok);
+  const changedFiles = [...new Set(items.flatMap((r) => r.changedFiles || []))].sort();
+  const verification = [...new Set(items.flatMap((r) => r.verification || []))];
+  const totalDurationMs = items.reduce((sum, r) => sum + (Number(r.durationMs) || 0), 0);
+  const confidences = items.map((r) => r.confidence || (r.ok ? "medium" : "low"));
+  const confidenceRollup = failed.length
+    ? "low"
+    : confidences.includes("low")
+      ? "low"
+      : confidences.includes("medium")
+        ? "medium"
+        : "high";
+  const worktrees = items.filter((r) => r.worktree).map((r) => ({ agent: r.agent, path: r.worktree }));
+
+  return {
+    total: items.length,
+    succeeded: succeeded.length,
+    failed: failed.length,
+    ok: failed.length === 0,
+    totalDurationMs,
+    confidence: confidenceRollup,
+    changedFiles,
+    verification,
+    worktrees,
+    agents: items.map((r) => ({
+      index: r.index,
+      agent: r.agent,
+      ok: Boolean(r.ok),
+      durationMs: r.durationMs ?? 0,
+      confidence: r.confidence || (r.ok ? "medium" : "low"),
+      changedFiles: r.changedFiles || [],
+      error: r.error || null,
+      isolation: r.isolation || "same-workspace"
+    })),
+    brief: buildSupervisorBrief({ items, succeeded, failed, changedFiles, verification, confidenceRollup, totalDurationMs })
+  };
+}
+
+export function buildSupervisorBrief({
+  items = [],
+  succeeded = [],
+  failed = [],
+  changedFiles = [],
+  verification = [],
+  confidenceRollup = "medium",
+  totalDurationMs = 0
+} = {}) {
+  const lines = [
+    `Supervisor summary: ${succeeded.length}/${items.length} subagents succeeded (${totalDurationMs}ms total, confidence: ${confidenceRollup}).`
+  ];
+  if (changedFiles.length) {
+    lines.push(`Changed files (${changedFiles.length}): ${changedFiles.slice(0, 24).join(", ")}${changedFiles.length > 24 ? "…" : ""}`);
+  }
+  if (verification.length) {
+    lines.push(`Suggested verification: ${verification.join(", ")}`);
+  }
+  for (const result of failed) {
+    lines.push(`FAILED [${result.agent}]: ${result.error || "unknown error"}`);
+  }
+  for (const result of succeeded) {
+    const preview = String(result.output || "").trim().split("\n").slice(0, 3).join(" ").slice(0, 200);
+    if (preview) lines.push(`OK [${result.agent}]: ${preview}${preview.length >= 200 ? "…" : ""}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatSupervisorSummary(aggregate, { json = false } = {}) {
+  if (json) return JSON.stringify(aggregate, null, 2);
+  return aggregate?.brief || buildSupervisorBrief();
+}
+
+export function formatSubagentResults(results = [], { json = false, supervisor = false } = {}) {
+  if (supervisor) return formatSupervisorSummary(aggregateSubagentResults(results), { json });
   if (json) return JSON.stringify(results, null, 2);
   return results.map((result) => {
     const status = result.ok ? "ok" : "failed";
