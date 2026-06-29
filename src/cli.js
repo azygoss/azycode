@@ -10,6 +10,8 @@ import { applyPermissionProfile, COMPACTION_MODES, defaultConfig, loadConfig, re
 import { loadCustomCommands, previewCustomCommand, resolveCustomCommand } from "./commands.js";
 import { compactConversationDeterministic, compactConversationWithModel } from "./compaction.js";
 import { clearAllTodos, clearCompletedTodos, formatActiveTodos, formatTodoList, listActiveTodos, listTodos } from "./todos.js";
+import { formatActiveBacklog, formatBacklogList, listActiveBacklog, listBacklogItems, runBacklogAction } from "./backlog.js";
+import { appendProgressEntry, formatRecentProgress, listProgressEntries, runProgressAction } from "./progress-log.js";
 import { loadHookConfig } from "./hooks.js";
 import { trimConversation } from "./conversation.js";
 import { AgentCancelledError, AgentRunError, AgentStepLimitError } from "./agent-errors.js";
@@ -63,7 +65,7 @@ const VERSION = "0.1.0";
 const INSTALL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const COMMANDS = [
   "help", "providers", "init", "doctor", "login", "status", "model", "models", "provider", "health",
-  "dashboard", "tools", "guard", "session", "memory", "context", "todo", "audit", "report", "completion", "config",
+  "dashboard", "tools", "guard", "session", "memory", "context", "todo", "backlog", "progress", "audit", "report", "completion", "config",
   "run", "exec", "chat", "always-approve", "approve", "build", "plan", "review", "goal", "mission", "subagent", "skills", "keys", "mcp", "instructions", "hooks", "commands", "bench", "sandbox", "patch",
   "usage", "journal"
 ];
@@ -126,6 +128,8 @@ export async function main(argv) {
     case "journal": return journalCmd(args);
     case "context": return await contextCmd(args);
     case "todo": return todoCmd(args);
+    case "backlog": return backlogCmd(args);
+    case "progress": return progressCmd(args);
     case "audit": return audit();
     case "report": return report(args);
     case "completion": return completion(args);
@@ -625,6 +629,9 @@ export function harnessCapabilities() {
       supervisorAggregation: true,
       missionParallelGroups: true,
       goalHandoff: true,
+      featureBacklog: true,
+      progressLog: true,
+      permissionClassifier: true,
       changeJournal: true,
       patchValidation: true,
       localReview: true,
@@ -663,6 +670,14 @@ function doctorInfo(root) {
   } catch {
     npmVersion = "";
   }
+  const cwd = root || process.cwd();
+  const activeTodos = listActiveTodos(cwd);
+  const activeBacklog = listActiveBacklog(cwd);
+  const recentProgress = listProgressEntries(cwd, { limit: 5 });
+  const state = loadState();
+  const goals = Object.values(state.goals || {});
+  const runningGoals = goals.filter((g) => g.status === "running");
+
   return {
     project: root,
     installRoot: INSTALL_ROOT,
@@ -677,6 +692,13 @@ function doctorInfo(root) {
     pathAzycode: which,
     pathRealpath: pathReal,
     pathMatchesLocal: Boolean(which && pathReal === localReal),
+    health: {
+      activeTodos: activeTodos.length,
+      activeBacklog: activeBacklog.length,
+      recentProgress: recentProgress.length,
+      runningGoals: runningGoals.length,
+      goalsTotal: goals.length
+    },
     capabilities: harnessCapabilities()
   };
 }
@@ -1662,6 +1684,79 @@ function todoCmd(args) {
   throw new Error("Usage: azycode todo list|active|clear [--json] [--completed] [--status <status>]");
 }
 
+function backlogCmd(args) {
+  const flags = parseFlags(args);
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const action = positional[0] || "list";
+  const cwd = process.cwd();
+
+  if (action === "list") {
+    const items = listBacklogItems(cwd, {
+      status: flags.status ? (Array.isArray(flags.status) ? flags.status : [flags.status]) : null,
+      area: flags.area || null
+    });
+    if (flags.json) console.log(JSON.stringify(items, null, 2));
+    else console.log(formatBacklogList(items));
+    return;
+  }
+  if (action === "active") {
+    const items = listActiveBacklog(cwd, { goalId: flags.goal || flags.goalId || null });
+    if (flags.json) console.log(JSON.stringify(items, null, 2));
+    else console.log(formatActiveBacklog(cwd) || "No active backlog items.");
+    return;
+  }
+  if (action === "add") {
+    const text = positional.slice(1).join(" ");
+    if (!text) throw new Error("Usage: azycode backlog add \"feature description\" [--priority high] [--area safety]");
+    const result = runBacklogAction(cwd, "add", {
+      text,
+      priority: flags.priority,
+      area: flags.area,
+      goalId: flags.goal || flags.goalId || null
+    });
+    console.log(result);
+    return;
+  }
+  throw new Error("Usage: azycode backlog list|active|add [--json] [--status <status>] [--area <area>] [--priority <level>]");
+}
+
+function progressCmd(args) {
+  const flags = parseFlags(args);
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const action = positional[0] || "list";
+  const cwd = process.cwd();
+
+  if (action === "list") {
+    const entries = listProgressEntries(cwd, {
+      limit: flags.limit ? Number(flags.limit) : 50,
+      sessionId: flags.session || flags.sessionId || null,
+      goalId: flags.goal || flags.goalId || null
+    });
+    if (flags.json) console.log(JSON.stringify(entries, null, 2));
+    else console.log(formatRecentProgress(cwd, { limit: flags.limit ? Number(flags.limit) : 50 }) || "No progress entries.");
+    return;
+  }
+  if (action === "add") {
+    const message = positional.slice(1).join(" ");
+    if (!message) throw new Error("Usage: azycode progress add \"message\" [--level milestone|blocker|warn] [--area <area>]");
+    const result = runProgressAction(cwd, "add", {
+      message,
+      level: flags.level,
+      area: flags.area,
+      sessionId: flags.session || flags.sessionId || null,
+      goalId: flags.goal || flags.goalId || null
+    });
+    console.log(result);
+    return;
+  }
+  if (action === "clear") {
+    const result = runProgressAction(cwd, "clear", { before: flags.before || null });
+    console.log(result);
+    return;
+  }
+  throw new Error("Usage: azycode progress list|add|clear [--json] [--level <level>] [--area <area>] [--limit N]");
+}
+
 async function contextCmd(args) {
   if (args[0] === "pack") {
     const flags = parseFlags(args.slice(1));
@@ -1913,7 +2008,7 @@ async function goal(args) {
       goal.finishedAt = new Date().toISOString();
       if (result?.sessionId) goal.sessions.push(result.sessionId);
       const handoff = buildGoalHandoffArtifact({
-        goal,
+        goal: { ...goal, id: goalId },
         cwd: process.cwd(),
         events: result?.events || [],
         sessionId: result?.sessionId || null,
@@ -1921,6 +2016,12 @@ async function goal(args) {
       });
       goal.handoffs = [...(goal.handoffs || []), { at: handoff.generatedAt, sessionId: handoff.sessionId, stats: handoff.stats }];
       goal.lastHandoff = handoff;
+      appendProgressEntry(process.cwd(), `Goal ${goal.status}: ${goal.text}`, {
+        goalId,
+        sessionId: result?.sessionId || null,
+        level: goal.status === "done" ? "milestone" : "warn",
+        area: "goal"
+      });
       return done;
     });
     if (result !== undefined) console.log(typeof result === "string" ? result : result.content);
@@ -1950,7 +2051,7 @@ async function goal(args) {
       goal.finishedAt = new Date().toISOString();
       if (result?.sessionId) goal.sessions.push(result.sessionId);
       const handoff = buildGoalHandoffArtifact({
-        goal,
+        goal: { ...goal, id: goalId },
         cwd: process.cwd(),
         events: result?.events || [],
         sessionId: result?.sessionId || null,
@@ -1958,6 +2059,12 @@ async function goal(args) {
       });
       goal.handoffs = [...(goal.handoffs || []), { at: handoff.generatedAt, sessionId: handoff.sessionId, stats: handoff.stats }];
       goal.lastHandoff = handoff;
+      appendProgressEntry(process.cwd(), `Goal resumed → ${goal.status}: ${goal.text}`, {
+        goalId,
+        sessionId: result?.sessionId || null,
+        level: goal.status === "done" ? "milestone" : "info",
+        area: "goal"
+      });
       return done;
     });
     if (result !== undefined) console.log(typeof result === "string" ? result : result.content);

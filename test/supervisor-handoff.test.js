@@ -17,6 +17,8 @@ import {
   formatGoalHandoffArtifact,
   parseGitStatusPaths
 } from "../src/agent-report.js";
+import { addBacklogItem } from "../src/backlog.js";
+import { appendProgressEntry } from "../src/progress-log.js";
 import { compactConversationDeterministic } from "../src/compaction.js";
 import { addMemory } from "../src/memory.js";
 import { defaultConfig } from "../src/config.js";
@@ -76,19 +78,28 @@ test("classifyShellCommand elevates destructive segment in && chain", () => {
   assert.equal(classifyShellCommand("git status && rm -rf node_modules").level, "destructive");
 });
 
-test("buildGoalHandoffArtifact captures todos and resume prompt", () => {
+test("buildGoalHandoffArtifact captures todos backlog progress and resume prompt", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-handoff-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-handoff-"));
+  process.env.AZYCODE_HOME = home;
+  addBacklogItem(cwd, "add safety tests", { priority: "high", area: "safety" });
+  appendProgressEntry(cwd, "path-guard hardened", { level: "milestone", goalId: "goal_1" });
+
   const artifact = buildGoalHandoffArtifact({
-    goal: { text: "ship feature", status: "running", sessions: [] },
+    goal: { id: "goal_1", text: "ship feature", status: "running", sessions: [] },
     cwd,
     events: [{ type: "tool_start", tool: "read_file", at: new Date().toISOString() }],
     sessionId: "ses_test"
   });
-  assert.equal(artifact.version, 1);
+  assert.equal(artifact.version, 2);
   assert.equal(artifact.goal.text, "ship feature");
+  assert.ok(artifact.backlog.active.length >= 1);
+  assert.ok(artifact.progress.entries.length >= 1);
   assert.match(artifact.resumePrompt, /Continue this goal/);
+  assert.match(artifact.resumePrompt, /safety tests/);
   const formatted = formatGoalHandoffArtifact(artifact);
   assert.match(formatted, /Goal handoff/);
+  assert.match(formatted, /Backlog/);
 });
 
 test("buildGoalResumePrompt includes open todos", () => {
@@ -101,9 +112,22 @@ test("buildGoalResumePrompt includes open todos", () => {
   assert.match(prompt, /src\/x\.js/);
 });
 
-test("buildCompactionContext returns empty string without todos or memory", () => {
+test("buildCompactionContext returns empty string without todos backlog progress or memory", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-"));
+  process.env.AZYCODE_HOME = home;
   assert.equal(buildCompactionContext(cwd), "");
+});
+
+test("buildCompactionContext includes backlog and progress state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-home-2-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-cwd-2-"));
+  process.env.AZYCODE_HOME = home;
+  addBacklogItem(cwd, "orchestration improvements", { area: "orchestration" });
+  appendProgressEntry(cwd, "compaction enhanced", { level: "milestone" });
+  const ctx = buildCompactionContext(cwd);
+  assert.match(ctx, /Feature backlog/);
+  assert.match(ctx, /Progress log/);
 });
 
 test("resolveMcpTimeouts clamps probe retries", () => {
@@ -116,8 +140,21 @@ test("harnessCapabilities lists core harness features", () => {
   const caps = harnessCapabilities();
   assert.ok(caps.features.parallelSubagents);
   assert.ok(caps.features.goalHandoff);
+  assert.ok(caps.features.featureBacklog);
+  assert.ok(caps.features.progressLog);
+  assert.ok(caps.features.permissionClassifier);
   assert.ok(caps.modes.includes("goal"));
   assert.ok(caps.permissionProfiles.length >= 4);
+});
+
+test("aggregateSubagentResults includes nextSteps for failed runs", () => {
+  const results = [
+    { index: 1, agent: "explorer", ok: true, durationMs: 10, output: "ok", changedFiles: ["src/x.js"] },
+    { index: 2, agent: "reviewer", ok: false, durationMs: 5, error: "timeout", changedFiles: [] }
+  ];
+  const aggregate = aggregateSubagentResults(results);
+  assert.ok(aggregate.nextSteps.length >= 1);
+  assert.match(aggregate.nextSteps.join(" "), /Retry failed/);
 });
 
 test("formatSubagentResults supervisor mode includes brief and full per-agent bodies", () => {

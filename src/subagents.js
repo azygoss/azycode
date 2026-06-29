@@ -286,6 +286,18 @@ export function aggregateSubagentResults(results = []) {
         ? "medium"
         : "high";
   const worktrees = items.filter((r) => r.worktree).map((r) => ({ agent: r.agent, path: r.worktree }));
+  const nextSteps = [];
+  if (failed.length) {
+    nextSteps.push(`Retry failed subagents: ${failed.map((r) => r.agent).join(", ")}`);
+  }
+  if (changedFiles.length && verification.length) {
+    nextSteps.push(`Run verification: ${verification.join(", ")}`);
+  } else if (changedFiles.length) {
+    nextSteps.push("Review changed files before merging supervisor results.");
+  }
+  if (!failed.length && items.length > 1) {
+    nextSteps.push("Supervisor run complete — integrate subagent outputs into parent plan.");
+  }
 
   return {
     total: items.length,
@@ -297,6 +309,7 @@ export function aggregateSubagentResults(results = []) {
     changedFiles,
     verification,
     worktrees,
+    nextSteps,
     agents: items.map((r) => ({
       index: r.index,
       agent: r.agent,

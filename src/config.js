@@ -60,6 +60,14 @@ export function todosPath() {
   return path.join(azyHome(), "todos.json");
 }
 
+export function backlogPath() {
+  return path.join(azyHome(), "backlog.json");
+}
+
+export function progressLogPath() {
+  return path.join(azyHome(), "progress-log.json");
+}
+
 export function ensureHome() {
   fs.mkdirSync(azyHome(), { recursive: true, mode: 0o700 });
 }
@@ -161,6 +169,10 @@ let _stateCache = null;
 let _stateMtime = 0;
 let _todosCache = null;
 let _todosMtime = 0;
+let _backlogCache = null;
+let _backlogMtime = 0;
+let _progressLogCache = null;
+let _progressLogMtime = 0;
 
 function fileMtime(file) {
   try {
@@ -384,6 +396,44 @@ export function saveTodos(todos) {
   atomicWriteJson(todosPath(), todos);
   _todosCache = null;
   _todosMtime = 0;
+}
+
+export function loadBacklog() {
+  const bPath = backlogPath();
+  const mtime = fileMtime(bPath);
+  if (_backlogCache && _backlogMtime === mtime) {
+    return typeof structuredClone === "function" ? structuredClone(_backlogCache) : JSON.parse(JSON.stringify(_backlogCache));
+  }
+  const backlog = readJson(bPath, {});
+  _backlogCache = backlog;
+  _backlogMtime = mtime;
+  return typeof structuredClone === "function" ? structuredClone(backlog) : JSON.parse(JSON.stringify(backlog));
+}
+
+export function saveBacklog(backlog) {
+  ensureHome();
+  atomicWriteJson(backlogPath(), backlog);
+  _backlogCache = null;
+  _backlogMtime = 0;
+}
+
+export function loadProgressLog() {
+  const pPath = progressLogPath();
+  const mtime = fileMtime(pPath);
+  if (_progressLogCache && _progressLogMtime === mtime) {
+    return typeof structuredClone === "function" ? structuredClone(_progressLogCache) : JSON.parse(JSON.stringify(_progressLogCache));
+  }
+  const log = readJson(pPath, {});
+  _progressLogCache = log;
+  _progressLogMtime = mtime;
+  return typeof structuredClone === "function" ? structuredClone(log) : JSON.parse(JSON.stringify(log));
+}
+
+export function saveProgressLog(log) {
+  ensureHome();
+  atomicWriteJson(progressLogPath(), log);
+  _progressLogCache = null;
+  _progressLogMtime = 0;
 }
 
 /**

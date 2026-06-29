@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyPermissionProfile,
+  classifyToolRisk,
   resolveToolPermission,
+  suggestPermissionDecision,
   toolCategory,
   PERMISSION_PROFILES,
   describePermissionProfile
@@ -51,4 +53,37 @@ test("plan-only matches read-only restrictions", () => {
 test("describePermissionProfile returns actionable text", () => {
   const info = describePermissionProfile("full-auto");
   assert.match(info.description, /Auto-approve/);
+});
+
+test("classifyToolRisk elevates sensitive file writes", () => {
+  const risk = classifyToolRisk("write_file", { file: ".env" });
+  assert.equal(risk.level, "high");
+  assert.equal(risk.category, "write");
+});
+
+test("classifyToolRisk marks read tools as low risk", () => {
+  const risk = classifyToolRisk("read_file", { file: "src/index.js" });
+  assert.equal(risk.level, "low");
+});
+
+test("classifyToolRisk elevates destructive shell patterns", () => {
+  const risk = classifyToolRisk("shell", { command: "rm -rf /tmp/x" });
+  assert.equal(risk.level, "high");
+});
+
+test("suggestPermissionDecision reduces fatigue for low-risk reads", () => {
+  const cfg = defaultConfig();
+  const suggestion = suggestPermissionDecision(cfg, "read_file", { file: "src/x.js" });
+  assert.equal(suggestion.decision, "auto");
+  assert.equal(suggestion.classification.level, "low");
+  assert.equal(suggestion.fatigueReduction, true);
+});
+
+test("suggestPermissionDecision never bypasses deny rules", () => {
+  const cfg = defaultConfig();
+  cfg.permissionProfile = "read-only";
+  applyPermissionProfile(cfg);
+  const suggestion = suggestPermissionDecision(cfg, "write_file", { file: "src/x.js" });
+  assert.equal(suggestion.allowed, false);
+  assert.equal(suggestion.decision, "deny");
 });

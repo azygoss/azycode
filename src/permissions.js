@@ -83,6 +83,67 @@ const PROFILE_DEFAULTS = {
   }
 };
 
+const CATEGORY_RISK = {
+  read: "low",
+  write: "medium",
+  shell: "high",
+  network: "medium",
+  git: "medium",
+  mcp: "high",
+  subagent: "high",
+  meta: "low"
+};
+
+/**
+ * Classify a tool call's inherent risk level for fatigue-reducing auto-approval.
+ * Read tools are low-risk; shell/MCP/subagent are high-risk regardless of args.
+ */
+export function classifyToolRisk(toolName, args = {}) {
+  const name = String(toolName || "");
+  const category = toolCategory(name);
+  let level = CATEGORY_RISK[category] || "medium";
+  let reason = `category=${category}`;
+
+  if (category === "write" && args?.file) {
+    const file = String(args.file);
+    if (/^\.env|\.pem|\.key|credentials|secret/i.test(file)) {
+      level = "high";
+      reason = "write targets sensitive file path";
+    }
+  }
+  if (category === "shell" && args?.command) {
+    const cmd = String(args.command).trim();
+    if (/rm\s+-rf|curl\s+|wget\s+|>\s*\/|sudo\s+/i.test(cmd)) {
+      level = "high";
+      reason = "shell command matches high-risk pattern";
+    }
+  }
+
+  return { toolName: name, category, level, reason };
+}
+
+/**
+ * Suggest whether a tool should auto-approve, ask, or deny based on profile +
+ * risk classification. Used to reduce approval fatigue without bypassing deny rules.
+ */
+export function suggestPermissionDecision(cfg, toolName, args = {}) {
+  const classification = classifyToolRisk(toolName, args);
+  const resolved = resolveToolPermission(cfg, toolName, { classification });
+  const profile = cfg.permissionProfile || "normal";
+  const fatigueReduction = profile === "trusted-workspace" || profile === "full-auto";
+
+  if (resolved.decision === "deny") {
+    return { ...resolved, classification, fatigueReduction: false };
+  }
+  if (classification.level === "low" && resolved.rule === "auto") {
+    return { ...resolved, classification, fatigueReduction: true, hint: "low-risk read auto-approved" };
+  }
+  if (fatigueReduction && classification.level === "medium" && resolved.decision === "auto") {
+    return { ...resolved, classification, fatigueReduction: true, hint: "trusted profile auto-approved medium-risk tool" };
+  }
+  return { ...resolved, classification, fatigueReduction: false };
+}
+
 export function toolCategory(toolName) {
   const name = String(toolName || "");
   if (TOOL_CATEGORIES.read.has(name)) return "read";

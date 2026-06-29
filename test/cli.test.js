@@ -883,7 +883,7 @@ test("goal handoff and report emit structured artifacts from state", () => {
   assert.equal(handoffJson.sessionId, "ses_goal");
   const report = run(["goal", "report", goalId, "--json"], { AZYCODE_HOME: home });
   const reportJson = JSON.parse(report);
-  assert.equal(reportJson.version, 1);
+  assert.equal(reportJson.version, 2);
   assert.match(reportJson.resumePrompt, /Continue this goal/);
 });
 

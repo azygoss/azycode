@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 
 import { formatAgentRunReport, summarizeAgentRun } from "./harness.js";
 import { formatTodoList, listActiveTodos, listTodos } from "./todos.js";
+import { formatBacklogList, listActiveBacklog, serializeBacklogForHandoff } from "./backlog.js";
+import { formatProgressList, serializeProgressForHandoff } from "./progress-log.js";
 import { listJournal } from "./change-journal.js";
 import { searchMemory } from "./memory.js";
 
@@ -91,17 +93,21 @@ export function buildGoalHandoffArtifact({
   sessionId = null,
   partialContent = ""
 } = {}) {
+  const goalId = goal.id || goal.goalId || null;
   const openTodos = listActiveTodos(cwd, { sessionId });
   const completedTodos = listTodos(cwd, { status: "completed" }).slice(-12);
+  const backlog = serializeBacklogForHandoff(cwd, { goalId });
+  const progress = serializeProgressForHandoff(cwd, { sessionId, goalId });
   const changed = collectChangedFiles(cwd);
   const stats = summarizeAgentRun(events);
   const journalEntries = listJournal({ sessionId, limit: 12 });
   const memoryHits = searchMemory(String(goal.text || "").slice(0, 120)).slice(0, 6);
 
   return {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     goal: {
+      id: goalId,
       text: goal.text || "",
       status: goal.status || "",
       startedAt: goal.startedAt || null,
@@ -120,18 +126,32 @@ export function buildGoalHandoffArtifact({
       open: openTodos,
       completed: completedTodos
     },
+    backlog,
+    progress,
     changedFiles: changed,
     journal: journalEntries.slice(-8),
     memory: memoryHits.map((item) => ({ id: item.id, text: item.text, tags: item.tags })),
     partialContent: String(partialContent || "").slice(0, 4000),
-    resumePrompt: buildGoalResumePrompt(goal, { openTodos, changed, stats })
+    resumePrompt: buildGoalResumePrompt(goal, { cwd, openTodos, backlog, progress, changed, stats })
   };
 }
 
-export function buildGoalResumePrompt(goal, { openTodos = [], changed = [], stats = {} } = {}) {
+export function buildGoalResumePrompt(goal, {
+  cwd = process.cwd(),
+  openTodos = [],
+  backlog = null,
+  progress = null,
+  changed = [],
+  stats = {}
+} = {}) {
+  const activeBacklog = backlog?.active || listActiveBacklog(cwd);
+  const recentProgress = progress?.entries || [];
   const parts = [
     `Continue this goal until complete: ${goal.text || "(no goal text)"}`,
     openTodos.length ? `Open todos:\n${formatTodoList(openTodos)}` : null,
+    activeBacklog.length ? `Feature backlog:\n${formatBacklogList(activeBacklog)}` : null,
+    recentProgress.length ? `Recent progress:\n${formatProgressList(recentProgress.slice(-6))}` : null,
+    progress?.blockers?.length ? `Blockers: ${progress.blockers.map((b) => b.message).join("; ")}` : null,
     changed.length ? `Changed files: ${changed.join(", ")}` : null,
     stats.steps ? `Prior run: ${stats.steps} steps, ${stats.toolCalls || 0} tool calls.` : null
   ].filter(Boolean);
@@ -147,6 +167,8 @@ export function formatGoalHandoffArtifact(artifact, { json = false } = {}) {
     `Steps: ${artifact.stats?.steps || 0} · Tools: ${artifact.stats?.toolCalls || 0} · ${artifact.stats?.durationMs || 0}ms`,
     artifact.changedFiles?.length ? `Changed: ${artifact.changedFiles.join(", ")}` : "Changed: (none)",
     artifact.todos?.open?.length ? `Open todos:\n${formatTodoList(artifact.todos.open)}` : null,
+    artifact.backlog?.active?.length ? `Backlog:\n${formatBacklogList(artifact.backlog.active)}` : null,
+    artifact.progress?.entries?.length ? `Progress:\n${formatProgressList(artifact.progress.entries.slice(-6))}` : null,
     artifact.partialContent ? `Partial output:\n${artifact.partialContent}` : null
   ].filter(Boolean);
   return lines.join("\n\n");
