@@ -345,7 +345,13 @@ export function formatSupervisorSummary(aggregate, { json = false } = {}) {
 }
 
 export function formatSubagentResults(results = [], { json = false, supervisor = false } = {}) {
-  if (supervisor) return formatSupervisorSummary(aggregateSubagentResults(results), { json });
+  if (supervisor) {
+    const aggregate = aggregateSubagentResults(results);
+    if (json) {
+      return JSON.stringify({ supervisor: aggregate, results }, null, 2);
+    }
+    return `${formatSupervisorSummary(aggregate)}\n\n${formatSubagentResults(results)}`;
+  }
   if (json) return JSON.stringify(results, null, 2);
   return results.map((result) => {
     const status = result.ok ? "ok" : "failed";

@@ -3,16 +3,23 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   aggregateSubagentResults,
   buildSupervisorBrief,
+  formatSubagentResults,
   formatSupervisorSummary
 } from "../src/subagents.js";
 import {
   buildGoalHandoffArtifact,
   buildGoalResumePrompt,
-  formatGoalHandoffArtifact
+  collectChangedFiles,
+  formatGoalHandoffArtifact,
+  parseGitStatusPaths
 } from "../src/agent-report.js";
+import { compactConversationDeterministic } from "../src/compaction.js";
+import { addMemory } from "../src/memory.js";
+import { defaultConfig } from "../src/config.js";
 import { summarizeMissionParallelGroup } from "../src/missions.js";
 import { splitShellSegments, classifyShellCommand } from "../src/shell-risk.js";
 import { buildCompactionContext } from "../src/compaction.js";
@@ -111,4 +118,59 @@ test("harnessCapabilities lists core harness features", () => {
   assert.ok(caps.features.goalHandoff);
   assert.ok(caps.modes.includes("goal"));
   assert.ok(caps.permissionProfiles.length >= 4);
+});
+
+test("formatSubagentResults supervisor mode includes brief and full per-agent bodies", () => {
+  const results = [
+    { index: 1, agent: "explorer", ok: true, durationMs: 10, output: "full explorer body", changedFiles: [] },
+    { index: 2, agent: "reviewer", ok: true, durationMs: 20, output: "full reviewer body", changedFiles: ["src/x.js"] }
+  ];
+  const text = formatSubagentResults(results, { supervisor: true });
+  assert.match(text, /Supervisor summary/);
+  assert.match(text, /full explorer body/);
+  assert.match(text, /full reviewer body/);
+  const json = JSON.parse(formatSubagentResults(results, { supervisor: true, json: true }));
+  assert.equal(json.supervisor.total, 2);
+  assert.equal(json.results.length, 2);
+});
+
+test("parseGitStatusPaths handles renames and modified paths", () => {
+  assert.equal(parseGitStatusPaths(" M src/agent-report.js"), "src/agent-report.js");
+  assert.equal(parseGitStatusPaths("R  old.js -> new.js"), "new.js");
+  assert.equal(parseGitStatusPaths('?? "quoted.js"'), "quoted.js");
+});
+
+test("collectChangedFiles returns full paths from git status --short", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-git-status-"));
+  execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature/test"], { cwd, stdio: "ignore" });
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "tracked.js"), "x\n");
+  execFileSync("git", ["add", "src/tracked.js"], { cwd, stdio: "ignore" });
+  fs.writeFileSync(path.join(cwd, "src", "tracked.js"), "changed\n");
+  const files = collectChangedFiles(cwd);
+  assert.ok(files.includes("src/tracked.js"));
+});
+
+test("compactConversationDeterministic preserves memory when cwd is provided", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-compact-cwd-"));
+  process.env.AZYCODE_HOME = home;
+  addMemory("always run npm test after edits", ["testing"]);
+  const messages = [];
+  for (let index = 0; index < 20; index += 1) {
+    messages.push({ role: "user", content: `msg-${index}` });
+    messages.push({ role: "assistant", content: `ack-${index}` });
+  }
+  const compacted = compactConversationDeterministic(messages, {
+    keepRecent: 4,
+    cwd,
+    prompt: "npm test after edits"
+  });
+  assert.match(compacted[0].content, /Relevant memory/);
+  assert.match(compacted[0].content, /npm test/);
+});
+
+test("defaultConfig enables subagentSupervisor by default", () => {
+  assert.equal(defaultConfig().subagentSupervisor, true);
 });

@@ -760,7 +760,8 @@ async function handleCommand(line, state, rl = null, promptSession = null) {
     } else if (state.cfg.compaction === "deterministic") {
       state.conversation = compactConversationDeterministic(state.conversation, {
         keepRecent,
-        todoState: formatActiveTodos(state.cwd)
+        cwd: state.cwd,
+        prompt: state.lastPrompt || ""
       });
       console.log(`${muted(icon("chevron"))} conversation: ${before} -> ${state.conversation.length} messages (deterministic)`);
     } else {

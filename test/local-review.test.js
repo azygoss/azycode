@@ -6,6 +6,19 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { formatLocalReview, localReview } from "../src/local-review.js";
 
+test("localReview parses leading-space porcelain status without truncating paths", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-path-"));
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature/test"], { cwd: dir, stdio: "ignore" });
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "app.js"), "export const x = 1;\n");
+  execFileSync("git", ["add", "src/app.js"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "src", "app.js"), "export const x = 2;\n");
+  const review = localReview(dir);
+  assert.ok(review.files.includes("src/app.js"));
+  assert.ok(!review.files.some((file) => file.startsWith("rc/")));
+});
+
 test("localReview flags runtime changes without tests", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-review-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });

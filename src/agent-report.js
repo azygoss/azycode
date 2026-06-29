@@ -5,18 +5,27 @@ import { formatTodoList, listActiveTodos, listTodos } from "./todos.js";
 import { listJournal } from "./change-journal.js";
 import { searchMemory } from "./memory.js";
 
+export function parseGitStatusPaths(line) {
+  const raw = String(line || "");
+  if (raw.length < 4) return null;
+  // short/porcelain: XY<space>path — never trim the line start (X may be a space).
+  const pathPart = raw.slice(3).trim();
+  if (!pathPart) return null;
+  const resolved = pathPart.includes("->") ? pathPart.split("->").pop().trim() : pathPart;
+  return resolved.replace(/^"|"$/g, "");
+}
+
 export function collectChangedFiles(cwd = process.cwd()) {
   try {
-    const out = execFileSync("git", ["status", "--porcelain"], {
+    const out = execFileSync("git", ["status", "--short"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     });
     return out
-      .trim()
       .split("\n")
-      .filter(Boolean)
-      .map((line) => line.slice(3).trim().replace(/^"|"$/g, ""));
+      .map(parseGitStatusPaths)
+      .filter(Boolean);
   } catch {
     return [];
   }

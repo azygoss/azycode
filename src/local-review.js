@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { parseGitStatusPaths } from "./agent-report.js";
 
 export function localReview(cwd = process.cwd()) {
-  const status = git(["status", "--short"], cwd).trim();
+  // Do not trim status: leading spaces encode porcelain XY columns on each line.
+  const status = git(["status", "--short"], cwd).replace(/\s+$/, "");
   const diff = git(["diff", "--no-ext-diff"], cwd);
   const staged = git(["diff", "--cached", "--no-ext-diff"], cwd);
   const combined = [diff, staged].filter(Boolean).join("\n");
@@ -225,9 +227,8 @@ function git(args, cwd) {
 function changedFiles(status, diff, cwd = process.cwd()) {
   const files = new Set();
   for (const line of status.split(/\r?\n/)) {
-    const file = line.slice(3).trim();
-    if (!file) continue;
-    const normalized = file.replace(/^"|"$/g, "");
+    const normalized = parseGitStatusPaths(line);
+    if (!normalized) continue;
     const full = path.join(cwd, normalized);
     if (line.startsWith("??") && fs.existsSync(full) && fs.statSync(full).isDirectory()) {
       for (const nested of walkFiles(full, cwd)) files.add(nested);

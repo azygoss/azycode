@@ -532,6 +532,86 @@ test("runAgent can spawn parallel subagents via spawn_subagents tool", async () 
   }
 });
 
+test("runAgent spawn_subagents with multiple tasks emits supervisor aggregation", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, port } = await mockChatServer((body) => {
+    const system = body.messages.find((message) => message.role === "system")?.content || "";
+    if (system.includes("exploration subagent")) {
+      return { choices: [{ message: { role: "assistant", content: "explorer done" } }] };
+    }
+    if (system.includes("strict code review subagent")) {
+      return { choices: [{ message: { role: "assistant", content: "reviewer done" } }] };
+    }
+    if (body.messages.some((message) => message.role === "tool" && message.name === "spawn_subagents")) {
+      const toolContent = body.messages.find((message) => message.role === "tool" && message.name === "spawn_subagents")?.content || "";
+      assert.match(toolContent, /Supervisor summary/);
+      assert.match(toolContent, /Subagent 1: explorer/);
+      assert.match(toolContent, /Subagent 2: reviewer/);
+      return { choices: [{ message: { role: "assistant", content: "supervised parallel complete" } }] };
+    }
+    return {
+      choices: [{
+        message: {
+          role: "assistant",
+          tool_calls: [{
+            id: "call_spawn_multi",
+            type: "function",
+            function: {
+              name: "spawn_subagents",
+              arguments: JSON.stringify({
+                tasks: [
+                  { agent: "explorer", prompt: "map src/" },
+                  { agent: "reviewer", prompt: "review diff" }
+                ]
+              })
+            }
+          }]
+        }
+      }]
+    };
+  });
+
+  try {
+    const events = [];
+    const output = await runAgent({
+      cfg: {
+        ...cfgFor(port),
+        subagentSupervisor: true,
+        subagents: {
+          explorer: {
+            description: "read-only dig",
+            reasoning: "low",
+            system: "You are Azycode's exploration subagent.",
+            model: "mock-coder"
+          },
+          reviewer: {
+            description: "reviewer",
+            reasoning: "low",
+            system: "You are Azycode's strict code review subagent.",
+            model: "mock-coder"
+          }
+        },
+        toolPolicy: {
+          ...cfgFor(port).toolPolicy,
+          spawn_subagents: "auto"
+        }
+      },
+      cwd,
+      prompt: "explore and review in parallel",
+      mode: "always-approve",
+      onEvent: (event) => events.push(event)
+    });
+    assert.equal(output, "supervised parallel complete");
+    assert(events.some((event) => event.type === "subagent_supervisor" && event.total === 2));
+    assert(events.some((event) => event.type === "subagent_start" && event.agent === "explorer"));
+    assert(events.some((event) => event.type === "subagent_start" && event.agent === "reviewer"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("runAgent applies pre_tool hook modifications before executing tools", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-work-"));

@@ -848,6 +848,45 @@ test("todo command lists active items and clears workspace todos", () => {
   assert.match(runInWorkspace(["todo", "clear"]), /Cleared 1 todo/);
 });
 
+test("goal handoff and report emit structured artifacts from state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-goal-"));
+  const goalId = "goal_test_1";
+  const state = {
+    version: 1,
+    sessions: {},
+    goals: {
+      [goalId]: {
+        text: "ship harness improvements",
+        status: "stalled",
+        startedAt: "2026-06-29T00:00:00.000Z",
+        sessions: ["ses_goal"],
+        lastHandoff: {
+          version: 1,
+          generatedAt: "2026-06-29T01:00:00.000Z",
+          goal: { text: "ship harness improvements", status: "stalled" },
+          sessionId: "ses_goal",
+          stats: { steps: 4, toolCalls: 2, durationMs: 1200, status: "step_limit" },
+          todos: { open: [], completed: [] },
+          changedFiles: ["src/cli.js"],
+          resumePrompt: "Continue this goal until complete: ship harness improvements"
+        }
+      }
+    },
+    missions: {},
+    toolRuns: []
+  };
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, "state.json"), JSON.stringify(state, null, 2));
+  const handoff = run(["goal", "handoff", goalId, "--json"], { AZYCODE_HOME: home });
+  const handoffJson = JSON.parse(handoff);
+  assert.equal(handoffJson.goal.text, "ship harness improvements");
+  assert.equal(handoffJson.sessionId, "ses_goal");
+  const report = run(["goal", "report", goalId, "--json"], { AZYCODE_HOME: home });
+  const reportJson = JSON.parse(report);
+  assert.equal(reportJson.version, 1);
+  assert.match(reportJson.resumePrompt, /Continue this goal/);
+});
+
 function runWithInput(args, inputText, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin, ...args], {

@@ -89,6 +89,7 @@ export function defaultConfig() {
     subagentMaxSteps: 8,
     subagentIsolation: "same-workspace",
     maxSubagentDepth: 2,
+    subagentSupervisor: true,
     usageTracking: true,
     changeJournal: true,
     streamResponses: false,
@@ -234,6 +235,7 @@ export function validateConfig(cfg) {
   if (!isolationModes.has(cfg.subagentIsolation)) {
     cfg.subagentIsolation = defaults.subagentIsolation;
   }
+  cfg.subagentSupervisor = cfg.subagentSupervisor !== false;
   cfg.usageTracking = cfg.usageTracking !== false;
   cfg.changeJournal = cfg.changeJournal !== false;
   const policy = cfg.toolPolicy || {};

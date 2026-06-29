@@ -488,7 +488,9 @@ export async function runAgent({
     } else if (cfg.compaction === "deterministic") {
       trimmed = compactConversationDeterministic(nonSystem, {
         keepRecent: Math.max(8, Math.floor(maxMessages * 0.4)),
-        todoState: formatActiveTodos(cwd, { sessionId })
+        cwd,
+        sessionId,
+        prompt
       });
       emit({ type: "context_compact", step, maxSteps: stepLimit, before, after: trimmed.length, method: "deterministic" });
     } else {

@@ -2534,7 +2534,8 @@ async function handleChatCommand(line, state) {
     } else if (state.cfg.compaction === "deterministic") {
       const compacted = compactConversationDeterministic(state.getConversation(), {
         keepRecent,
-        todoState: formatActiveTodos(state.cwd)
+        cwd: state.cwd,
+        prompt: state.lastPrompt || ""
       });
       state.setConversation(compacted);
       console.log(`conversation: ${before} -> ${compacted.length} messages (deterministic)`);

@@ -6,6 +6,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import {
+  aggregateSubagentResults,
   collectSubagentChangedFiles,
   formatSubagentResults,
   isGitRepository,
@@ -204,6 +205,66 @@ test("prepareSubagentWorkspace creates isolated git worktree", async () => {
   const changed = collectSubagentChangedFiles(workspace.cwd, repo);
   assert.deepEqual(changed, []);
   await workspace.cleanup();
+});
+
+test("runSubagentsParallel multi-task results aggregate via supervisor helpers", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-sub-home-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-sub-work-"));
+  process.env.AZYCODE_HOME = home;
+  const { server, port } = await mockChatServer(() => ({
+    choices: [{ message: { role: "assistant", content: "parallel ok" } }]
+  }));
+
+  try {
+    const cfg = {
+      activeProvider: "byok",
+      activeModel: "mock-coder",
+      mode: "always-approve",
+      reasoning: "medium",
+      alwaysApprove: true,
+      subagentSupervisor: true,
+      providers: {
+        byok: {
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          apiKey: "sk-test",
+          model: "mock-coder"
+        }
+      },
+      subagents: {
+        explorer: { description: "dig", reasoning: "low", system: "Explore." },
+        reviewer: { description: "review", reasoning: "low", system: "Review." }
+      },
+      toolPolicy: {
+        read_file: "auto",
+        list_files: "auto",
+        search: "auto",
+        shell: "deny",
+        write_file: "deny",
+        edit_file: "deny",
+        apply_patch: "deny"
+      }
+    };
+    const results = await runSubagentsParallel({
+      cfg,
+      cwd,
+      tasks: [
+        { agent: "explorer", prompt: "map src/" },
+        { agent: "reviewer", prompt: "review diff" }
+      ]
+    });
+    assert.equal(results.length, 2);
+    assert.equal(results.every((result) => result.ok), true);
+    const aggregate = aggregateSubagentResults(results);
+    assert.equal(aggregate.total, 2);
+    assert.equal(aggregate.ok, true);
+    const formatted = formatSubagentResults(results, { supervisor: true });
+    assert.match(formatted, /Supervisor summary/);
+    assert.match(formatted, /parallel ok/);
+    assert.match(formatted, /Subagent 1: explorer/);
+    assert.match(formatted, /Subagent 2: reviewer/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("formatSubagentResults includes duration and changed file metadata", () => {
