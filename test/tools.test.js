@@ -276,3 +276,27 @@ test("git_worktree tool can add and list isolated worktrees", async () => {
   const worktreePath = path.join(dir, ".azycode", "worktrees", "feat-a");
   assert.ok(fs.existsSync(worktreePath));
 });
+
+test("fatigueReduction emits approval_auto for profile-default low-risk reads", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "azy-fatigue-"));
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "index.js"), "export const x = 1;\n");
+  const events = [];
+  let confirmCalled = false;
+  const tools = createTools({
+    cwd: dir,
+    cfg: {
+      alwaysApprove: false,
+      permissionProfile: "normal",
+      toolPolicy: {},
+      gitGuard: { enabled: false }
+    },
+    confirmTool: async () => { confirmCalled = true; return false; },
+    onApproval: (event) => events.push(event)
+  });
+  const readFile = tools.find((tool) => tool.name === "read_file");
+  const result = await readFile.run({ file: "src/index.js" });
+  assert.match(result, /export const x/);
+  assert.equal(confirmCalled, false);
+  assert.ok(events.some((e) => e.type === "approval_auto" && e.hint));
+});

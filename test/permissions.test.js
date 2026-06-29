@@ -71,12 +71,23 @@ test("classifyToolRisk elevates destructive shell patterns", () => {
   assert.equal(risk.level, "high");
 });
 
-test("suggestPermissionDecision reduces fatigue for low-risk reads", () => {
+test("suggestPermissionDecision reduces fatigue for low-risk reads with profile auto", () => {
   const cfg = defaultConfig();
   const suggestion = suggestPermissionDecision(cfg, "read_file", { file: "src/x.js" });
   assert.equal(suggestion.decision, "auto");
+  assert.equal(suggestion.allowed, true);
   assert.equal(suggestion.classification.level, "low");
   assert.equal(suggestion.fatigueReduction, true);
+  assert.match(suggestion.hint, /auto-approved/);
+});
+
+test("suggestPermissionDecision respects explicit ask override on low-risk reads", () => {
+  const cfg = defaultConfig();
+  cfg.toolPolicy.read_file = "ask";
+  const suggestion = suggestPermissionDecision(cfg, "read_file", { file: "src/x.js" });
+  assert.equal(suggestion.decision, "ask");
+  assert.equal(suggestion.allowed, null);
+  assert.equal(suggestion.fatigueReduction, false);
 });
 
 test("suggestPermissionDecision never bypasses deny rules", () => {

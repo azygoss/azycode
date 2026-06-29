@@ -60,6 +60,17 @@ test("formatActiveBacklog returns empty string when no items", () => {
   assert.equal(formatActiveBacklog(cwd), "");
 });
 
+test("listBacklogItems strict goalId excludes unscoped items", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-bl-home-6-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-bl-cwd-6-"));
+  process.env.AZYCODE_HOME = home;
+
+  addBacklogItem(cwd, "global");
+  addBacklogItem(cwd, "for goal", { goalId: "g1" });
+  assert.equal(listBacklogItems(cwd, { goalId: "g1", scope: "strict" }).length, 1);
+  assert.equal(listBacklogItems(cwd, { goalId: "g1", scope: "inclusive" }).length, 2);
+});
+
 test("updateBacklogItem changes status and priority", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-bl-home-5-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "azy-bl-cwd-5-"));

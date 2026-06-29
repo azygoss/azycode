@@ -39,7 +39,14 @@ function normalizePriority(priority) {
   return next;
 }
 
-export function listBacklogItems(cwd, { status = null, area = null } = {}) {
+function filterBacklogByGoal(items, goalId, scope = "inclusive") {
+  if (!goalId) return items;
+  return scope === "inclusive"
+    ? items.filter((item) => !item.goalId || item.goalId === goalId)
+    : items.filter((item) => item.goalId === goalId);
+}
+
+export function listBacklogItems(cwd, { status = null, area = null, goalId = null, scope = "inclusive" } = {}) {
   const { bucket: store } = bucket(cwd);
   let items = [...(store.items || [])];
   if (status) {
@@ -49,6 +56,7 @@ export function listBacklogItems(cwd, { status = null, area = null } = {}) {
   if (area) {
     items = items.filter((item) => item.area === area);
   }
+  items = filterBacklogByGoal(items, goalId, scope);
   return items.sort((a, b) => {
     const prio = (p) => BACKLOG_PRIORITIES.indexOf(p.priority || "medium");
     const diff = prio(a) - prio(b);
@@ -58,13 +66,7 @@ export function listBacklogItems(cwd, { status = null, area = null } = {}) {
 }
 
 export function listActiveBacklog(cwd, { goalId = null, scope = "inclusive" } = {}) {
-  let items = listBacklogItems(cwd, { status: ["pending", "in_progress"] });
-  if (goalId) {
-    items = scope === "inclusive"
-      ? items.filter((item) => !item.goalId || item.goalId === goalId)
-      : items.filter((item) => item.goalId === goalId);
-  }
-  return items;
+  return listBacklogItems(cwd, { status: ["pending", "in_progress"], goalId, scope });
 }
 
 export function addBacklogItem(cwd, text, {
@@ -132,8 +134,8 @@ export function formatBacklogList(items) {
   }).join("\n");
 }
 
-export function formatActiveBacklog(cwd, { goalId = null } = {}) {
-  const items = listActiveBacklog(cwd, { goalId });
+export function formatActiveBacklog(cwd, { goalId = null, scope = "inclusive" } = {}) {
+  const items = listActiveBacklog(cwd, { goalId, scope });
   if (!items.length) return "";
   return `Feature backlog:\n${formatBacklogList(items)}`;
 }

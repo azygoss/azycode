@@ -866,6 +866,27 @@ test("progress add and list support strict session filter", () => {
   assert.equal(listed[0].message, "scoped work");
 });
 
+test("backlog active --goal scopes json and plain text consistently", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-bl-scope-"));
+  run(["backlog", "add", "unscoped task", "--json"], { AZYCODE_HOME: home });
+  run(["backlog", "add", "goal task", "--goal", "goal_a", "--json"], { AZYCODE_HOME: home });
+  const jsonItems = JSON.parse(run(["backlog", "active", "--goal", "goal_a", "--json"], { AZYCODE_HOME: home }));
+  const textOut = run(["backlog", "active", "--goal", "goal_a"], { AZYCODE_HOME: home });
+  assert.equal(jsonItems.length, 1);
+  assert.equal(jsonItems[0].text, "goal task");
+  assert.match(textOut, /goal task/);
+  assert.doesNotMatch(textOut, /unscoped task/);
+});
+
+test("backlog list --goal filters to scoped items only", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-bl-list-"));
+  run(["backlog", "add", "global", "--json"], { AZYCODE_HOME: home });
+  run(["backlog", "add", "scoped", "--goal", "g1", "--json"], { AZYCODE_HOME: home });
+  const items = JSON.parse(run(["backlog", "list", "--goal", "g1", "--json"], { AZYCODE_HOME: home }));
+  assert.equal(items.length, 1);
+  assert.equal(items[0].text, "scoped");
+});
+
 test("backlog complete and remove work from CLI", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "azy-cli-bl2-"));
   const added = JSON.parse(run(["backlog", "add", "wire classifier", "--json"], { AZYCODE_HOME: home }));

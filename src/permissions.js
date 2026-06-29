@@ -136,8 +136,25 @@ export function suggestPermissionDecision(cfg, toolName, context = {}) {
   if (resolved.decision === "deny") {
     return { ...resolved, classification, fatigueReduction: false };
   }
-  if (classification.level === "low" && resolved.rule === "auto") {
-    return { ...resolved, classification, fatigueReduction: true, hint: "low-risk read auto-approved" };
+
+  if (classification.level === "low" && resolved.decision === "auto") {
+    return {
+      ...resolved,
+      classification,
+      fatigueReduction: true,
+      hint: `low-risk ${classification.category} auto-approved without prompt`
+    };
+  }
+  if (classification.level === "low" && resolved.decision === "ask" && resolved.rule === "auto") {
+    return {
+      allowed: true,
+      decision: "auto",
+      rule: resolved.rule,
+      reason: `${resolved.reason}; fatigueReduction=profile-auto-low-risk`,
+      classification,
+      fatigueReduction: true,
+      hint: `low-risk ${classification.category} auto-approved via profile default`
+    };
   }
   if (fatigueReduction && classification.level === "medium" && resolved.decision === "auto") {
     return { ...resolved, classification, fatigueReduction: true, hint: "trusted profile auto-approved medium-risk tool" };

@@ -631,6 +631,8 @@ function doctor(args = []) {
   }
 }
 
+export { positionalArgs, parseFlags };
+
 export function harnessCapabilities() {
   return {
     modes: ["plan", "build", "always-approve", "goal", "review"],
@@ -1714,19 +1716,23 @@ function backlogCmd(args) {
   const cwd = process.cwd();
   const goalId = flags.goal || flags.goalId || flags["goal-id"] || null;
 
+  const backlogScope = goalId ? "strict" : "inclusive";
+
   if (action === "list") {
     const items = listBacklogItems(cwd, {
       status: flags.status ? (Array.isArray(flags.status) ? flags.status : [flags.status]) : null,
-      area: flags.area || null
+      area: flags.area || null,
+      goalId,
+      scope: backlogScope
     });
     if (flags.json) console.log(JSON.stringify(items, null, 2));
     else console.log(formatBacklogList(items));
     return;
   }
   if (action === "active") {
-    const items = listActiveBacklog(cwd, { goalId, scope: goalId ? "strict" : "inclusive" });
+    const items = listActiveBacklog(cwd, { goalId, scope: backlogScope });
     if (flags.json) console.log(JSON.stringify(items, null, 2));
-    else console.log(formatActiveBacklog(cwd, { goalId }) || "No active backlog items.");
+    else console.log(formatActiveBacklog(cwd, { goalId, scope: backlogScope }) || "No active backlog items.");
     return;
   }
   if (action === "add") {
@@ -2042,7 +2048,8 @@ async function goal(args) {
   if (action === "start") {
     const cfg = loadConfig();
     const startArgs = args.slice(1);
-    const text = positionalArgs(startArgs).join(" ");
+    const startFlags = parseFlags(startArgs);
+    const text = positionalArgs(startArgs, ["max-steps", "skill"]).join(" ");
     if (!text) throw new Error("Usage: azycode goal start \"goal text\"");
     const goalId = `goal_${Date.now()}`;
     const cwd = process.cwd();
@@ -2050,6 +2057,7 @@ async function goal(args) {
     saveState(state);
     appendProgressEntry(cwd, `Goal started: ${text}`, { goalId, level: "info", area: "goal" });
     const skills = parseSkills(startArgs);
+    const maxSteps = resolveAgentMaxSteps(cfg, startFlags["max-steps"]);
     const result = await runAgentSafe({
       cfg,
       cwd,
@@ -2057,6 +2065,7 @@ async function goal(args) {
       mode: "goal",
       skills,
       goalId,
+      maxSteps,
       returnSession: true
     }, { cancellable: true });
     updateState((done) => {

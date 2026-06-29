@@ -614,6 +614,15 @@ export function createTools({
         onApproval?.({ type: "approval_denied", tool: entry.name, reason: permission.reason });
         return `Tool ${entry.name} denied by policy: ${permission.reason}`;
       }
+      if (permission.allowed === true && permission.fatigueReduction) {
+        onApproval?.({
+          type: "approval_auto",
+          tool: entry.name,
+          hint: permission.hint,
+          classification: permission.classification,
+          reason: permission.reason
+        });
+      }
       if (permission.allowed === null) {
         const allowed = await approved(entry.name, args, policy(), activeCfg, confirmTool, onApproval, permission);
         if (!allowed) return "Tool call rejected by user.";
@@ -675,6 +684,16 @@ function tool(name, description, parameters, run) {
 
 async function approved(name, args, policy, cfg, confirmTool, onApproval = null, permission = null) {
   if (cfg.alwaysApprove) return true;
+  if (permission?.fatigueReduction || permission?.decision === "auto") {
+    onApproval?.({
+      type: "approval_auto",
+      tool: name,
+      hint: permission.hint,
+      classification: permission.classification,
+      reason: permission.reason
+    });
+    return true;
+  }
   const rule = policy[name] || "ask";
   if (rule === "auto") return true;
   if (rule === "deny") {
